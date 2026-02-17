@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { Sparkles, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Link } from "react-router-dom";
 import ChatMockup from "./ChatMockup";
 
 const Hero = () => {
@@ -18,9 +19,11 @@ const Hero = () => {
             </div>
             <span className="font-display font-black text-xl text-foreground">Monty</span>
           </div>
-          <Button variant="outline" className="rounded-full font-display font-semibold">
-            Get Started
-          </Button>
+          <Link to="/signup">
+            <Button variant="outline" className="rounded-full font-display font-semibold">
+              Get Started
+            </Button>
+          </Link>
         </nav>
 
         {/* Hero content */}
@@ -42,13 +45,15 @@ const Hero = () => {
               Monty is your friendly AI assistant that keeps you on top of everything happening at your child's primary school — via WhatsApp.
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
-              <Button
-                size="lg"
-                className="rounded-full font-display font-bold text-base px-8 py-6"
-              >
-                <Sparkles className="w-5 h-5 mr-2" />
-                Get started free
-              </Button>
+              <Link to="/signup">
+                <Button
+                  size="lg"
+                  className="rounded-full font-display font-bold text-base px-8 py-6"
+                >
+                  <Sparkles className="w-5 h-5 mr-2" />
+                  Get started free
+                </Button>
+              </Link>
               <Button
                 variant="ghost"
                 size="lg"

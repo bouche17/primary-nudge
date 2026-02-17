@@ -44,6 +44,68 @@ export type Database = {
         }
         Relationships: []
       }
+      children: {
+        Row: {
+          created_at: string
+          first_name: string
+          id: string
+          parent_id: string
+          school_id: string
+          updated_at: string
+          year_group: string
+        }
+        Insert: {
+          created_at?: string
+          first_name: string
+          id?: string
+          parent_id: string
+          school_id: string
+          updated_at?: string
+          year_group: string
+        }
+        Update: {
+          created_at?: string
+          first_name?: string
+          id?: string
+          parent_id?: string
+          school_id?: string
+          updated_at?: string
+          year_group?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "children_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      consent_records: {
+        Row: {
+          consent_type: string
+          consented_at: string
+          id: string
+          ip_address: string | null
+          user_id: string
+        }
+        Insert: {
+          consent_type?: string
+          consented_at?: string
+          id?: string
+          ip_address?: string | null
+          user_id: string
+        }
+        Update: {
+          consent_type?: string
+          consented_at?: string
+          id?: string
+          ip_address?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           context: Json
@@ -105,6 +167,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      schools: {
+        Row: {
+          address: string | null
+          created_at: string
+          id: string
+          local_authority: string | null
+          name: string
+          postcode: string
+          urn: string
+        }
+        Insert: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          local_authority?: string | null
+          name: string
+          postcode: string
+          urn: string
+        }
+        Update: {
+          address?: string | null
+          created_at?: string
+          id?: string
+          local_authority?: string | null
+          name?: string
+          postcode?: string
+          urn?: string
+        }
+        Relationships: []
       }
     }
     Views: {
