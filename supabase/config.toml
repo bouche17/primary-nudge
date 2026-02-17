@@ -2,3 +2,6 @@ project_id = "cfjcuhblioswylmtclzy"
 
 [functions.whatsapp-webhook]
 verify_jwt = false
+
+[functions.import-schools]
+verify_jwt = false
