@@ -16,7 +16,7 @@ const CTA = () => {
         <div className="absolute bottom-0 left-0 w-32 h-32 rounded-full bg-primary-foreground/5 translate-y-1/2 -translate-x-1/2" />
 
         <div className="relative z-10">
-          <h2 className="text-3xl md:text-4xl font-display font-black text-primary-foreground mb-4">
+          <h2 className="text-3xl md:text-4xl font-heading font-black text-primary-foreground mb-4">
             Never miss another school event
           </h2>
           <p className="text-primary-foreground/80 mb-8 max-w-lg mx-auto">
@@ -24,7 +24,7 @@ const CTA = () => {
           </p>
           <Button
             size="lg"
-            className="bg-card text-foreground hover:bg-card/90 font-display font-bold text-base px-8 py-6 rounded-full shadow-lg"
+            className="bg-card text-foreground hover:bg-card/90 font-cta font-bold text-base px-8 py-6 rounded-full shadow-lg"
           >
             <Sparkles className="w-5 h-5 mr-2" />
             Get started free

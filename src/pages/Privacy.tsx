@@ -15,7 +15,7 @@ const Privacy = () => {
           <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
             <Sparkles className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-display font-bold text-foreground">Monty</span>
+          <span className="font-heading font-bold text-foreground">Monty</span>
         </div>
       </nav>
 
@@ -24,28 +24,28 @@ const Privacy = () => {
 
         <div className="prose prose-sm text-foreground/90 space-y-6">
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">What data we collect</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">What data we collect</h2>
             <p className="text-muted-foreground leading-relaxed">
               When you sign up for Monty, we collect your <strong>email address</strong> for authentication. During onboarding, we collect your <strong>children's first names</strong> and <strong>year groups</strong> to personalise reminders. We also store which <strong>school</strong> each child attends.
             </p>
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">Why we collect it</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">Why we collect it</h2>
             <p className="text-muted-foreground leading-relaxed">
               We use this data solely to send you timely, relevant reminders about events and dates at your child's school. We do not sell, share, or use your data for advertising.
             </p>
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">How we store it</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">How we store it</h2>
             <p className="text-muted-foreground leading-relaxed">
               Your data is stored securely using industry-standard encryption. Access to your data is restricted to you via your authenticated account. We use Row Level Security to ensure parents can only see their own children's data.
             </p>
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">Your rights</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">Your rights</h2>
             <p className="text-muted-foreground leading-relaxed">
               Under UK GDPR, you have the right to:
             </p>
@@ -58,21 +58,21 @@ const Privacy = () => {
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">Children's data</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">Children's data</h2>
             <p className="text-muted-foreground leading-relaxed">
               We take special care with children's data. We only collect first names and year groups — the minimum needed to provide personalised reminders. We do not collect dates of birth, surnames, or any other identifying information about children.
             </p>
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">Data retention</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">Data retention</h2>
             <p className="text-muted-foreground leading-relaxed">
               Your data is retained as long as your account is active. When you delete your account, all associated data (children, consent records) is permanently deleted immediately.
             </p>
           </section>
 
           <section>
-            <h2 className="font-display font-bold text-xl text-foreground">Contact</h2>
+            <h2 className="font-heading font-bold text-xl text-foreground">Contact</h2>
             <p className="text-muted-foreground leading-relaxed">
               If you have any questions about this privacy policy or your data, please contact us at{" "}
               <a href="mailto:privacy@monty.app" className="text-primary underline hover:no-underline">

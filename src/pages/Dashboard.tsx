@@ -42,7 +42,7 @@ const Dashboard = () => {
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
             <Sparkles className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-display font-black text-lg text-foreground">Monty</span>
+          <span className="font-heading font-black text-lg text-foreground">Monty</span>
         </div>
         <div className="flex items-center gap-2">
           <Link to="/settings">
@@ -59,7 +59,7 @@ const Dashboard = () => {
         <div className="space-y-3">
           {children.map((child) => (
             <div key={child.id} className="bg-card rounded-2xl p-5 border border-border">
-              <p className="font-display font-bold text-foreground">{child.first_name}</p>
+              <p className="font-heading font-bold text-foreground">{child.first_name}</p>
               <p className="text-sm text-muted-foreground">
                 {child.year_group} · {child.schools?.name}
               </p>
@@ -70,7 +70,7 @@ const Dashboard = () => {
         <Button
           variant="outline"
           onClick={() => navigate("/onboarding")}
-          className="mt-4 rounded-full font-display font-semibold"
+          className="mt-4 rounded-full font-cta font-semibold"
         >
           <Plus className="w-4 h-4 mr-2" />
           Add another child

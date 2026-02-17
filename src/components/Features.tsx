@@ -47,7 +47,7 @@ const Features = () => {
           <span className="inline-block px-4 py-1.5 rounded-full bg-secondary text-secondary-foreground text-sm font-semibold mb-4">
             Features
           </span>
-          <h2 className="text-3xl md:text-4xl font-display font-black text-foreground">
+          <h2 className="text-3xl md:text-4xl font-heading font-black text-foreground">
             Everything a busy parent needs
           </h2>
           <p className="mt-4 text-muted-foreground max-w-xl mx-auto">
@@ -68,7 +68,7 @@ const Features = () => {
               <div className="w-12 h-12 rounded-xl bg-secondary flex items-center justify-center mb-4 group-hover:bg-primary group-hover:text-primary-foreground transition-colors duration-300">
                 <feature.icon className="w-6 h-6 text-secondary-foreground group-hover:text-primary-foreground transition-colors duration-300" />
               </div>
-              <h3 className="font-display font-bold text-lg text-foreground mb-2">{feature.title}</h3>
+              <h3 className="font-heading font-bold text-lg text-foreground mb-2">{feature.title}</h3>
               <p className="text-muted-foreground text-sm leading-relaxed">{feature.description}</p>
             </motion.div>
           ))}

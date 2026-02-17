@@ -14,8 +14,10 @@ export default {
     },
     extend: {
       fontFamily: {
-        display: ["Nunito", "sans-serif"],
-        body: ["Plus Jakarta Sans", "sans-serif"],
+        display: ["Instrument Serif", "serif"],
+        heading: ["Instrument Sans", "sans-serif"],
+        body: ["Instrument Sans", "sans-serif"],
+        cta: ["Space Mono", "monospace"],
       },
       colors: {
         border: "hsl(var(--border))",
