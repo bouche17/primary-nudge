@@ -28,11 +28,11 @@ const ChatMockup = () => {
       <div className="rounded-[2rem] bg-foreground/90 p-2 shadow-2xl shadow-primary/20">
         {/* Chat header */}
         <div className="rounded-t-[1.5rem] bg-primary px-4 py-3 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-primary-foreground/20 flex items-center justify-center text-primary-foreground font-display font-bold text-sm">
+          <div className="w-9 h-9 rounded-full bg-primary-foreground/20 flex items-center justify-center text-primary-foreground font-heading font-bold text-sm">
             M
           </div>
           <div>
-            <p className="text-primary-foreground font-display font-bold text-sm">Monty</p>
+            <p className="text-primary-foreground font-heading font-bold text-sm">Monty</p>
             <p className="text-primary-foreground/70 text-xs">online</p>
           </div>
         </div>

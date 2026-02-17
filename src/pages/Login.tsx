@@ -39,7 +39,7 @@ const Login = () => {
             <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-primary-foreground" />
             </div>
-            <span className="font-display font-black text-xl text-foreground">Monty</span>
+            <span className="font-heading font-black text-xl text-foreground">Monty</span>
           </Link>
           <h1 className="text-2xl font-display font-black text-foreground">Welcome back</h1>
           <p className="text-muted-foreground mt-1">Log in to manage your reminders</p>
@@ -58,7 +58,7 @@ const Login = () => {
             <Input id="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" />
           </div>
 
-          <Button type="submit" className="w-full rounded-full font-display font-bold" disabled={loading}>
+          <Button type="submit" className="w-full rounded-full font-cta font-bold" disabled={loading}>
             {loading ? "Logging in…" : "Log in"}
           </Button>
 
@@ -71,7 +71,7 @@ const Login = () => {
           <Button
             type="button"
             variant="outline"
-            className="w-full rounded-full font-display font-semibold"
+            className="w-full rounded-full font-cta font-semibold"
             onClick={async () => {
               const { error } = await lovable.auth.signInWithOAuth("google", {
                 redirect_uri: window.location.origin,

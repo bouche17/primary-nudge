@@ -72,25 +72,25 @@ const SettingsPage = () => {
         <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
           <ArrowLeft className="w-4 h-4" />
         </Button>
-        <span className="font-display font-bold text-foreground">Settings</span>
+        <span className="font-heading font-bold text-foreground">Settings</span>
       </nav>
 
       <main className="max-w-lg mx-auto px-6 py-10 space-y-6">
         <div>
-          <h2 className="font-display font-bold text-foreground mb-1">Account</h2>
+          <h2 className="font-heading font-bold text-foreground mb-1">Account</h2>
           <p className="text-sm text-muted-foreground">{user?.email}</p>
         </div>
 
         <div className="bg-card rounded-2xl p-5 border border-border space-y-4">
           <div>
-            <h3 className="font-display font-bold text-foreground text-sm">Export your data</h3>
+            <h3 className="font-heading font-bold text-foreground text-sm">Export your data</h3>
             <p className="text-xs text-muted-foreground mt-1">Download all your personal data as a JSON file.</p>
             <Button
               variant="outline"
               size="sm"
               onClick={handleExport}
               disabled={exporting}
-              className="mt-3 rounded-full font-display font-semibold"
+              className="mt-3 rounded-full font-cta font-semibold"
             >
               <Download className="w-4 h-4 mr-2" />
               {exporting ? "Exporting…" : "Export data"}
@@ -98,7 +98,7 @@ const SettingsPage = () => {
           </div>
 
           <div className="border-t border-border pt-4">
-            <h3 className="font-display font-bold text-destructive text-sm">Delete account</h3>
+            <h3 className="font-heading font-bold text-destructive text-sm">Delete account</h3>
             <p className="text-xs text-muted-foreground mt-1">
               This will permanently delete all your children data, consent records, and sign you out.
             </p>
@@ -107,7 +107,7 @@ const SettingsPage = () => {
                 <Button
                   variant="destructive"
                   size="sm"
-                  className="mt-3 rounded-full font-display font-semibold"
+                  className="mt-3 rounded-full font-cta font-semibold"
                 >
                   <Trash2 className="w-4 h-4 mr-2" />
                   Delete my account
@@ -132,7 +132,7 @@ const SettingsPage = () => {
         </div>
 
         <div className="bg-card rounded-2xl p-5 border border-border">
-          <h3 className="font-display font-bold text-foreground text-sm">Privacy</h3>
+          <h3 className="font-heading font-bold text-foreground text-sm">Privacy</h3>
           <p className="text-xs text-muted-foreground mt-1">
             Read our{" "}
             <a href="/privacy" className="text-primary underline hover:no-underline">

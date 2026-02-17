@@ -63,7 +63,7 @@ const Signup = () => {
             <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-primary-foreground" />
             </div>
-            <span className="font-display font-black text-xl text-foreground">Monty</span>
+            <span className="font-heading font-black text-xl text-foreground">Monty</span>
           </Link>
           <h1 className="text-2xl font-display font-black text-foreground">Create your account</h1>
           <p className="text-muted-foreground mt-1">Get started with school reminders</p>
@@ -99,7 +99,7 @@ const Signup = () => {
             </Label>
           </div>
 
-          <Button type="submit" className="w-full rounded-full font-display font-bold" disabled={loading}>
+          <Button type="submit" className="w-full rounded-full font-cta font-bold" disabled={loading}>
             {loading ? "Creating account…" : "Sign up with email"}
           </Button>
 
@@ -112,7 +112,7 @@ const Signup = () => {
           <Button
             type="button"
             variant="outline"
-            className="w-full rounded-full font-display font-semibold"
+            className="w-full rounded-full font-cta font-semibold"
             onClick={async () => {
               const { error } = await lovable.auth.signInWithOAuth("google", {
                 redirect_uri: window.location.origin,

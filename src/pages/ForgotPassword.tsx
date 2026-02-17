@@ -39,7 +39,7 @@ const ForgotPassword = () => {
             <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-primary-foreground" />
             </div>
-            <span className="font-display font-black text-xl text-foreground">Monty</span>
+            <span className="font-heading font-black text-xl text-foreground">Monty</span>
           </Link>
           <h1 className="text-2xl font-display font-black text-foreground">Reset your password</h1>
           <p className="text-muted-foreground mt-1">We'll send you a reset link</p>
@@ -50,7 +50,7 @@ const ForgotPassword = () => {
             <p className="text-foreground font-semibold mb-2">Check your email</p>
             <p className="text-muted-foreground text-sm">We've sent a password reset link to <strong>{email}</strong>.</p>
             <Link to="/login">
-              <Button variant="outline" className="mt-4 rounded-full font-display font-semibold">Back to login</Button>
+              <Button variant="outline" className="mt-4 rounded-full font-cta font-semibold">Back to login</Button>
             </Link>
           </div>
         ) : (
@@ -59,7 +59,7 @@ const ForgotPassword = () => {
               <Label htmlFor="email">Email</Label>
               <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
             </div>
-            <Button type="submit" className="w-full rounded-full font-display font-bold" disabled={loading}>
+            <Button type="submit" className="w-full rounded-full font-cta font-bold" disabled={loading}>
               {loading ? "Sending…" : "Send reset link"}
             </Button>
           </form>

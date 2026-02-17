@@ -77,7 +77,7 @@ const ResetPassword = () => {
             <Label htmlFor="confirmPassword">Confirm new password</Label>
             <Input id="confirmPassword" type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
           </div>
-          <Button type="submit" className="w-full rounded-full font-display font-bold" disabled={loading}>
+          <Button type="submit" className="w-full rounded-full font-cta font-bold" disabled={loading}>
             {loading ? "Updating…" : "Update password"}
           </Button>
         </form>

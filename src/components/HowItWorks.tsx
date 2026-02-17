@@ -35,7 +35,7 @@ const HowItWorks = () => {
           <span className="inline-block px-4 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-semibold mb-4">
             How it works
           </span>
-          <h2 className="text-3xl md:text-4xl font-display font-black text-foreground">
+          <h2 className="text-3xl md:text-4xl font-heading font-black text-foreground">
             Up and running in 30 seconds
           </h2>
         </motion.div>
@@ -52,11 +52,11 @@ const HowItWorks = () => {
             >
               <div className="relative mx-auto w-16 h-16 rounded-2xl bg-primary flex items-center justify-center mb-5">
                 <step.icon className="w-7 h-7 text-primary-foreground" />
-                <span className="absolute -top-2 -right-2 w-7 h-7 rounded-full bg-accent text-accent-foreground text-xs font-bold flex items-center justify-center font-display">
+                <span className="absolute -top-2 -right-2 w-7 h-7 rounded-full bg-accent text-accent-foreground text-xs font-bold flex items-center justify-center font-heading">
                   {step.step}
                 </span>
               </div>
-              <h3 className="font-display font-bold text-lg text-foreground mb-2">{step.title}</h3>
+              <h3 className="font-heading font-bold text-lg text-foreground mb-2">{step.title}</h3>
               <p className="text-muted-foreground text-sm leading-relaxed">{step.description}</p>
             </motion.div>
           ))}

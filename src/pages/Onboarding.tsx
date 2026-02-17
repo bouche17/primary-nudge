@@ -190,7 +190,7 @@ const Onboarding = () => {
               exit={{ opacity: 0, x: -20 }}
               className="bg-card rounded-2xl p-6 border border-border shadow-sm"
             >
-              <h2 className="font-display font-bold text-lg text-foreground mb-1">Find your school</h2>
+              <h2 className="font-heading font-bold text-lg text-foreground mb-1">Find your school</h2>
               <p className="text-muted-foreground text-sm mb-4">Search by school name or postcode</p>
 
               <div className="relative">
@@ -239,7 +239,7 @@ const Onboarding = () => {
               exit={{ opacity: 0, x: -20 }}
               className="bg-card rounded-2xl p-6 border border-border shadow-sm"
             >
-              <h2 className="font-display font-bold text-lg text-foreground mb-1">Add your children</h2>
+              <h2 className="font-heading font-bold text-lg text-foreground mb-1">Add your children</h2>
               <p className="text-muted-foreground text-sm mb-4">
                 At <strong>{selectedSchool?.name}</strong>
               </p>
@@ -298,7 +298,7 @@ const Onboarding = () => {
                     type="button"
                     variant="outline"
                     onClick={addChild}
-                    className="flex-1 rounded-full font-display font-semibold"
+                    className="flex-1 rounded-full font-cta font-semibold"
                   >
                     <Plus className="w-4 h-4 mr-1" />
                     Add child
@@ -312,14 +312,14 @@ const Onboarding = () => {
                   variant="ghost"
                   size="sm"
                   onClick={addChildAtDifferentSchool}
-                  className="w-full text-muted-foreground font-display"
+                  className="w-full text-muted-foreground font-heading"
                 >
                   Add a child at a different school
                 </Button>
                 <Button
                   onClick={finishOnboarding}
                   disabled={children.length === 0 || saving}
-                  className="w-full rounded-full font-display font-bold"
+                  className="w-full rounded-full font-cta font-bold"
                 >
                   {saving ? "Saving…" : "Finish setup"}
                   <ArrowRight className="w-4 h-4 ml-2" />
@@ -337,13 +337,13 @@ const Onboarding = () => {
               className="bg-card rounded-2xl p-8 border border-border shadow-sm text-center"
             >
               <CheckCircle2 className="w-12 h-12 text-primary mx-auto mb-4" />
-              <h2 className="font-display font-bold text-xl text-foreground mb-2">You're all set!</h2>
+              <h2 className="font-heading font-bold text-xl text-foreground mb-2">You're all set!</h2>
               <p className="text-muted-foreground text-sm mb-6">
                 Monty will send you reminders about what's happening at school. You can manage your children and settings anytime.
               </p>
               <Button
                 onClick={() => navigate("/dashboard")}
-                className="rounded-full font-display font-bold px-8"
+                className="rounded-full font-cta font-bold px-8"
               >
                 Go to dashboard
               </Button>
