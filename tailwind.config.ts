@@ -17,7 +17,7 @@ export default {
         display: ["Instrument Serif", "serif"],
         heading: ["Instrument Sans", "sans-serif"],
         body: ["Instrument Sans", "sans-serif"],
-        cta: ["Space Mono", "monospace"],
+        cta: ["Instrument Sans", "sans-serif"],
       },
       colors: {
         border: "hsl(var(--border))",
