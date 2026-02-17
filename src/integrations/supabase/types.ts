@@ -14,7 +14,98 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      bot_flows: {
+        Row: {
+          created_at: string
+          id: string
+          message_template: string
+          next_step: string | null
+          options: Json | null
+          sort_order: number
+          step_name: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          message_template: string
+          next_step?: string | null
+          options?: Json | null
+          sort_order?: number
+          step_name: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          message_template?: string
+          next_step?: string | null
+          options?: Json | null
+          sort_order?: number
+          step_name?: string
+        }
+        Relationships: []
+      }
+      conversations: {
+        Row: {
+          context: Json
+          created_at: string
+          current_step: string
+          id: string
+          phone_number: string
+          updated_at: string
+        }
+        Insert: {
+          context?: Json
+          created_at?: string
+          current_step?: string
+          id?: string
+          phone_number: string
+          updated_at?: string
+        }
+        Update: {
+          context?: Json
+          created_at?: string
+          current_step?: string
+          id?: string
+          phone_number?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      messages: {
+        Row: {
+          content: string
+          conversation_id: string
+          created_at: string
+          direction: string
+          id: string
+          message_type: string
+        }
+        Insert: {
+          content: string
+          conversation_id: string
+          created_at?: string
+          direction: string
+          id?: string
+          message_type?: string
+        }
+        Update: {
+          content?: string
+          conversation_id?: string
+          created_at?: string
+          direction?: string
+          id?: string
+          message_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
