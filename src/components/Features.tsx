@@ -51,7 +51,7 @@ const Features = () => {
             Everything a busy parent needs
           </h2>
           <p className="mt-4 text-muted-foreground max-w-xl mx-auto">
-            SchoolRemind keeps track of all the things the school newsletter buries on page 3.
+            Monty keeps track of all the things the school newsletter buries on page 3.
           </p>
         </motion.div>
 

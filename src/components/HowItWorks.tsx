@@ -5,8 +5,8 @@ const steps = [
   {
     icon: MessageSquare,
     step: "1",
-    title: "Say hello on WhatsApp",
-    description: "Add SchoolRemind to your WhatsApp contacts and send a quick hello to get started.",
+    title: "Say hello to Monty",
+    description: "Add Monty to your WhatsApp contacts and send a quick hello to get started.",
   },
   {
     icon: School,

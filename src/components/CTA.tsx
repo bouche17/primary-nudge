@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { MessageCircle } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const CTA = () => {
@@ -26,8 +26,8 @@ const CTA = () => {
             size="lg"
             className="bg-card text-foreground hover:bg-card/90 font-display font-bold text-base px-8 py-6 rounded-full shadow-lg"
           >
-            <MessageCircle className="w-5 h-5 mr-2" />
-            Start on WhatsApp
+            <Sparkles className="w-5 h-5 mr-2" />
+            Get started free
           </Button>
           <p className="text-primary-foreground/60 text-sm mt-4">Free to use · No app to download · Takes 30 seconds</p>
         </div>

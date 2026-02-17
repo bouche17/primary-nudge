@@ -6,44 +6,44 @@
 
 @layer base {
   :root {
-    --background: 40 33% 97%;
-    --foreground: 160 20% 12%;
+    --background: 240 20% 97%;
+    --foreground: 240 15% 12%;
 
     --card: 0 0% 100%;
-    --card-foreground: 160 20% 12%;
+    --card-foreground: 240 15% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 160 20% 12%;
+    --popover-foreground: 240 15% 12%;
 
-    --primary: 142 52% 38%;
+    --primary: 245 58% 52%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 142 30% 92%;
-    --secondary-foreground: 142 40% 22%;
+    --secondary: 245 30% 93%;
+    --secondary-foreground: 245 40% 30%;
 
-    --muted: 40 20% 93%;
-    --muted-foreground: 160 10% 45%;
+    --muted: 240 15% 93%;
+    --muted-foreground: 240 8% 45%;
 
-    --accent: 32 80% 55%;
+    --accent: 12 80% 58%;
     --accent-foreground: 0 0% 100%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 142 15% 88%;
-    --input: 142 15% 88%;
-    --ring: 142 52% 38%;
+    --border: 240 12% 88%;
+    --input: 240 12% 88%;
+    --ring: 245 58% 52%;
 
     --radius: 1rem;
 
-    --whatsapp: 142 70% 42%;
-    --whatsapp-light: 142 50% 95%;
-    --whatsapp-dark: 142 60% 18%;
-    --warm: 32 80% 55%;
-    --warm-light: 38 80% 95%;
-    --hero-gradient: linear-gradient(135deg, hsl(142 50% 95%) 0%, hsl(40 33% 97%) 50%, hsl(38 80% 95%) 100%);
-    --chat-bubble-bot: 142 40% 94%;
-    --chat-bubble-user: 142 52% 38%;
+    --brand: 245 58% 52%;
+    --brand-light: 245 40% 96%;
+    --brand-dark: 245 50% 25%;
+    --warm: 12 80% 58%;
+    --warm-light: 18 80% 96%;
+    --hero-gradient: linear-gradient(135deg, hsl(245 40% 96%) 0%, hsl(240 20% 97%) 50%, hsl(18 80% 96%) 100%);
+    --chat-bubble-bot: 245 30% 95%;
+    --chat-bubble-user: 245 58% 52%;
 
     --sidebar-background: 0 0% 98%;
     --sidebar-foreground: 240 5.3% 26.1%;
@@ -52,44 +52,44 @@
     --sidebar-accent: 240 4.8% 95.9%;
     --sidebar-accent-foreground: 240 5.9% 10%;
     --sidebar-border: 220 13% 91%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-ring: 245 58% 52%;
   }
 
   .dark {
-    --background: 160 20% 6%;
-    --foreground: 40 20% 95%;
-    --card: 160 15% 10%;
-    --card-foreground: 40 20% 95%;
-    --popover: 160 15% 10%;
-    --popover-foreground: 40 20% 95%;
-    --primary: 142 52% 42%;
+    --background: 240 15% 6%;
+    --foreground: 240 15% 95%;
+    --card: 240 12% 10%;
+    --card-foreground: 240 15% 95%;
+    --popover: 240 12% 10%;
+    --popover-foreground: 240 15% 95%;
+    --primary: 245 58% 58%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 142 20% 15%;
-    --secondary-foreground: 142 30% 85%;
-    --muted: 160 15% 15%;
-    --muted-foreground: 160 10% 60%;
-    --accent: 32 80% 55%;
+    --secondary: 245 20% 16%;
+    --secondary-foreground: 245 25% 85%;
+    --muted: 240 12% 15%;
+    --muted-foreground: 240 8% 60%;
+    --accent: 12 80% 58%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
-    --border: 160 15% 18%;
-    --input: 160 15% 18%;
-    --ring: 142 52% 42%;
-    --whatsapp: 142 70% 45%;
-    --whatsapp-light: 142 30% 15%;
-    --whatsapp-dark: 142 60% 80%;
-    --warm: 32 80% 55%;
-    --warm-light: 38 40% 15%;
-    --chat-bubble-bot: 142 20% 15%;
-    --chat-bubble-user: 142 52% 38%;
+    --border: 240 12% 18%;
+    --input: 240 12% 18%;
+    --ring: 245 58% 58%;
+    --brand: 245 58% 58%;
+    --brand-light: 245 25% 15%;
+    --brand-dark: 245 40% 80%;
+    --warm: 12 80% 58%;
+    --warm-light: 18 40% 15%;
+    --chat-bubble-bot: 245 18% 16%;
+    --chat-bubble-user: 245 58% 52%;
     --sidebar-background: 240 5.9% 10%;
     --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary: 245 58% 52%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 240 3.7% 15.9%;
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-ring: 245 58% 52%;
   }
 }
 
