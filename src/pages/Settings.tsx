@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
-import { Sparkles, ArrowLeft, Download, Trash2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Sparkles, ArrowLeft, Download, Trash2, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -23,18 +25,53 @@ const SettingsPage = () => {
   const { toast } = useToast();
   const [exporting, setExporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [phone, setPhone] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      supabase
+        .from("profiles")
+        .select("phone_number")
+        .eq("user_id", user.id)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data?.phone_number) setPhone(data.phone_number);
+        });
+    }
+  }, [user]);
+
+  const handleSavePhone = async () => {
+    if (!user) return;
+    setSavingPhone(true);
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase.from("profiles").update({ phone_number: phone.trim() }).eq("user_id", user.id);
+    } else {
+      await supabase.from("profiles").insert({ user_id: user.id, phone_number: phone.trim() });
+    }
+    setSavingPhone(false);
+    toast({ title: "Phone number saved" });
+  };
 
   const handleExport = async () => {
     if (!user) return;
     setExporting(true);
 
-    const [childrenRes, consentRes] = await Promise.all([
+    const [childrenRes, consentRes, profileRes] = await Promise.all([
       supabase.from("children").select("first_name, year_group, schools(name, postcode)").eq("parent_id", user.id),
       supabase.from("consent_records").select("consent_type, consented_at").eq("user_id", user.id),
+      supabase.from("profiles").select("phone_number").eq("user_id", user.id).maybeSingle(),
     ]);
 
     const exportData = {
       email: user.email,
+      phone_number: profileRes.data?.phone_number || null,
       children: childrenRes.data || [],
       consent_records: consentRes.data || [],
       exported_at: new Date().toISOString(),
@@ -59,6 +96,7 @@ const SettingsPage = () => {
     // Delete children (cascades handled by RLS)
     await supabase.from("children").delete().eq("parent_id", user.id);
     await supabase.from("consent_records").delete().eq("user_id", user.id);
+    await supabase.from("profiles").delete().eq("user_id", user.id);
 
     // Sign out (actual user deletion requires admin/service role)
     await signOut();
@@ -79,6 +117,32 @@ const SettingsPage = () => {
         <div>
           <h2 className="font-heading font-bold text-foreground mb-1">Account</h2>
           <p className="text-sm text-muted-foreground">{user?.email}</p>
+        </div>
+
+        <div className="bg-card rounded-2xl p-5 border border-border space-y-3">
+          <div>
+            <h3 className="font-heading font-bold text-foreground text-sm">WhatsApp number</h3>
+            <p className="text-xs text-muted-foreground mt-1">Monty uses this to send you school reminders via WhatsApp.</p>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+44 7700 900000"
+              className="flex-1"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSavePhone}
+              disabled={savingPhone}
+              className="rounded-full font-cta font-semibold"
+            >
+              <Save className="w-4 h-4 mr-1" />
+              {savingPhone ? "Saving…" : "Save"}
+            </Button>
+          </div>
         </div>
 
         <div className="bg-card rounded-2xl p-5 border border-border space-y-4">

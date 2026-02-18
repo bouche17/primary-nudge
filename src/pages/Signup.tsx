@@ -12,6 +12,7 @@ import { Separator } from "@/components/ui/separator";
 
 const Signup = () => {
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [consent, setConsent] = useState(false);
@@ -36,7 +37,7 @@ const Signup = () => {
     }
 
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
+    const { data: signUpData, error } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: window.location.origin },
@@ -46,6 +47,14 @@ const Signup = () => {
       toast({ title: "Signup failed", description: error.message, variant: "destructive" });
       setLoading(false);
       return;
+    }
+
+    // Save phone number to profiles if provided
+    if (signUpData.user && phone.trim()) {
+      await supabase.from("profiles").insert({
+        user_id: signUpData.user.id,
+        phone_number: phone.trim(),
+      });
     }
 
     toast({
@@ -73,6 +82,11 @@ const Signup = () => {
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="phone">WhatsApp number</Label>
+            <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900000" />
+            <p className="text-xs text-muted-foreground">So Monty can send you reminders via WhatsApp</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
