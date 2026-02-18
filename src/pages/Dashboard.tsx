@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Plus, Settings, LogOut, Trash2 } from "lucide-react";
+import { Sparkles, Plus, Settings, LogOut, Trash2, MessageCircle } from "lucide-react";
 
 interface ChildWithSchool {
   id: string;
@@ -84,14 +84,23 @@ const Dashboard = () => {
           ))}
         </div>
 
-        <Button
-          variant="outline"
-          onClick={() => navigate("/onboarding?add=true")}
-          className="mt-4 rounded-full font-cta font-semibold"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Add another child
-        </Button>
+        <div className="flex gap-3 mt-4">
+          <Button
+            variant="outline"
+            onClick={() => navigate("/onboarding?add=true")}
+            className="rounded-full font-cta font-semibold"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Add another child
+          </Button>
+          <Button
+            onClick={() => window.open("https://wa.me/447700000000?text=Hi%20Monty!", "_blank")}
+            className="rounded-full font-cta font-bold"
+          >
+            <MessageCircle className="w-4 h-4 mr-2" />
+            Ask Monty
+          </Button>
+        </div>
       </main>
     </div>
   );
