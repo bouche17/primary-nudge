@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sparkles, ArrowLeft, Download, Trash2, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { isValidPhone, normalizePhone } from "@/lib/phone";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +44,10 @@ const SettingsPage = () => {
 
   const handleSavePhone = async () => {
     if (!user) return;
+    if (phone.trim() && !isValidPhone(phone)) {
+      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
+      return;
+    }
     setSavingPhone(true);
     const { data: existing } = await supabase
       .from("profiles")
@@ -50,10 +55,11 @@ const SettingsPage = () => {
       .eq("user_id", user.id)
       .maybeSingle();
 
+    const normalized = normalizePhone(phone);
     if (existing) {
-      await supabase.from("profiles").update({ phone_number: phone.trim() }).eq("user_id", user.id);
+      await supabase.from("profiles").update({ phone_number: normalized }).eq("user_id", user.id);
     } else {
-      await supabase.from("profiles").insert({ user_id: user.id, phone_number: phone.trim() });
+      await supabase.from("profiles").insert({ user_id: user.id, phone_number: normalized });
     }
     setSavingPhone(false);
     toast({ title: "Phone number saved" });

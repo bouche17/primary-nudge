@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { isValidPhone, normalizePhone } from "@/lib/phone";
 import { Separator } from "@/components/ui/separator";
 
 const Signup = () => {
@@ -35,6 +36,10 @@ const Signup = () => {
       toast({ title: "Password too short", description: "Password must be at least 6 characters.", variant: "destructive" });
       return;
     }
+    if (phone.trim() && !isValidPhone(phone)) {
+      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
+      return;
+    }
 
     setLoading(true);
     const { data: signUpData, error } = await supabase.auth.signUp({
@@ -53,7 +58,7 @@ const Signup = () => {
     if (signUpData.user && phone.trim()) {
       await supabase.from("profiles").insert({
         user_id: signUpData.user.id,
-        phone_number: phone.trim(),
+        phone_number: normalizePhone(phone),
       });
     }
 
