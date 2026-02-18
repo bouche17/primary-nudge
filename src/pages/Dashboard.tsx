@@ -69,7 +69,7 @@ const Dashboard = () => {
 
         <Button
           variant="outline"
-          onClick={() => navigate("/onboarding")}
+          onClick={() => navigate("/onboarding?add=true")}
           className="mt-4 rounded-full font-cta font-semibold"
         >
           <Plus className="w-4 h-4 mr-2" />

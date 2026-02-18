@@ -57,9 +57,10 @@ const Onboarding = () => {
     }
   }, [user, authLoading, navigate]);
 
-  // Check if user already has children (already onboarded)
+  // Check if user already has children (already onboarded) - only redirect if not coming from dashboard
   useEffect(() => {
-    if (user) {
+    const fromDashboard = new URLSearchParams(window.location.search).get("add") === "true";
+    if (user && !fromDashboard) {
       supabase
         .from("children")
         .select("id")
@@ -121,7 +122,13 @@ const Onboarding = () => {
   };
 
   const finishOnboarding = async () => {
-    if (children.length === 0) {
+    // Auto-add current child if form is filled
+    let allChildren = [...children];
+    if (currentChild.first_name?.trim() && currentChild.year_group && currentChild.school_id) {
+      allChildren = [...allChildren, currentChild as ChildEntry];
+    }
+
+    if (allChildren.length === 0) {
       toast({ title: "Add at least one child", variant: "destructive" });
       return;
     }
@@ -129,7 +136,7 @@ const Onboarding = () => {
 
     setSaving(true);
     const { error } = await supabase.from("children").insert(
-      children.map((child) => ({
+      allChildren.map((child) => ({
         parent_id: user.id,
         school_id: child.school_id,
         first_name: child.first_name.trim(),
