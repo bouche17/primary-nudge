@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Plus, Settings, LogOut } from "lucide-react";
+import { Sparkles, Plus, Settings, LogOut, Trash2 } from "lucide-react";
 
 interface ChildWithSchool {
   id: string;
@@ -16,6 +17,17 @@ const Dashboard = () => {
   const { user, loading, signOut } = useAuth();
   const navigate = useNavigate();
   const [children, setChildren] = useState<ChildWithSchool[]>([]);
+  const { toast } = useToast();
+
+  const removeChild = async (childId: string) => {
+    const { error } = await supabase.from("children").delete().eq("id", childId);
+    if (error) {
+      toast({ title: "Error removing child", description: error.message, variant: "destructive" });
+      return;
+    }
+    setChildren((prev) => prev.filter((c) => c.id !== childId));
+    toast({ title: "Child removed" });
+  };
 
   useEffect(() => {
     if (!loading && !user) navigate("/login");
@@ -58,11 +70,16 @@ const Dashboard = () => {
 
         <div className="space-y-3">
           {children.map((child) => (
-            <div key={child.id} className="bg-card rounded-2xl p-5 border border-border">
-              <p className="font-heading font-bold text-foreground">{child.first_name}</p>
-              <p className="text-sm text-muted-foreground">
-                {child.year_group} · {child.schools?.name}
-              </p>
+            <div key={child.id} className="flex items-center justify-between bg-card rounded-2xl p-5 border border-border">
+              <div>
+                <p className="font-heading font-bold text-foreground">{child.first_name}</p>
+                <p className="text-sm text-muted-foreground">
+                  {child.year_group} · {child.schools?.name}
+                </p>
+              </div>
+              <button onClick={() => removeChild(child.id)} className="text-muted-foreground hover:text-destructive transition-colors">
+                <Trash2 className="w-4 h-4" />
+              </button>
             </div>
           ))}
         </div>
