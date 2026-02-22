@@ -11,30 +11,35 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const WHATSAPP_ACCESS_TOKEN = () => Deno.env.get("WHATSAPP_ACCESS_TOKEN")!;
-const WHATSAPP_PHONE_NUMBER_ID = () => Deno.env.get("WHATSAPP_PHONE_NUMBER_ID")!;
-const WHATSAPP_VERIFY_TOKEN = () => Deno.env.get("WHATSAPP_VERIFY_TOKEN")!;
+const TWILIO_ACCOUNT_SID = () => Deno.env.get("TWILIO_ACCOUNT_SID")!;
+const TWILIO_AUTH_TOKEN = () => Deno.env.get("TWILIO_AUTH_TOKEN")!;
+const TWILIO_WHATSAPP_NUMBER = () => Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 
-// Send a WhatsApp message via the Cloud API
+// Send a WhatsApp message via Twilio
 async function sendWhatsAppMessage(to: string, text: string) {
+  const accountSid = TWILIO_ACCOUNT_SID();
+  const authToken = TWILIO_AUTH_TOKEN();
+  const fromNumber = TWILIO_WHATSAPP_NUMBER();
+
+  const params = new URLSearchParams();
+  params.append("To", `whatsapp:${to}`);
+  params.append("From", `whatsapp:${fromNumber}`);
+  params.append("Body", text);
+
   const res = await fetch(
-    `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_NUMBER_ID()}/messages`,
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN()}`,
-        "Content-Type": "application/json",
+        Authorization: "Basic " + btoa(`${accountSid}:${authToken}`),
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: text },
-      }),
+      body: params.toString(),
     }
   );
+
   if (!res.ok) {
-    console.error("WhatsApp API error:", await res.text());
+    console.error("Twilio API error:", await res.text());
   }
   return res;
 }
@@ -137,50 +142,49 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  const url = new URL(req.url);
-
-  // Webhook verification (GET request from Meta)
-  if (req.method === "GET") {
-    const mode = url.searchParams.get("hub.mode");
-    const token = url.searchParams.get("hub.verify_token");
-    const challenge = url.searchParams.get("hub.challenge");
-
-    if (mode === "subscribe" && token === WHATSAPP_VERIFY_TOKEN()) {
-      console.log("Webhook verified successfully");
-      return new Response(challenge, { status: 200 });
-    }
-    return new Response("Forbidden", { status: 403 });
-  }
-
-  // Handle incoming messages (POST from Meta)
+  // Handle incoming messages from Twilio (POST with form data)
   if (req.method === "POST") {
     try {
-      const body = await req.json();
-      const entry = body?.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
+      const contentType = req.headers.get("content-type") || "";
 
-      // Process only message events
-      if (value?.messages) {
-        for (const message of value.messages) {
-          const phoneNumber = message.from;
-          const text = message.text?.body || "";
+      let phoneNumber = "";
+      let text = "";
 
-          if (text) {
-            await processMessage(phoneNumber, text);
-          }
-        }
+      if (contentType.includes("application/x-www-form-urlencoded")) {
+        // Twilio sends form-encoded data
+        const formData = await req.formData();
+        const from = formData.get("From")?.toString() || "";
+        // Twilio format: "whatsapp:+447..." — strip the prefix
+        phoneNumber = from.replace("whatsapp:", "");
+        text = formData.get("Body")?.toString() || "";
+      } else {
+        // Fallback: JSON body (e.g. for testing)
+        const body = await req.json();
+        phoneNumber = body.from || body.From || "";
+        text = body.body || body.Body || "";
+        phoneNumber = phoneNumber.replace("whatsapp:", "");
       }
 
-      return new Response(JSON.stringify({ status: "ok" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      if (phoneNumber && text) {
+        await processMessage(phoneNumber, text);
+      }
+
+      // Twilio expects a TwiML response (empty is fine for no immediate reply)
+      return new Response(
+        '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+        {
+          headers: { ...corsHeaders, "Content-Type": "text/xml" },
+        }
+      );
     } catch (error) {
       console.error("Webhook error:", error);
-      return new Response(JSON.stringify({ error: "Internal error" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+        {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "text/xml" },
+        }
+      );
     }
   }
 
