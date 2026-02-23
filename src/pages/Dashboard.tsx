@@ -94,7 +94,7 @@ const Dashboard = () => {
             Add another child
           </Button>
           <Button
-            onClick={() => window.open("https://wa.me/14155238886?text=join%20<your-sandbox-keyword>", "_blank")}
+            onClick={() => window.open("https://wa.me/14155238886?text=join%20cannot-printed", "_blank")}
             className="rounded-full font-cta font-bold"
           >
             <MessageCircle className="w-4 h-4 mr-2" />
