@@ -144,14 +144,19 @@ interface IntentResult {
 
 async function classifyIntent(
   userMessage: string,
-  availableOptions: Array<{ keyword: string; label: string; next_step: string }>
+  availableOptions: Array<{ keyword: string; label: string; next_step: string }>,
+  recentHistory: Array<{ role: string; content: string }> = []
 ): Promise<IntentResult> {
   const optionDescriptions = availableOptions
     .map((o) => `- "${o.keyword}" (${o.label}) → step: ${o.next_step}`)
     .join("\n");
 
-  const systemPrompt = `You are Monty, a friendly school assistant WhatsApp bot. Your job is to classify a parent's message into one of the available menu options.
+  const historyContext = recentHistory.length > 0
+    ? `\nRecent conversation:\n${recentHistory.map((m) => `${m.role}: ${m.content}`).join("\n")}\n`
+    : "";
 
+  const systemPrompt = `You are Monty, a friendly school assistant WhatsApp bot. Your job is to classify a parent's message into one of the available menu options.
+${historyContext}
 Available options:
 ${optionDescriptions}
 
@@ -161,6 +166,7 @@ Rules:
 - If the message is a greeting (hi, hello, hey), return {"intent": "greeting", "confidence": 0.9}
 - If the message doesn't match any option, return {"intent": "unknown", "confidence": 0.0}
 - Be generous in matching — "what's happening this week" should match events, "PE kit" should match reminders, "lunch" or "food" should match lunch menu, "call school" or "phone number" should match contact
+- Use conversation history for context — e.g. "tell me more", "what else", "go back" should be understood in context
 - Do NOT add any other text, just the JSON`;
 
   try {
@@ -209,6 +215,22 @@ Rules:
 
 // ── Core message processing ─────────────────────────────────────────
 
+async function getRecentHistory(conversationId: string, limit = 6): Promise<Array<{ role: string; content: string }>> {
+  const { data } = await supabase
+    .from("messages")
+    .select("direction, content")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (!data) return [];
+
+  return data.reverse().map((m) => ({
+    role: m.direction === "inbound" ? "user" : "assistant",
+    content: m.content,
+  }));
+}
+
 async function processMessage(phoneNumber: string, incomingText: string) {
   const conversation = await getOrCreateConversation(phoneNumber);
   await logMessage(conversation.id, "inbound", incomingText);
@@ -229,22 +251,20 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     (opt) => opt.keyword?.toLowerCase() === userInput
   );
 
-  // If no exact match, use AI to understand the intent
+  // If no exact match, use AI with conversation history
   if (!matchedOption && options.length > 0 && userInput.length > 0) {
     console.log(`No exact match for "${userInput}", using AI classification...`);
-    const aiResult = await classifyIntent(userInput, options);
+    const recentHistory = await getRecentHistory(conversation.id);
+    const aiResult = await classifyIntent(userInput, options, recentHistory);
     console.log(`AI classified as: ${aiResult.intent} (confidence: ${aiResult.confidence})`);
 
     if (aiResult.confidence >= 0.6 && aiResult.intent !== "unknown") {
-      // Handle greetings — just re-show the current menu
       if (aiResult.intent === "greeting") {
         const greetingReply = `Hey there! 👋 Here's what I can help with:\n\n${flowStep.message_template}`;
         await sendWhatsAppMessage(phoneNumber, greetingReply);
         await logMessage(conversation.id, "outbound", greetingReply);
         return;
       }
-
-      // Find the option that matches the AI's classified intent
       matchedOption = options.find((opt) => opt.next_step === aiResult.intent);
     }
   }
@@ -260,11 +280,15 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     return;
   }
 
-  // Update conversation state
+  // Update conversation state with history summary
+  const ctx = conversation.context as Record<string, unknown> || {};
+  const history = Array.isArray(ctx.recent_topics) ? ctx.recent_topics as string[] : [];
+  if (nextStep !== conversation.current_step) history.push(nextStep);
   const updatedContext = {
-    ...(conversation.context as Record<string, unknown>),
+    ...ctx,
     last_input: incomingText,
     last_step: conversation.current_step,
+    recent_topics: history.slice(-5),
   };
 
   await supabase
