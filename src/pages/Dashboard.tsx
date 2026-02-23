@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Sparkles, Plus, Settings, LogOut, Trash2, MessageCircle, Bot } from "lucide-react";
+import { Sparkles, Plus, Settings, LogOut, Trash2, MessageCircle, Bot, Calendar } from "lucide-react";
 import { useAdmin } from "@/hooks/use-admin";
 
 interface ChildWithSchool {
@@ -60,9 +60,14 @@ const Dashboard = () => {
         </div>
         <div className="flex items-center gap-2">
           {isAdmin && (
-            <Link to="/bot-flows">
-              <Button variant="ghost" size="icon"><Bot className="w-4 h-4" /></Button>
-            </Link>
+            <>
+              <Link to="/bot-flows">
+                <Button variant="ghost" size="icon"><Bot className="w-4 h-4" /></Button>
+              </Link>
+              <Link to="/calendar-feeds">
+                <Button variant="ghost" size="icon"><Calendar className="w-4 h-4" /></Button>
+              </Link>
+            </>
           )}
           <Link to="/settings">
             <Button variant="ghost" size="icon"><Settings className="w-4 h-4" /></Button>

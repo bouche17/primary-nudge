@@ -89,6 +89,51 @@ async function logMessage(
   });
 }
 
+// Build a dynamic events message from the school_events table
+async function buildEventsMessage(conversation: Record<string, unknown>): Promise<string | null> {
+  // Try to find the user's school via profiles + children
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("phone_number", conversation.phone_number as string)
+    .maybeSingle();
+
+  let schoolFilter: string | null = null;
+  if (profile) {
+    const { data: child } = await supabase
+      .from("children")
+      .select("school_id")
+      .eq("parent_id", profile.user_id)
+      .limit(1)
+      .maybeSingle();
+    if (child) schoolFilter = child.school_id;
+  }
+
+  let query = supabase
+    .from("school_events")
+    .select("title, start_at, all_day, location")
+    .gte("start_at", new Date().toISOString())
+    .order("start_at", { ascending: true })
+    .limit(5);
+
+  if (schoolFilter) {
+    query = query.eq("school_id", schoolFilter);
+  }
+
+  const { data: events } = await query;
+
+  if (!events || events.length === 0) return null;
+
+  const lines = events.map((e) => {
+    const d = new Date(e.start_at);
+    const dateStr = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+    const loc = e.location ? ` — ${e.location}` : "";
+    return `📅 *${e.title}* — ${dateStr}${loc}`;
+  });
+
+  return `Here are the upcoming events:\n\n${lines.join("\n")}\n\n1️⃣ Back to main menu`;
+}
+
 // Process incoming message through bot flow
 async function processMessage(phoneNumber: string, incomingText: string) {
   const conversation = await getOrCreateConversation(phoneNumber);
@@ -100,7 +145,6 @@ async function processMessage(phoneNumber: string, incomingText: string) {
   const flowStep = await getBotFlowStep(conversation.current_step);
 
   if (!flowStep) {
-    // No flow defined yet — send a default reply
     const defaultReply = "Thanks for your message! We'll get back to you soon.";
     await sendWhatsAppMessage(phoneNumber, defaultReply);
     await logMessage(conversation.id, "outbound", defaultReply);
@@ -128,9 +172,20 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     .update({ current_step: nextStep, context: updatedContext })
     .eq("id", conversation.id);
 
-  // Get the next step's message
-  const nextFlowStep = await getBotFlowStep(nextStep);
-  const replyText = nextFlowStep?.message_template || "Thank you!";
+  // For the "events" step, try to serve live calendar data
+  let replyText: string | undefined;
+  if (nextStep === "events") {
+    const dynamicEvents = await buildEventsMessage(conversation);
+    if (dynamicEvents) {
+      replyText = dynamicEvents;
+    }
+  }
+
+  // Fall back to the flow template
+  if (!replyText) {
+    const nextFlowStep = await getBotFlowStep(nextStep);
+    replyText = nextFlowStep?.message_template || "Thank you!";
+  }
 
   await sendWhatsAppMessage(phoneNumber, replyText);
   await logMessage(conversation.id, "outbound", replyText);
