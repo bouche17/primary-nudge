@@ -31,13 +31,13 @@ const Hero = () => {
           <motion.div
             initial={{ opacity: 0, x: -30 }}
             animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.6 }}
-          >
+            transition={{ duration: 0.6 }}>
+
             <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-secondary text-secondary-foreground text-sm font-semibold mb-6">
               <span className="w-2 h-2 rounded-full bg-primary animate-pulse-soft" />
               AI-powered school reminders
             </span>
-            <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-foreground leading-tight mb-6" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-black text-foreground leading-tight mb-6 font-sans">
               Never forget
               <span className="text-primary"> PE kit day</span> again
             </h1>
@@ -48,8 +48,8 @@ const Hero = () => {
               <Link to="/signup">
                 <Button
                   size="lg"
-                  className="rounded-full font-cta font-bold text-base px-8 py-6"
-                >
+                  className="rounded-full font-cta font-bold text-base px-8 py-6">
+
                   <Sparkles className="w-5 h-5 mr-2" />
                   Get started free
                 </Button>
@@ -57,8 +57,8 @@ const Hero = () => {
               <Button
                 variant="ghost"
                 size="lg"
-                className="rounded-full font-cta font-semibold text-base px-8 py-6 text-muted-foreground"
-              >
+                className="rounded-full font-cta font-semibold text-base px-8 py-6 text-muted-foreground">
+
                 See how it works
                 <ArrowRight className="w-4 h-4 ml-2" />
               </Button>
@@ -72,14 +72,14 @@ const Hero = () => {
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.2 }}
-            className="animate-float"
-          >
+            className="animate-float">
+
             <ChatMockup />
           </motion.div>
         </div>
       </div>
-    </section>
-  );
+    </section>);
+
 };
 
 export default Hero;
