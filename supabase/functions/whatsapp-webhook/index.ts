@@ -14,8 +14,10 @@ const supabase = createClient(
 const TWILIO_ACCOUNT_SID = () => Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = () => Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = () => Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const LOVABLE_API_KEY = () => Deno.env.get("LOVABLE_API_KEY")!;
 
-// Send a WhatsApp message via Twilio
+// ── Twilio helpers ──────────────────────────────────────────────────
+
 async function sendWhatsAppMessage(to: string, text: string) {
   const accountSid = TWILIO_ACCOUNT_SID();
   const authToken = TWILIO_AUTH_TOKEN();
@@ -44,7 +46,8 @@ async function sendWhatsAppMessage(to: string, text: string) {
   return res;
 }
 
-// Get or create a conversation for this phone number
+// ── Database helpers ────────────────────────────────────────────────
+
 async function getOrCreateConversation(phoneNumber: string) {
   const { data: existing } = await supabase
     .from("conversations")
@@ -64,7 +67,6 @@ async function getOrCreateConversation(phoneNumber: string) {
   return created;
 }
 
-// Get the bot flow step
 async function getBotFlowStep(stepName: string) {
   const { data } = await supabase
     .from("bot_flows")
@@ -74,7 +76,6 @@ async function getBotFlowStep(stepName: string) {
   return data;
 }
 
-// Log a message
 async function logMessage(
   conversationId: string,
   direction: string,
@@ -89,9 +90,9 @@ async function logMessage(
   });
 }
 
-// Build a dynamic events message from the school_events table
+// ── Dynamic content builders ────────────────────────────────────────
+
 async function buildEventsMessage(conversation: Record<string, unknown>): Promise<string | null> {
-  // Try to find the user's school via profiles + children
   const { data: profile } = await supabase
     .from("profiles")
     .select("user_id")
@@ -134,14 +135,84 @@ async function buildEventsMessage(conversation: Record<string, unknown>): Promis
   return `Here are the upcoming events:\n\n${lines.join("\n")}\n\n1️⃣ Back to main menu`;
 }
 
-// Process incoming message through bot flow
+// ── AI Intent Classification ────────────────────────────────────────
+
+interface IntentResult {
+  intent: string;      // matched step_name or "unknown"
+  confidence: number;  // 0-1
+}
+
+async function classifyIntent(
+  userMessage: string,
+  availableOptions: Array<{ keyword: string; label: string; next_step: string }>
+): Promise<IntentResult> {
+  const optionDescriptions = availableOptions
+    .map((o) => `- "${o.keyword}" (${o.label}) → step: ${o.next_step}`)
+    .join("\n");
+
+  const systemPrompt = `You are Monty, a friendly school assistant WhatsApp bot. Your job is to classify a parent's message into one of the available menu options.
+
+Available options:
+${optionDescriptions}
+
+Rules:
+- Respond with ONLY a JSON object: {"intent": "<next_step>", "confidence": <0.0-1.0>}
+- If the message clearly matches an option, return that option's next_step with high confidence
+- If the message is a greeting (hi, hello, hey), return {"intent": "greeting", "confidence": 0.9}
+- If the message doesn't match any option, return {"intent": "unknown", "confidence": 0.0}
+- Be generous in matching — "what's happening this week" should match events, "PE kit" should match reminders, "lunch" or "food" should match lunch menu, "call school" or "phone number" should match contact
+- Do NOT add any other text, just the JSON`;
+
+  try {
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${LOVABLE_API_KEY()}`,
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.1,
+        max_tokens: 100,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("AI Gateway error:", await res.text());
+      return { intent: "unknown", confidence: 0 };
+    }
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content?.trim() || "";
+
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = raw.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) {
+      console.error("AI returned non-JSON:", raw);
+      return { intent: "unknown", confidence: 0 };
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      intent: parsed.intent || "unknown",
+      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
+    };
+  } catch (err) {
+    console.error("AI classification error:", err);
+    return { intent: "unknown", confidence: 0 };
+  }
+}
+
+// ── Core message processing ─────────────────────────────────────────
+
 async function processMessage(phoneNumber: string, incomingText: string) {
   const conversation = await getOrCreateConversation(phoneNumber);
-  
-  // Log inbound message
   await logMessage(conversation.id, "inbound", incomingText);
 
-  // Get current flow step
   const flowStep = await getBotFlowStep(conversation.current_step);
 
   if (!flowStep) {
@@ -151,16 +222,45 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     return;
   }
 
-  // Check if user input matches an option
+  // Try exact keyword match first (fast path)
   const options = (flowStep.options as Array<{ keyword: string; next_step: string; label: string }>) || [];
   const userInput = incomingText.trim().toLowerCase();
-  const matchedOption = options.find(
+  let matchedOption = options.find(
     (opt) => opt.keyword?.toLowerCase() === userInput
   );
 
+  // If no exact match, use AI to understand the intent
+  if (!matchedOption && options.length > 0 && userInput.length > 0) {
+    console.log(`No exact match for "${userInput}", using AI classification...`);
+    const aiResult = await classifyIntent(userInput, options);
+    console.log(`AI classified as: ${aiResult.intent} (confidence: ${aiResult.confidence})`);
+
+    if (aiResult.confidence >= 0.6 && aiResult.intent !== "unknown") {
+      // Handle greetings — just re-show the current menu
+      if (aiResult.intent === "greeting") {
+        const greetingReply = `Hey there! 👋 Here's what I can help with:\n\n${flowStep.message_template}`;
+        await sendWhatsAppMessage(phoneNumber, greetingReply);
+        await logMessage(conversation.id, "outbound", greetingReply);
+        return;
+      }
+
+      // Find the option that matches the AI's classified intent
+      matchedOption = options.find((opt) => opt.next_step === aiResult.intent);
+    }
+  }
+
   let nextStep = matchedOption?.next_step || flowStep.next_step || conversation.current_step;
 
-  // Update conversation context and step
+  // If still no match and it's not a navigation step, send a friendly nudge
+  if (!matchedOption && !flowStep.next_step && options.length > 0) {
+    const optionLabels = options.map((o) => `${o.keyword}️⃣ ${o.label}`).join("\n");
+    const nudge = `Hmm, I didn't quite catch that 🤔\n\nHere's what I can help with:\n${optionLabels}\n\nJust type a number or tell me what you need!`;
+    await sendWhatsAppMessage(phoneNumber, nudge);
+    await logMessage(conversation.id, "outbound", nudge);
+    return;
+  }
+
+  // Update conversation state
   const updatedContext = {
     ...(conversation.context as Record<string, unknown>),
     last_input: incomingText,
@@ -172,16 +272,13 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     .update({ current_step: nextStep, context: updatedContext })
     .eq("id", conversation.id);
 
-  // For the "events" step, try to serve live calendar data
+  // Build reply — dynamic for events, template for everything else
   let replyText: string | undefined;
   if (nextStep === "events") {
     const dynamicEvents = await buildEventsMessage(conversation);
-    if (dynamicEvents) {
-      replyText = dynamicEvents;
-    }
+    if (dynamicEvents) replyText = dynamicEvents;
   }
 
-  // Fall back to the flow template
   if (!replyText) {
     const nextFlowStep = await getBotFlowStep(nextStep);
     replyText = nextFlowStep?.message_template || "Thank you!";
@@ -191,29 +288,25 @@ async function processMessage(phoneNumber: string, incomingText: string) {
   await logMessage(conversation.id, "outbound", replyText);
 }
 
+// ── HTTP handler ────────────────────────────────────────────────────
+
 Deno.serve(async (req: Request) => {
-  // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Handle incoming messages from Twilio (POST with form data)
   if (req.method === "POST") {
     try {
       const contentType = req.headers.get("content-type") || "";
-
       let phoneNumber = "";
       let text = "";
 
       if (contentType.includes("application/x-www-form-urlencoded")) {
-        // Twilio sends form-encoded data
         const formData = await req.formData();
         const from = formData.get("From")?.toString() || "";
-        // Twilio format: "whatsapp:+447..." — strip the prefix
         phoneNumber = from.replace("whatsapp:", "");
         text = formData.get("Body")?.toString() || "";
       } else {
-        // Fallback: JSON body (e.g. for testing)
         const body = await req.json();
         phoneNumber = body.from || body.From || "";
         text = body.body || body.Body || "";
@@ -224,21 +317,15 @@ Deno.serve(async (req: Request) => {
         await processMessage(phoneNumber, text);
       }
 
-      // Twilio expects a TwiML response (empty is fine for no immediate reply)
       return new Response(
         '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-        {
-          headers: { ...corsHeaders, "Content-Type": "text/xml" },
-        }
+        { headers: { ...corsHeaders, "Content-Type": "text/xml" } }
       );
     } catch (error) {
       console.error("Webhook error:", error);
       return new Response(
         '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "text/xml" },
-        }
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "text/xml" } }
       );
     }
   }
