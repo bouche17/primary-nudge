@@ -284,6 +284,53 @@ export type Database = {
           },
         ]
       }
+      school_reminders: {
+        Row: {
+          active: boolean | null
+          created_at: string
+          day_of_week: string | null
+          due_date: string | null
+          emoji: string | null
+          id: string
+          school_id: string | null
+          sort_order: number | null
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean | null
+          created_at?: string
+          day_of_week?: string | null
+          due_date?: string | null
+          emoji?: string | null
+          id?: string
+          school_id?: string | null
+          sort_order?: number | null
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean | null
+          created_at?: string
+          day_of_week?: string | null
+          due_date?: string | null
+          emoji?: string | null
+          id?: string
+          school_id?: string | null
+          sort_order?: number | null
+          title?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_reminders_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       schools: {
         Row: {
           address: string | null
