@@ -47,7 +47,7 @@ const Login = () => {
             </div>
             <span className="font-heading font-black text-xl text-foreground">Monty</span>
           </Link>
-          <h1 className="text-2xl font-sans font-black text-foreground">Welcome back</h1>
+          <h1 className="text-2xl font-black text-foreground" style={{ fontFamily: "'DM Sans', sans-serif" }}>Welcome back</h1>
           <p className="text-muted-foreground mt-1">Log in to manage your reminders</p>
         </div>
 
