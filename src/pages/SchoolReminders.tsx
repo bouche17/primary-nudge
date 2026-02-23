@@ -70,7 +70,7 @@ const SchoolReminders = () => {
       toast({ title: "Access denied", description: "Admin privileges required.", variant: "destructive" });
       navigate("/dashboard");
     }
-  }, [user, loading, adminLoading, isAdmin, navigate]);
+  }, [user, loading, adminLoading, isAdmin, navigate, toast]);
 
   const fetchData = async () => {
     const [remindersRes, schoolsRes] = await Promise.all([
