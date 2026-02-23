@@ -192,6 +192,98 @@ export type Database = {
         }
         Relationships: []
       }
+      school_calendar_feeds: {
+        Row: {
+          created_at: string
+          feed_url: string
+          id: string
+          label: string | null
+          last_synced_at: string | null
+          school_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          feed_url: string
+          id?: string
+          label?: string | null
+          last_synced_at?: string | null
+          school_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          feed_url?: string
+          id?: string
+          label?: string | null
+          last_synced_at?: string | null
+          school_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_calendar_feeds_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      school_events: {
+        Row: {
+          all_day: boolean | null
+          created_at: string
+          description: string | null
+          end_at: string | null
+          feed_id: string | null
+          id: string
+          location: string | null
+          school_id: string | null
+          start_at: string
+          title: string
+          uid: string | null
+        }
+        Insert: {
+          all_day?: boolean | null
+          created_at?: string
+          description?: string | null
+          end_at?: string | null
+          feed_id?: string | null
+          id?: string
+          location?: string | null
+          school_id?: string | null
+          start_at: string
+          title: string
+          uid?: string | null
+        }
+        Update: {
+          all_day?: boolean | null
+          created_at?: string
+          description?: string | null
+          end_at?: string | null
+          feed_id?: string | null
+          id?: string
+          location?: string | null
+          school_id?: string | null
+          start_at?: string
+          title?: string
+          uid?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_events_feed_id_fkey"
+            columns: ["feed_id"]
+            isOneToOne: false
+            referencedRelation: "school_calendar_feeds"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "school_events_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       schools: {
         Row: {
           address: string | null

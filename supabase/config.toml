@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.import-schools]
 verify_jwt = false
+
+[functions.sync-calendar]
+verify_jwt = false
