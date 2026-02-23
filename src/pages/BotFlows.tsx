@@ -17,6 +17,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import type { Json } from "@/integrations/supabase/types";
+import { useAdmin } from "@/hooks/use-admin";
 
 interface BotFlowOption {
   keyword: string;
@@ -41,6 +42,7 @@ function parseOptions(raw: Json | null): BotFlowOption[] {
 
 const BotFlows = () => {
   const { user, loading } = useAuth();
+  const { isAdmin, loading: adminLoading } = useAdmin();
   const navigate = useNavigate();
   const { toast } = useToast();
   const [flows, setFlows] = useState<BotFlow[]>([]);
@@ -49,7 +51,11 @@ const BotFlows = () => {
 
   useEffect(() => {
     if (!loading && !user) navigate("/login");
-  }, [user, loading, navigate]);
+    if (!loading && !adminLoading && user && !isAdmin) {
+      toast({ title: "Access denied", description: "You need admin privileges to access this page.", variant: "destructive" });
+      navigate("/dashboard");
+    }
+  }, [user, loading, adminLoading, isAdmin, navigate]);
 
   const fetchFlows = async () => {
     const { data, error } = await supabase
@@ -157,7 +163,7 @@ const BotFlows = () => {
     toast({ title: "Step deleted" });
   };
 
-  if (loading) return null;
+  if (loading || adminLoading) return null;
 
   return (
     <div className="min-h-screen bg-background">

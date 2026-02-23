@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Sparkles, Plus, Settings, LogOut, Trash2, MessageCircle, Bot } from "lucide-react";
+import { useAdmin } from "@/hooks/use-admin";
 
 interface ChildWithSchool {
   id: string;
@@ -15,6 +16,7 @@ interface ChildWithSchool {
 
 const Dashboard = () => {
   const { user, loading, signOut } = useAuth();
+  const { isAdmin } = useAdmin();
   const navigate = useNavigate();
   const [children, setChildren] = useState<ChildWithSchool[]>([]);
   const { toast } = useToast();
@@ -57,9 +59,11 @@ const Dashboard = () => {
           <span className="font-heading font-black text-lg text-foreground">Monty</span>
         </div>
         <div className="flex items-center gap-2">
-          <Link to="/bot-flows">
-            <Button variant="ghost" size="icon"><Bot className="w-4 h-4" /></Button>
-          </Link>
+          {isAdmin && (
+            <Link to="/bot-flows">
+              <Button variant="ghost" size="icon"><Bot className="w-4 h-4" /></Button>
+            </Link>
+          )}
           <Link to="/settings">
             <Button variant="ghost" size="icon"><Settings className="w-4 h-4" /></Button>
           </Link>
