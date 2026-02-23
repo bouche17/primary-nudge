@@ -135,6 +135,55 @@ async function buildEventsMessage(conversation: Record<string, unknown>): Promis
   return `Here are the upcoming events:\n\n${lines.join("\n")}\n\n1️⃣ Back to main menu`;
 }
 
+async function buildRemindersMessage(conversation: Record<string, unknown>): Promise<string | null> {
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("phone_number", conversation.phone_number as string)
+    .maybeSingle();
+
+  let schoolId: string | null = null;
+  if (profile) {
+    const { data: child } = await supabase
+      .from("children")
+      .select("school_id")
+      .eq("parent_id", profile.user_id)
+      .limit(1)
+      .maybeSingle();
+    if (child) schoolId = child.school_id;
+  }
+
+  // Fetch school-specific reminders, falling back to global ones (school_id IS NULL)
+  let query = supabase
+    .from("school_reminders")
+    .select("title, day_of_week, due_date, emoji")
+    .eq("active", true)
+    .order("sort_order", { ascending: true })
+    .limit(10);
+
+  if (schoolId) {
+    query = query.or(`school_id.eq.${schoolId},school_id.is.null`);
+  } else {
+    query = query.is("school_id", null);
+  }
+
+  const { data: reminders } = await query;
+
+  if (!reminders || reminders.length === 0) return null;
+
+  const lines = reminders.map((r) => {
+    const emoji = r.emoji || "✅";
+    const when = r.due_date
+      ? new Date(r.due_date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })
+      : r.day_of_week
+        ? `every *${r.day_of_week}*`
+        : "";
+    return `${emoji} ${r.title}${when ? ` — ${when}` : ""}`;
+  });
+
+  return `Here are your reminders 🔔:\n\n${lines.join("\n")}\n\nAnything else?\n\n1️⃣ Back to main menu\n2️⃣ Contact school`;
+}
+
 // ── AI Intent Classification ────────────────────────────────────────
 
 interface IntentResult {
@@ -296,11 +345,14 @@ async function processMessage(phoneNumber: string, incomingText: string) {
     .update({ current_step: nextStep, context: updatedContext })
     .eq("id", conversation.id);
 
-  // Build reply — dynamic for events, template for everything else
+  // Build reply — dynamic for events & reminders, template for everything else
   let replyText: string | undefined;
   if (nextStep === "events") {
     const dynamicEvents = await buildEventsMessage(conversation);
     if (dynamicEvents) replyText = dynamicEvents;
+  } else if (nextStep === "reminders") {
+    const dynamicReminders = await buildRemindersMessage(conversation);
+    if (dynamicReminders) replyText = dynamicReminders;
   }
 
   if (!replyText) {
