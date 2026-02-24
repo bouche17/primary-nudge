@@ -92,23 +92,30 @@ async function logMessage(
 
 // ── Dynamic content builders ────────────────────────────────────────
 
-async function buildEventsMessage(conversation: Record<string, unknown>): Promise<string | null> {
+async function getChildSchoolForPhone(phoneNumber: string) {
   const { data: profile } = await supabase
     .from("profiles")
     .select("user_id")
-    .eq("phone_number", conversation.phone_number as string)
+    .eq("phone_number", phoneNumber)
     .maybeSingle();
 
-  let schoolFilter: string | null = null;
-  if (profile) {
-    const { data: child } = await supabase
-      .from("children")
-      .select("school_id")
-      .eq("parent_id", profile.user_id)
-      .limit(1)
-      .maybeSingle();
-    if (child) schoolFilter = child.school_id;
-  }
+  if (!profile) return { schoolId: null, childName: null };
+
+  const { data: child } = await supabase
+    .from("children")
+    .select("school_id, first_name")
+    .eq("parent_id", profile.user_id)
+    .limit(1)
+    .maybeSingle();
+
+  return {
+    schoolId: child?.school_id || null,
+    childName: child?.first_name || null,
+  };
+}
+
+async function buildEventsMessage(phoneNumber: string): Promise<string | null> {
+  const { schoolId } = await getChildSchoolForPhone(phoneNumber);
 
   let query = supabase
     .from("school_events")
@@ -117,12 +124,9 @@ async function buildEventsMessage(conversation: Record<string, unknown>): Promis
     .order("start_at", { ascending: true })
     .limit(5);
 
-  if (schoolFilter) {
-    query = query.eq("school_id", schoolFilter);
-  }
+  if (schoolId) query = query.eq("school_id", schoolId);
 
   const { data: events } = await query;
-
   if (!events || events.length === 0) return null;
 
   const lines = events.map((e) => {
@@ -135,25 +139,9 @@ async function buildEventsMessage(conversation: Record<string, unknown>): Promis
   return `Here are the upcoming events:\n\n${lines.join("\n")}\n\n1️⃣ Back to main menu`;
 }
 
-async function buildRemindersMessage(conversation: Record<string, unknown>): Promise<string | null> {
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("user_id")
-    .eq("phone_number", conversation.phone_number as string)
-    .maybeSingle();
+async function buildRemindersMessage(phoneNumber: string): Promise<string | null> {
+  const { schoolId } = await getChildSchoolForPhone(phoneNumber);
 
-  let schoolId: string | null = null;
-  if (profile) {
-    const { data: child } = await supabase
-      .from("children")
-      .select("school_id")
-      .eq("parent_id", profile.user_id)
-      .limit(1)
-      .maybeSingle();
-    if (child) schoolId = child.school_id;
-  }
-
-  // Fetch school-specific reminders, falling back to global ones (school_id IS NULL)
   let query = supabase
     .from("school_reminders")
     .select("title, day_of_week, due_date, emoji")
@@ -168,7 +156,6 @@ async function buildRemindersMessage(conversation: Record<string, unknown>): Pro
   }
 
   const { data: reminders } = await query;
-
   if (!reminders || reminders.length === 0) return null;
 
   const lines = reminders.map((r) => {
@@ -184,11 +171,139 @@ async function buildRemindersMessage(conversation: Record<string, unknown>): Pro
   return `Here are your reminders 🔔:\n\n${lines.join("\n")}\n\nAnything else?\n\n1️⃣ Back to main menu\n2️⃣ Contact school`;
 }
 
+// ── Forwarded message / note extraction ─────────────────────────────
+
+function isForwardedOrLong(text: string): boolean {
+  const lower = text.toLowerCase();
+  // WhatsApp forwarded messages or long school emails/letters
+  return (
+    lower.includes("forwarded") ||
+    lower.includes("------") ||
+    lower.includes("from:") ||
+    lower.includes("subject:") ||
+    lower.includes("dear parent") ||
+    lower.includes("dear carer") ||
+    text.length > 300
+  );
+}
+
+async function extractAndStoreNote(phoneNumber: string, rawContent: string): Promise<string> {
+  const today = new Date().toISOString().split("T")[0];
+  const { childName } = await getChildSchoolForPhone(phoneNumber);
+  const name = childName || "your child";
+
+  try {
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${LOVABLE_API_KEY()}`,
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [
+          {
+            role: "system",
+            content: `You are Monty, a friendly school assistant. A parent has forwarded you a message from their child's school. Today's date is ${today}.
+
+Extract the key information and return ONLY a JSON object with:
+{
+  "summary": "Brief 1-sentence summary of what it's about",
+  "dates": [{"date": "YYYY-MM-DD", "label": "what's happening"}],
+  "actions": [{"action": "what the parent needs to do", "by_date": "YYYY-MM-DD or null"}]
+}
+
+Be generous with dates — if something says "next Monday" work it out from today. If no dates found, return empty arrays.`,
+          },
+          { role: "user", content: rawContent },
+        ],
+        temperature: 0.1,
+        max_tokens: 500,
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("AI extraction error:", await res.text());
+      // Still store the raw content even if AI fails
+      await supabase.from("parent_notes").insert({
+        phone_number: phoneNumber,
+        raw_content: rawContent,
+        summary: "Forwarded message (processing failed)",
+        source_type: "forwarded",
+      });
+      return `Thanks for forwarding that! 📩 I've saved it but couldn't quite parse all the details. I'll keep it on file for you. Need anything else?\n\n1️⃣ Back to main menu`;
+    }
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content?.trim() || "";
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+
+    let summary = "Forwarded message";
+    let dates: Array<{ date: string; label: string }> = [];
+    let actions: Array<{ action: string; by_date: string | null }> = [];
+
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      summary = parsed.summary || summary;
+      dates = parsed.dates || [];
+      actions = parsed.actions || [];
+    }
+
+    await supabase.from("parent_notes").insert({
+      phone_number: phoneNumber,
+      raw_content: rawContent,
+      summary,
+      extracted_dates: dates,
+      extracted_actions: actions,
+      source_type: "forwarded",
+    });
+
+    // Build a friendly response
+    let reply = `Got it! 📩 I've noted that down:\n\n📝 *${summary}*`;
+
+    if (dates.length > 0) {
+      reply += "\n\n📅 Key dates:";
+      for (const d of dates) {
+        const dateObj = new Date(d.date);
+        const niceDate = dateObj.toLocaleDateString("en-GB", {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+        });
+        reply += `\n  • ${d.label} — ${niceDate}`;
+      }
+      reply += "\n\nI'll remind you before each of these! ⏰";
+    }
+
+    if (actions.length > 0) {
+      reply += "\n\n✅ Things to do:";
+      for (const a of actions) {
+        const byDate = a.by_date
+          ? ` (by ${new Date(a.by_date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })})`
+          : "";
+        reply += `\n  • ${a.action}${byDate}`;
+      }
+    }
+
+    reply += `\n\nAnything else for ${name}? 😊\n\n1️⃣ Back to main menu`;
+    return reply;
+  } catch (err) {
+    console.error("Note extraction error:", err);
+    await supabase.from("parent_notes").insert({
+      phone_number: phoneNumber,
+      raw_content: rawContent,
+      summary: "Forwarded message",
+      source_type: "forwarded",
+    });
+    return `Thanks! 📩 I've saved that message. I'll keep it handy for you!\n\n1️⃣ Back to main menu`;
+  }
+}
+
 // ── AI Intent Classification ────────────────────────────────────────
 
 interface IntentResult {
-  intent: string;      // matched step_name or "unknown"
-  confidence: number;  // 0-1
+  intent: string;
+  confidence: number;
 }
 
 async function classifyIntent(
@@ -244,7 +359,6 @@ Rules:
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content?.trim() || "";
 
-    // Extract JSON from response (handle markdown code blocks)
     const jsonMatch = raw.match(/\{[\s\S]*?\}/);
     if (!jsonMatch) {
       console.error("AI returned non-JSON:", raw);
@@ -273,7 +387,6 @@ async function getRecentHistory(conversationId: string, limit = 6): Promise<Arra
     .limit(limit);
 
   if (!data) return [];
-
   return data.reverse().map((m) => ({
     role: m.direction === "inbound" ? "user" : "assistant",
     content: m.content,
@@ -283,6 +396,15 @@ async function getRecentHistory(conversationId: string, limit = 6): Promise<Arra
 async function processMessage(phoneNumber: string, incomingText: string) {
   const conversation = await getOrCreateConversation(phoneNumber);
   await logMessage(conversation.id, "inbound", incomingText);
+
+  // ── Check for forwarded messages first ──
+  if (isForwardedOrLong(incomingText)) {
+    console.log("Detected forwarded/long message, extracting notes...");
+    const reply = await extractAndStoreNote(phoneNumber, incomingText);
+    await sendWhatsAppMessage(phoneNumber, reply);
+    await logMessage(conversation.id, "outbound", reply);
+    return;
+  }
 
   const flowStep = await getBotFlowStep(conversation.current_step);
 
@@ -348,10 +470,10 @@ async function processMessage(phoneNumber: string, incomingText: string) {
   // Build reply — dynamic for events & reminders, template for everything else
   let replyText: string | undefined;
   if (nextStep === "events") {
-    const dynamicEvents = await buildEventsMessage(conversation);
+    const dynamicEvents = await buildEventsMessage(phoneNumber);
     if (dynamicEvents) replyText = dynamicEvents;
   } else if (nextStep === "reminders") {
-    const dynamicReminders = await buildRemindersMessage(conversation);
+    const dynamicReminders = await buildRemindersMessage(phoneNumber);
     if (dynamicReminders) replyText = dynamicReminders;
   }
 

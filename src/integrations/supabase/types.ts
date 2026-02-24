@@ -168,6 +168,39 @@ export type Database = {
           },
         ]
       }
+      parent_notes: {
+        Row: {
+          created_at: string | null
+          extracted_actions: Json | null
+          extracted_dates: Json | null
+          id: string
+          phone_number: string
+          raw_content: string
+          source_type: string
+          summary: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          extracted_actions?: Json | null
+          extracted_dates?: Json | null
+          id?: string
+          phone_number: string
+          raw_content: string
+          source_type?: string
+          summary?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          extracted_actions?: Json | null
+          extracted_dates?: Json | null
+          id?: string
+          phone_number?: string
+          raw_content?: string
+          source_type?: string
+          summary?: string | null
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
@@ -189,6 +222,36 @@ export type Database = {
           phone_number?: string | null
           updated_at?: string
           user_id?: string
+        }
+        Relationships: []
+      }
+      reminder_log: {
+        Row: {
+          id: string
+          period: string
+          phone_number: string
+          reference_id: string | null
+          reference_title: string | null
+          reminder_type: string
+          sent_at: string | null
+        }
+        Insert: {
+          id?: string
+          period: string
+          phone_number: string
+          reference_id?: string | null
+          reference_title?: string | null
+          reminder_type: string
+          sent_at?: string | null
+        }
+        Update: {
+          id?: string
+          period?: string
+          phone_number?: string
+          reference_id?: string | null
+          reference_title?: string | null
+          reminder_type?: string
+          sent_at?: string | null
         }
         Relationships: []
       }
