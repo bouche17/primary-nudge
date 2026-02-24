@@ -7,6 +7,13 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Sparkles,
   ArrowLeft,
   Plus,
@@ -14,12 +21,15 @@ import {
   RefreshCw,
   Calendar,
   Loader2,
+  Globe,
+  Rss,
 } from "lucide-react";
 
 interface CalendarFeed {
   id: string;
   school_id: string | null;
   feed_url: string;
+  feed_type: string;
   label: string;
   last_synced_at: string | null;
   created_at: string;
@@ -34,6 +44,7 @@ const CalendarFeeds = () => {
   const [feeds, setFeeds] = useState<CalendarFeed[]>([]);
   const [newUrl, setNewUrl] = useState("");
   const [newLabel, setNewLabel] = useState("");
+  const [newType, setNewType] = useState<string>("ical");
   const [syncing, setSyncing] = useState(false);
   const [adding, setAdding] = useState(false);
 
@@ -67,6 +78,7 @@ const CalendarFeeds = () => {
     const { error } = await supabase.from("school_calendar_feeds").insert({
       feed_url: newUrl.trim(),
       label: newLabel.trim() || "School Calendar",
+      feed_type: newType,
     });
     setAdding(false);
     if (error) {
@@ -74,6 +86,7 @@ const CalendarFeeds = () => {
     } else {
       setNewUrl("");
       setNewLabel("");
+      setNewType("ical");
       toast({ title: "Feed added ✓" });
       fetchFeeds();
     }
@@ -144,7 +157,20 @@ const CalendarFeeds = () => {
         {/* Add new feed */}
         <div className="bg-card rounded-2xl border border-border p-5 mb-6 space-y-3">
           <p className="text-sm font-semibold text-foreground">Add a calendar feed</p>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <Select value={newType} onValueChange={setNewType}>
+              <SelectTrigger className="w-32 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ical">
+                  <span className="flex items-center gap-1.5"><Rss className="w-3 h-3" /> iCal</span>
+                </SelectItem>
+                <SelectItem value="scrape">
+                  <span className="flex items-center gap-1.5"><Globe className="w-3 h-3" /> Scrape</span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               value={newLabel}
               onChange={(e) => setNewLabel(e.target.value)}
@@ -154,13 +180,18 @@ const CalendarFeeds = () => {
             <Input
               value={newUrl}
               onChange={(e) => setNewUrl(e.target.value)}
-              placeholder="https://calendar.google.com/...ical"
+              placeholder={newType === "scrape" ? "https://school.com/calendar" : "https://calendar.google.com/...ical"}
               className="flex-1 text-sm font-mono"
             />
             <Button onClick={addFeed} disabled={adding || !newUrl.trim()} size="sm" className="rounded-full">
               <Plus className="w-4 h-4 mr-1" /> Add
             </Button>
           </div>
+          {newType === "scrape" && (
+            <p className="text-xs text-muted-foreground">
+              Monty will fetch the page HTML and use AI to extract events automatically.
+            </p>
+          )}
         </div>
 
         {/* Feed list */}
@@ -171,7 +202,12 @@ const CalendarFeeds = () => {
               className="bg-card rounded-2xl border border-border px-5 py-4 flex items-center justify-between gap-4"
             >
               <div className="min-w-0 flex-1">
-                <p className="font-heading font-bold text-foreground text-sm">{feed.label}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-heading font-bold text-foreground text-sm">{feed.label}</p>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${feed.feed_type === "scrape" ? "bg-accent text-accent-foreground" : "bg-muted text-muted-foreground"}`}>
+                    {feed.feed_type === "scrape" ? "Scrape" : "iCal"}
+                  </span>
+                </div>
                 <p className="text-xs text-muted-foreground font-mono truncate">{feed.feed_url}</p>
                 {feed.last_synced_at && (
                   <p className="text-xs text-muted-foreground mt-1">

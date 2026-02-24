@@ -11,7 +11,7 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-// Minimal iCal parser — extracts VEVENT blocks
+// ── iCal parser ──────────────────────────────────────────────
 function parseIcal(ical: string) {
   const events: Array<{
     uid: string;
@@ -33,14 +33,13 @@ function parseIcal(ical: string) {
 
     const dtstart = get("DTSTART");
     const dtend = get("DTEND");
-    const allDay = dtstart.length === 8; // YYYYMMDD = all-day
+    const allDay = dtstart.length === 8;
 
     const parseDate = (d: string): string => {
       if (!d) return new Date().toISOString();
       if (d.length === 8) {
         return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T00:00:00Z`;
       }
-      // 20260306T100000Z or 20260306T100000
       const clean = d.replace(/Z$/, "");
       return `${clean.slice(0, 4)}-${clean.slice(4, 6)}-${clean.slice(6, 8)}T${clean.slice(9, 11)}:${clean.slice(11, 13)}:${clean.slice(13, 15)}Z`;
     };
@@ -55,17 +54,123 @@ function parseIcal(ical: string) {
       allDay,
     });
   }
-
   return events;
 }
 
+// ── HTML scraper + AI extraction ─────────────────────────────
+async function scrapeAndExtract(url: string): Promise<Array<{
+  uid: string;
+  title: string;
+  description: string;
+  location: string;
+  startAt: string;
+  endAt: string | null;
+  allDay: boolean;
+}>> {
+  console.log(`Fetching HTML from ${url}`);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  let html = await res.text();
+
+  // Trim to reduce token usage — keep only the <body> or first 30k chars
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+  if (bodyMatch) html = bodyMatch[1];
+  if (html.length > 30000) html = html.slice(0, 30000);
+
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  if (!LOVABLE_API_KEY) throw new Error("LOVABLE_API_KEY is not configured");
+
+  const currentYear = new Date().getFullYear();
+
+  const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        {
+          role: "system",
+          content: `You are an expert at extracting school calendar events from HTML. The current year is ${currentYear}. Extract ALL events you can find. For each event return title, date (ISO 8601), end_date (ISO 8601 or null), location (or empty string), description (or empty string), and all_day (boolean). If only a date with no time is given, set all_day to true and use T00:00:00Z. If a year is not specified, assume ${currentYear} for future months and ${currentYear + 1} if the month has already passed.`,
+        },
+        {
+          role: "user",
+          content: `Extract school events from this HTML:\n\n${html}`,
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "extract_events",
+            description: "Return extracted school calendar events",
+            parameters: {
+              type: "object",
+              properties: {
+                events: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      title: { type: "string" },
+                      date: { type: "string", description: "ISO 8601 start date" },
+                      end_date: { type: "string", description: "ISO 8601 end date or null" },
+                      location: { type: "string" },
+                      description: { type: "string" },
+                      all_day: { type: "boolean" },
+                    },
+                    required: ["title", "date", "all_day"],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ["events"],
+              additionalProperties: false,
+            },
+          },
+        },
+      ],
+      tool_choice: { type: "function", function: { name: "extract_events" } },
+    }),
+  });
+
+  if (!aiRes.ok) {
+    const errText = await aiRes.text();
+    console.error("AI gateway error:", aiRes.status, errText);
+    throw new Error(`AI extraction failed: ${aiRes.status}`);
+  }
+
+  const aiData = await aiRes.json();
+  const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
+  if (!toolCall) {
+    console.error("No tool call in AI response:", JSON.stringify(aiData));
+    throw new Error("AI did not return structured events");
+  }
+
+  const parsed = JSON.parse(toolCall.function.arguments);
+  const extracted = parsed.events || [];
+  console.log(`AI extracted ${extracted.length} events`);
+
+  return extracted.map((e: any, i: number) => ({
+    uid: `scraped-${i}-${Date.now()}`,
+    title: e.title || "Untitled",
+    description: e.description || "",
+    location: e.location || "",
+    startAt: e.date,
+    endAt: e.end_date || null,
+    allDay: e.all_day ?? true,
+  }));
+}
+
+// ── Main handler ─────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    // Fetch all calendar feeds
     const { data: feeds, error: feedErr } = await supabase
       .from("school_calendar_feeds")
       .select("*");
@@ -82,15 +187,31 @@ Deno.serve(async (req: Request) => {
 
     for (const feed of feeds) {
       try {
-        console.log(`Syncing feed: ${feed.label} (${feed.feed_url})`);
-        const res = await fetch(feed.feed_url);
-        if (!res.ok) {
-          console.error(`Failed to fetch feed ${feed.id}: ${res.status}`);
-          continue;
+        console.log(`Syncing feed: ${feed.label} (${feed.feed_url}) [${feed.feed_type}]`);
+
+        let events: Array<{
+          uid: string;
+          title: string;
+          description: string;
+          location: string;
+          startAt: string;
+          endAt: string | null;
+          allDay: boolean;
+        }>;
+
+        if (feed.feed_type === "scrape") {
+          events = await scrapeAndExtract(feed.feed_url);
+        } else {
+          // Default: iCal
+          const res = await fetch(feed.feed_url);
+          if (!res.ok) {
+            console.error(`Failed to fetch feed ${feed.id}: ${res.status}`);
+            continue;
+          }
+          const icalText = await res.text();
+          events = parseIcal(icalText);
         }
 
-        const icalText = await res.text();
-        const events = parseIcal(icalText);
         console.log(`Parsed ${events.length} events from feed ${feed.id}`);
 
         // Delete existing events for this feed and re-insert

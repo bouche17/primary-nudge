@@ -195,6 +195,7 @@ export type Database = {
       school_calendar_feeds: {
         Row: {
           created_at: string
+          feed_type: string
           feed_url: string
           id: string
           label: string | null
@@ -203,6 +204,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          feed_type?: string
           feed_url: string
           id?: string
           label?: string | null
@@ -211,6 +213,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          feed_type?: string
           feed_url?: string
           id?: string
           label?: string | null
