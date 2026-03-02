@@ -423,10 +423,22 @@ async function processMessage(phoneNumber: string, incomingText: string) {
   );
 
   // If no exact match, use AI with conversation history
-  if (!matchedOption && options.length > 0 && userInput.length > 0) {
+  // First try current step's options, then fall back to welcome menu so any topic is always reachable
+  if (!matchedOption && userInput.length > 0) {
     console.log(`No exact match for "${userInput}", using AI classification...`);
     const recentHistory = await getRecentHistory(conversation.id);
-    const aiResult = await classifyIntent(userInput, options, recentHistory);
+
+    // Gather all options: current step + welcome menu for full coverage
+    const welcomeStep = conversation.current_step !== "welcome" ? await getBotFlowStep("welcome") : null;
+    const welcomeOptions = (welcomeStep?.options as Array<{ keyword: string; next_step: string; label: string }>) || [];
+    const allOptions = [...options];
+    for (const wo of welcomeOptions) {
+      if (!allOptions.find((o) => o.next_step === wo.next_step)) {
+        allOptions.push(wo);
+      }
+    }
+
+    const aiResult = await classifyIntent(userInput, allOptions, recentHistory);
     console.log(`AI classified as: ${aiResult.intent} (confidence: ${aiResult.confidence})`);
 
     if (aiResult.confidence >= 0.6 && aiResult.intent !== "unknown") {
@@ -438,12 +450,11 @@ async function processMessage(phoneNumber: string, incomingText: string) {
           "Hi! 🙂 What do you need help with?",
         ];
         const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-        const greetingReply = greeting;
-        await sendWhatsAppMessage(phoneNumber, greetingReply);
-        await logMessage(conversation.id, "outbound", greetingReply);
+        await sendWhatsAppMessage(phoneNumber, greeting);
+        await logMessage(conversation.id, "outbound", greeting);
         return;
       }
-      matchedOption = options.find((opt) => opt.next_step === aiResult.intent);
+      matchedOption = allOptions.find((opt) => opt.next_step === aiResult.intent);
     }
   }
 
