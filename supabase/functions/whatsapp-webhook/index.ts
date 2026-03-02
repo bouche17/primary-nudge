@@ -431,7 +431,14 @@ async function processMessage(phoneNumber: string, incomingText: string) {
 
     if (aiResult.confidence >= 0.6 && aiResult.intent !== "unknown") {
       if (aiResult.intent === "greeting") {
-        const greetingReply = `Hey there! 👋 Here's what I can help with:\n\n${flowStep.message_template}`;
+        const greetings = [
+          "Hi there! 😊 How can I help today?",
+          "Hey! 👋 What can I do for you?",
+          "Hello! How can I help you today? 😊",
+          "Hi! 🙂 What do you need help with?",
+        ];
+        const greeting = greetings[Math.floor(Math.random() * greetings.length)];
+        const greetingReply = `${greeting}\n\n${flowStep.message_template}`;
         await sendWhatsAppMessage(phoneNumber, greetingReply);
         await logMessage(conversation.id, "outbound", greetingReply);
         return;
