@@ -438,7 +438,7 @@ async function processMessage(phoneNumber: string, incomingText: string) {
           "Hi! 🙂 What do you need help with?",
         ];
         const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-        const greetingReply = `${greeting}\n\n${flowStep.message_template}`;
+        const greetingReply = greeting;
         await sendWhatsAppMessage(phoneNumber, greetingReply);
         await logMessage(conversation.id, "outbound", greetingReply);
         return;
