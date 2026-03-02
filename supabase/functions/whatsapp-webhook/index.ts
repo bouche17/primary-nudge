@@ -329,7 +329,12 @@ Rules:
 - If the message clearly matches an option, return that option's next_step with high confidence
 - If the message is a greeting (hi, hello, hey), return {"intent": "greeting", "confidence": 0.9}
 - If the message doesn't match any option, return {"intent": "unknown", "confidence": 0.0}
-- Be generous in matching — "what's happening this week" should match events, "PE kit" should match reminders, "lunch" or "food" should match lunch menu, "call school" or "phone number" should match contact
+- Be VERY generous in matching — these should ALL match events: "what's happening this week", "what has [child] got on tomorrow", "any events coming up", "what's on at school", "what does my child have tomorrow", "anything happening next week"
+- These should match reminders: "PE kit", "what do I need to remember", "homework", "what does [child] need"
+- These should match lunch: "lunch", "food", "dinner", "menu", "meals"
+- These should match contact: "call school", "phone number", "email", "speak to someone"
+- Any question about what's happening at school, what a child has on, or upcoming dates → events
+- Any question about what to bring, prepare, or remember → reminders
 - Use conversation history for context — e.g. "tell me more", "what else", "go back" should be understood in context
 - Do NOT add any other text, just the JSON`;
 
