@@ -1,555 +1,331 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-};
+// ── Config ────────────────────────────────────────────────────────────────────
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const TWILIO_ACCOUNT_SID = () => Deno.env.get("TWILIO_ACCOUNT_SID")!;
-const TWILIO_AUTH_TOKEN = () => Deno.env.get("TWILIO_AUTH_TOKEN")!;
-const TWILIO_WHATSAPP_NUMBER = () => Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const LOVABLE_API_KEY = () => Deno.env.get("LOVABLE_API_KEY")!;
+const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
+const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
 
-// ── Twilio helpers ──────────────────────────────────────────────────
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-async function sendWhatsAppMessage(to: string, text: string) {
-  const accountSid = TWILIO_ACCOUNT_SID();
-  const authToken = TWILIO_AUTH_TOKEN();
-  const fromNumber = TWILIO_WHATSAPP_NUMBER();
+// ── Monty's Tone of Voice System Prompt ──────────────────────────────────────
 
-  const params = new URLSearchParams();
-  params.append("To", `whatsapp:${to}`);
-  params.append("From", `whatsapp:${fromNumber}`);
-  params.append("Body", text);
+function buildSystemPrompt(context: MontyContext): string {
+  const childrenSummary = context.children
+    .map((c) => `${c.first_name} (${c.year_group} at ${c.school_name})`)
+    .join(", ");
 
-  const res = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + btoa(`${accountSid}:${authToken}`),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: params.toString(),
-    }
-  );
+  const upcomingEventsSummary =
+    context.upcomingEvents.length > 0
+      ? context.upcomingEvents
+          .map((e) => {
+            const date = new Date(e.start_at).toLocaleDateString("en-GB", {
+              weekday: "long", day: "numeric", month: "long",
+            });
+            return `• ${e.title} — ${date}${e.school_name ? ` (${e.school_name})` : ""}`;
+          })
+          .join("\n")
+      : "No upcoming events in the next 14 days.";
 
-  if (!res.ok) {
-    console.error("Twilio API error:", await res.text());
-  }
-  return res;
+  const remindersSummary =
+    context.reminders.length > 0
+      ? context.reminders
+          .map((r) => `• ${r.emoji} ${r.title} — every ${r.day_of_week}`)
+          .join("\n")
+      : "No recurring reminders set up yet.";
+
+  return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK primary school parents stay on top of their children's school life.
+
+## Your personality
+- You're like a knowledgeable, reassuring friend — never corporate, never stiff
+- Warm and encouraging, but always concise. Parents are busy. Don't waffle.
+- You use occasional emojis naturally (not excessively). Think how a friendly person texts.
+- You're proactive — if you spot something relevant in the upcoming events, mention it helpfully
+- You never panic parents or make them feel bad for forgetting things
+- You speak British English. "Mum" not "Mom". "Autumn term" not "Fall semester".
+- You never make up information. If you don't know something, say so honestly and warmly.
+- Keep responses short — this is WhatsApp, not email. 3-5 sentences is usually perfect.
+
+## What you must never do
+- Never pretend to be human if directly asked
+- Never discuss topics unrelated to school life, parenting reminders, or the parent's children
+- Never share one parent's information with another
+- Never make up school events or dates you don't have data for
+- Never be sycophantic ("Great question!") — just answer naturally
+
+## This parent's information
+Children: ${childrenSummary || "Not set up yet"}
+
+## Upcoming school events (next 14 days)
+${upcomingEventsSummary}
+
+## Recurring reminders
+${remindersSummary}
+
+## How to handle common requests
+- "What's on this week?" → List upcoming events for their children's schools in a friendly way
+- "Does [child] have PE today/tomorrow?" → Check reminders and events, answer directly
+- "Remind me about X" → Explain they can forward school emails/newsletters to you and you'll extract the dates
+- "When is [event]?" → Search upcoming events, be honest if you don't have the data
+- "What's for lunch?" → Explain you don't have the school menu yet but it's coming soon
+- If they forward school newsletter text → Extract dates and key info, summarise clearly
+
+Today is ${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}.
+The current time in the UK is approximately ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" })}.`;
 }
 
-// ── Database helpers ────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-async function getOrCreateConversation(phoneNumber: string) {
-  const { data: existing } = await supabase
-    .from("conversations")
-    .select("*")
-    .eq("phone_number", phoneNumber)
-    .maybeSingle();
-
-  if (existing) return existing;
-
-  const { data: created, error } = await supabase
-    .from("conversations")
-    .insert({ phone_number: phoneNumber })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return created;
+interface MontyContext {
+  children: Array<{
+    first_name: string;
+    year_group: string;
+    school_name: string;
+    school_id: string;
+  }>;
+  upcomingEvents: Array<{
+    title: string;
+    start_at: string;
+    school_name: string;
+  }>;
+  reminders: Array<{
+    title: string;
+    emoji: string;
+    day_of_week: string;
+  }>;
 }
 
-async function getBotFlowStep(stepName: string) {
-  const { data } = await supabase
-    .from("bot_flows")
-    .select("*")
-    .eq("step_name", stepName)
-    .maybeSingle();
-  return data;
+interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
 }
 
-async function logMessage(
-  conversationId: string,
-  direction: string,
-  content: string,
-  messageType = "text"
-) {
-  await supabase.from("messages").insert({
-    conversation_id: conversationId,
-    direction,
-    content,
-    message_type: messageType,
-  });
-}
+// ── Context loader ────────────────────────────────────────────────────────────
 
-// ── Dynamic content builders ────────────────────────────────────────
-
-async function getChildSchoolForPhone(phoneNumber: string) {
+async function loadParentContext(phone: string): Promise<MontyContext> {
   const { data: profile } = await supabase
     .from("profiles")
     .select("user_id")
-    .eq("phone_number", phoneNumber)
+    .eq("phone_number", phone)
     .maybeSingle();
 
-  if (!profile) return { schoolId: null, childName: null };
+  if (!profile) return { children: [], upcomingEvents: [], reminders: [] };
 
-  const { data: child } = await supabase
+  const { data: children } = await supabase
     .from("children")
-    .select("school_id, first_name")
-    .eq("parent_id", profile.user_id)
-    .limit(1)
+    .select("first_name, year_group, school_id, schools(name)")
+    .eq("parent_id", profile.user_id);
+
+  const enrichedChildren = (children || []).map((c: any) => ({
+    first_name: c.first_name,
+    year_group: c.year_group,
+    school_id: c.school_id,
+    school_name: c.schools?.name || "school",
+  }));
+
+  const schoolIds = enrichedChildren.map((c) => c.school_id);
+
+  const now = new Date();
+  const twoWeeksAhead = new Date(now);
+  twoWeeksAhead.setDate(twoWeeksAhead.getDate() + 14);
+
+  let upcomingEvents: Array<{ title: string; start_at: string; school_name: string }> = [];
+  let reminders: Array<{ title: string; emoji: string; day_of_week: string }> = [];
+
+  if (schoolIds.length > 0) {
+    const { data: events } = await supabase
+      .from("school_events")
+      .select("title, start_at, school_id, schools(name)")
+      .in("school_id", schoolIds)
+      .gte("start_at", now.toISOString())
+      .lte("start_at", twoWeeksAhead.toISOString())
+      .order("start_at", { ascending: true })
+      .limit(20);
+
+    upcomingEvents = (events || []).map((e: any) => ({
+      title: e.title,
+      start_at: e.start_at,
+      school_name: e.schools?.name || "",
+    }));
+
+    const { data: reminderData } = await supabase
+      .from("school_reminders")
+      .select("title, emoji, day_of_week")
+      .eq("active", true)
+      .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
+      .not("day_of_week", "is", null);
+
+    reminders = reminderData || [];
+  }
+
+  return { children: enrichedChildren, upcomingEvents, reminders };
+}
+
+// ── Conversation manager ──────────────────────────────────────────────────────
+
+async function getOrCreateConversation(phone: string): Promise<string> {
+  const { data: existing } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("phone_number", phone)
     .maybeSingle();
 
-  return {
-    schoolId: child?.school_id || null,
-    childName: child?.first_name || null,
-  };
+  if (existing) return existing.id;
+
+  const { data: created } = await supabase
+    .from("conversations")
+    .insert({ phone_number: phone, current_step: "active" })
+    .select("id")
+    .single();
+
+  return created!.id;
 }
 
-async function buildEventsMessage(phoneNumber: string): Promise<string | null> {
-  const { schoolId } = await getChildSchoolForPhone(phoneNumber);
-
-  let query = supabase
-    .from("school_events")
-    .select("title, start_at, all_day, location")
-    .gte("start_at", new Date().toISOString())
-    .order("start_at", { ascending: true })
-    .limit(5);
-
-  if (schoolId) query = query.eq("school_id", schoolId);
-
-  const { data: events } = await query;
-  if (!events || events.length === 0) return null;
-
-  const lines = events.map((e) => {
-    const d = new Date(e.start_at);
-    const dateStr = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-    const loc = e.location ? ` — ${e.location}` : "";
-    return `📅 *${e.title}* — ${dateStr}${loc}`;
-  });
-
-  return `Here are the upcoming events:\n\n${lines.join("\n")}\n\n1️⃣ Back to main menu`;
-}
-
-async function buildRemindersMessage(phoneNumber: string): Promise<string | null> {
-  const { schoolId } = await getChildSchoolForPhone(phoneNumber);
-
-  let query = supabase
-    .from("school_reminders")
-    .select("title, day_of_week, due_date, emoji")
-    .eq("active", true)
-    .order("sort_order", { ascending: true })
-    .limit(10);
-
-  if (schoolId) {
-    query = query.or(`school_id.eq.${schoolId},school_id.is.null`);
-  } else {
-    query = query.is("school_id", null);
-  }
-
-  const { data: reminders } = await query;
-  if (!reminders || reminders.length === 0) return null;
-
-  const lines = reminders.map((r) => {
-    const emoji = r.emoji || "✅";
-    const when = r.due_date
-      ? new Date(r.due_date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })
-      : r.day_of_week
-        ? `every *${r.day_of_week}*`
-        : "";
-    return `${emoji} ${r.title}${when ? ` — ${when}` : ""}`;
-  });
-
-  return `Here are your reminders 🔔:\n\n${lines.join("\n")}\n\nAnything else?\n\n1️⃣ Back to main menu\n2️⃣ Contact school`;
-}
-
-// ── Forwarded message / note extraction ─────────────────────────────
-
-function isForwardedOrLong(text: string): boolean {
-  const lower = text.toLowerCase();
-  // WhatsApp forwarded messages or long school emails/letters
-  return (
-    lower.includes("forwarded") ||
-    lower.includes("------") ||
-    lower.includes("from:") ||
-    lower.includes("subject:") ||
-    lower.includes("dear parent") ||
-    lower.includes("dear carer") ||
-    text.length > 300
-  );
-}
-
-async function extractAndStoreNote(phoneNumber: string, rawContent: string): Promise<string> {
-  const today = new Date().toISOString().split("T")[0];
-  const { childName } = await getChildSchoolForPhone(phoneNumber);
-  const name = childName || "your child";
-
-  try {
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${LOVABLE_API_KEY()}`,
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          {
-            role: "system",
-            content: `You are Monty, a friendly school assistant. A parent has forwarded you a message from their child's school. Today's date is ${today}.
-
-Extract the key information and return ONLY a JSON object with:
-{
-  "summary": "Brief 1-sentence summary of what it's about",
-  "dates": [{"date": "YYYY-MM-DD", "label": "what's happening"}],
-  "actions": [{"action": "what the parent needs to do", "by_date": "YYYY-MM-DD or null"}]
-}
-
-Be generous with dates — if something says "next Monday" work it out from today. If no dates found, return empty arrays.`,
-          },
-          { role: "user", content: rawContent },
-        ],
-        temperature: 0.1,
-        max_tokens: 500,
-      }),
-    });
-
-    if (!res.ok) {
-      console.error("AI extraction error:", await res.text());
-      // Still store the raw content even if AI fails
-      await supabase.from("parent_notes").insert({
-        phone_number: phoneNumber,
-        raw_content: rawContent,
-        summary: "Forwarded message (processing failed)",
-        source_type: "forwarded",
-      });
-      return `Thanks for forwarding that! 📩 I've saved it but couldn't quite parse all the details. I'll keep it on file for you. Need anything else?\n\n1️⃣ Back to main menu`;
-    }
-
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content?.trim() || "";
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-
-    let summary = "Forwarded message";
-    let dates: Array<{ date: string; label: string }> = [];
-    let actions: Array<{ action: string; by_date: string | null }> = [];
-
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-      summary = parsed.summary || summary;
-      dates = parsed.dates || [];
-      actions = parsed.actions || [];
-    }
-
-    await supabase.from("parent_notes").insert({
-      phone_number: phoneNumber,
-      raw_content: rawContent,
-      summary,
-      extracted_dates: dates,
-      extracted_actions: actions,
-      source_type: "forwarded",
-    });
-
-    // Build a friendly response
-    let reply = `Got it! 📩 I've noted that down:\n\n📝 *${summary}*`;
-
-    if (dates.length > 0) {
-      reply += "\n\n📅 Key dates:";
-      for (const d of dates) {
-        const dateObj = new Date(d.date);
-        const niceDate = dateObj.toLocaleDateString("en-GB", {
-          weekday: "short",
-          day: "numeric",
-          month: "short",
-        });
-        reply += `\n  • ${d.label} — ${niceDate}`;
-      }
-      reply += "\n\nI'll remind you before each of these! ⏰";
-    }
-
-    if (actions.length > 0) {
-      reply += "\n\n✅ Things to do:";
-      for (const a of actions) {
-        const byDate = a.by_date
-          ? ` (by ${new Date(a.by_date).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })})`
-          : "";
-        reply += `\n  • ${a.action}${byDate}`;
-      }
-    }
-
-    reply += `\n\nAnything else for ${name}? 😊\n\n1️⃣ Back to main menu`;
-    return reply;
-  } catch (err) {
-    console.error("Note extraction error:", err);
-    await supabase.from("parent_notes").insert({
-      phone_number: phoneNumber,
-      raw_content: rawContent,
-      summary: "Forwarded message",
-      source_type: "forwarded",
-    });
-    return `Thanks! 📩 I've saved that message. I'll keep it handy for you!\n\n1️⃣ Back to main menu`;
-  }
-}
-
-// ── AI Intent Classification ────────────────────────────────────────
-
-interface IntentResult {
-  intent: string;
-  confidence: number;
-}
-
-async function classifyIntent(
-  userMessage: string,
-  availableOptions: Array<{ keyword: string; label: string; next_step: string }>,
-  recentHistory: Array<{ role: string; content: string }> = []
-): Promise<IntentResult> {
-  const optionDescriptions = availableOptions
-    .map((o) => `- "${o.keyword}" (${o.label}) → step: ${o.next_step}`)
-    .join("\n");
-
-  const historyContext = recentHistory.length > 0
-    ? `\nRecent conversation:\n${recentHistory.map((m) => `${m.role}: ${m.content}`).join("\n")}\n`
-    : "";
-
-  const systemPrompt = `You are Monty, a friendly school assistant WhatsApp bot. Your job is to classify a parent's message into one of the available menu options.
-${historyContext}
-Available options:
-${optionDescriptions}
-
-Rules:
-- Respond with ONLY a JSON object: {"intent": "<next_step>", "confidence": <0.0-1.0>}
-- If the message clearly matches an option, return that option's next_step with high confidence
-- If the message is a greeting (hi, hello, hey), return {"intent": "greeting", "confidence": 0.9}
-- If the message doesn't match any option, return {"intent": "unknown", "confidence": 0.0}
-- Be VERY generous in matching — these should ALL match events: "what's happening this week", "what has [child] got on tomorrow", "any events coming up", "what's on at school", "what does my child have tomorrow", "anything happening next week"
-- These should match reminders: "PE kit", "what do I need to remember", "homework", "what does [child] need"
-- These should match lunch: "lunch", "food", "dinner", "menu", "meals"
-- These should match contact: "call school", "phone number", "email", "speak to someone"
-- Any question about what's happening at school, what a child has on, or upcoming dates → events
-- Any question about what to bring, prepare, or remember → reminders
-- Use conversation history for context — e.g. "tell me more", "what else", "go back" should be understood in context
-- Do NOT add any other text, just the JSON`;
-
-  try {
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${LOVABLE_API_KEY()}`,
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
-        temperature: 0.1,
-        max_tokens: 100,
-      }),
-    });
-
-    if (!res.ok) {
-      console.error("AI Gateway error:", await res.text());
-      return { intent: "unknown", confidence: 0 };
-    }
-
-    const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content?.trim() || "";
-
-    const jsonMatch = raw.match(/\{[\s\S]*?\}/);
-    if (!jsonMatch) {
-      console.error("AI returned non-JSON:", raw);
-      return { intent: "unknown", confidence: 0 };
-    }
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      intent: parsed.intent || "unknown",
-      confidence: typeof parsed.confidence === "number" ? parsed.confidence : 0,
-    };
-  } catch (err) {
-    console.error("AI classification error:", err);
-    return { intent: "unknown", confidence: 0 };
-  }
-}
-
-// ── Core message processing ─────────────────────────────────────────
-
-async function getRecentHistory(conversationId: string, limit = 6): Promise<Array<{ role: string; content: string }>> {
-  const { data } = await supabase
+async function getRecentHistory(conversationId: string, limit = 10): Promise<ConversationMessage[]> {
+  const { data: messages } = await supabase
     .from("messages")
     .select("direction, content")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(limit);
 
-  if (!data) return [];
-  return data.reverse().map((m) => ({
-    role: m.direction === "inbound" ? "user" : "assistant",
-    content: m.content,
-  }));
+  return (messages || [])
+    .reverse()
+    .map((m: any) => ({
+      role: m.direction === "inbound" ? "user" : "assistant",
+      content: m.content,
+    }));
 }
 
-async function processMessage(phoneNumber: string, incomingText: string) {
-  const conversation = await getOrCreateConversation(phoneNumber);
-  await logMessage(conversation.id, "inbound", incomingText);
+async function saveMessage(
+  conversationId: string,
+  direction: "inbound" | "outbound",
+  content: string
+) {
+  await supabase.from("messages").insert({
+    conversation_id: conversationId,
+    direction,
+    content,
+  });
+}
 
-  // ── Check for forwarded messages first ──
-  if (isForwardedOrLong(incomingText)) {
-    console.log("Detected forwarded/long message, extracting notes...");
-    const reply = await extractAndStoreNote(phoneNumber, incomingText);
-    await sendWhatsAppMessage(phoneNumber, reply);
-    await logMessage(conversation.id, "outbound", reply);
-    return;
+// ── AI reply generator ────────────────────────────────────────────────────────
+
+async function generateReply(
+  incomingMessage: string,
+  history: ConversationMessage[],
+  context: MontyContext
+): Promise<string> {
+  const systemPrompt = buildSystemPrompt(context);
+
+  const messages = [
+    { role: "system" as const, content: systemPrompt },
+    ...history,
+    { role: "user" as const, content: incomingMessage },
+  ];
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      max_tokens: 400,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    console.error("AI error:", err);
+    throw new Error(`AI request failed: ${response.status}`);
   }
 
-  const flowStep = await getBotFlowStep(conversation.current_step);
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() ||
+    "Sorry, I had a little hiccup there! Try again in a moment 😊";
+}
 
-  if (!flowStep) {
-    const defaultReply = "Thanks for your message! We'll get back to you soon.";
-    await sendWhatsAppMessage(phoneNumber, defaultReply);
-    await logMessage(conversation.id, "outbound", defaultReply);
-    return;
-  }
+// ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-  // Try exact keyword match first (fast path)
-  const options = (flowStep.options as Array<{ keyword: string; next_step: string; label: string }>) || [];
-  const userInput = incomingText.trim().toLowerCase();
-  let matchedOption = options.find(
-    (opt) => opt.keyword?.toLowerCase() === userInput
+async function sendWhatsApp(to: string, body: string): Promise<boolean> {
+  const params = new URLSearchParams();
+  params.append("To", `whatsapp:${to}`);
+  params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
+  params.append("Body", body);
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    }
   );
 
-  // If no exact match, use AI with conversation history
-  // First try current step's options, then fall back to welcome menu so any topic is always reachable
-  if (!matchedOption && userInput.length > 0) {
-    console.log(`No exact match for "${userInput}", using AI classification...`);
-    const recentHistory = await getRecentHistory(conversation.id);
-
-    // Gather all options: current step + welcome menu for full coverage
-    const welcomeStep = conversation.current_step !== "welcome" ? await getBotFlowStep("welcome") : null;
-    const welcomeOptions = (welcomeStep?.options as Array<{ keyword: string; next_step: string; label: string }>) || [];
-    const allOptions = [...options];
-    for (const wo of welcomeOptions) {
-      if (!allOptions.find((o) => o.next_step === wo.next_step)) {
-        allOptions.push(wo);
-      }
-    }
-
-    const aiResult = await classifyIntent(userInput, allOptions, recentHistory);
-    console.log(`AI classified as: ${aiResult.intent} (confidence: ${aiResult.confidence})`);
-
-    if (aiResult.confidence >= 0.6 && aiResult.intent !== "unknown") {
-      if (aiResult.intent === "greeting") {
-        const greetings = [
-          "Hi there! 😊 How can I help today?",
-          "Hey! 👋 What can I do for you?",
-          "Hello! How can I help you today? 😊",
-          "Hi! 🙂 What do you need help with?",
-        ];
-        const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-        await sendWhatsAppMessage(phoneNumber, greeting);
-        await logMessage(conversation.id, "outbound", greeting);
-        return;
-      }
-      matchedOption = allOptions.find((opt) => opt.next_step === aiResult.intent);
-    }
-  }
-
-  let nextStep = matchedOption?.next_step || flowStep.next_step || conversation.current_step;
-
-  // If still no match and it's not a navigation step, send a friendly nudge
-  if (!matchedOption && !flowStep.next_step && options.length > 0) {
-    const optionLabels = options.map((o) => `${o.keyword}️⃣ ${o.label}`).join("\n");
-    const nudge = `Hmm, I didn't quite catch that 🤔\n\nHere's what I can help with:\n${optionLabels}\n\nJust type a number or tell me what you need!`;
-    await sendWhatsAppMessage(phoneNumber, nudge);
-    await logMessage(conversation.id, "outbound", nudge);
-    return;
-  }
-
-  // Update conversation state with history summary
-  const ctx = conversation.context as Record<string, unknown> || {};
-  const history = Array.isArray(ctx.recent_topics) ? ctx.recent_topics as string[] : [];
-  if (nextStep !== conversation.current_step) history.push(nextStep);
-  const updatedContext = {
-    ...ctx,
-    last_input: incomingText,
-    last_step: conversation.current_step,
-    recent_topics: history.slice(-5),
-  };
-
-  await supabase
-    .from("conversations")
-    .update({ current_step: nextStep, context: updatedContext })
-    .eq("id", conversation.id);
-
-  // Build reply — dynamic for events & reminders, template for everything else
-  let replyText: string | undefined;
-  if (nextStep === "events") {
-    const dynamicEvents = await buildEventsMessage(phoneNumber);
-    if (dynamicEvents) replyText = dynamicEvents;
-  } else if (nextStep === "reminders") {
-    const dynamicReminders = await buildRemindersMessage(phoneNumber);
-    if (dynamicReminders) replyText = dynamicReminders;
-  }
-
-  if (!replyText) {
-    const nextFlowStep = await getBotFlowStep(nextStep);
-    replyText = nextFlowStep?.message_template || "Thank you!";
-  }
-
-  await sendWhatsAppMessage(phoneNumber, replyText);
-  await logMessage(conversation.id, "outbound", replyText);
+  if (!res.ok) console.error("Twilio send error:", await res.text());
+  return res.ok;
 }
 
-// ── HTTP handler ────────────────────────────────────────────────────
+// ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
-  if (req.method === "POST") {
-    try {
-      const contentType = req.headers.get("content-type") || "";
-      let phoneNumber = "";
-      let text = "";
+  try {
+    const body = await req.text();
+    const params = new URLSearchParams(body);
 
-      if (contentType.includes("application/x-www-form-urlencoded")) {
-        const formData = await req.formData();
-        const from = formData.get("From")?.toString() || "";
-        phoneNumber = from.replace("whatsapp:", "");
-        text = formData.get("Body")?.toString() || "";
-      } else {
-        const body = await req.json();
-        phoneNumber = body.from || body.From || "";
-        text = body.body || body.Body || "";
-        phoneNumber = phoneNumber.replace("whatsapp:", "");
-      }
+    const from = params.get("From")?.replace("whatsapp:", "") || "";
+    const incomingMessage = params.get("Body")?.trim() || "";
 
-      if (phoneNumber && text) {
-        await processMessage(phoneNumber, text);
-      }
-
-      return new Response(
-        '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-        { headers: { ...corsHeaders, "Content-Type": "text/xml" } }
-      );
-    } catch (error) {
-      console.error("Webhook error:", error);
-      return new Response(
-        '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "text/xml" } }
-      );
+    if (!from || !incomingMessage) {
+      return new Response("Missing From or Body", { status: 400 });
     }
-  }
 
-  return new Response("Method not allowed", { status: 405 });
+    console.log(`Inbound from ${from}: "${incomingMessage}"`);
+
+    const [conversationId, context] = await Promise.all([
+      getOrCreateConversation(from),
+      loadParentContext(from),
+    ]);
+
+    await saveMessage(conversationId, "inbound", incomingMessage);
+
+    const history = await getRecentHistory(conversationId, 10);
+
+    const reply = await generateReply(incomingMessage, history, context);
+
+    await saveMessage(conversationId, "outbound", reply);
+    await sendWhatsApp(from, reply);
+
+    console.log(`Replied to ${from}: "${reply.slice(0, 80)}…"`);
+
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
+      { headers: { ...corsHeaders, "Content-Type": "text/xml" } }
+    );
+  } catch (error) {
+    console.error("Webhook error:", error);
+    return new Response(
+      `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
+      { status: 200, headers: { "Content-Type": "text/xml" } }
+    );
+  }
 });
