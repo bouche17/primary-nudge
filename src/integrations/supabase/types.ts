@@ -44,6 +44,53 @@ export type Database = {
         }
         Relationships: []
       }
+      child_reminders: {
+        Row: {
+          active: boolean | null
+          child_id: string
+          created_at: string | null
+          day_of_week: string
+          emoji: string | null
+          id: string
+          parent_id: string
+          reminder_time: string | null
+          title: string
+          updated_at: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          child_id: string
+          created_at?: string | null
+          day_of_week: string
+          emoji?: string | null
+          id?: string
+          parent_id: string
+          reminder_time?: string | null
+          title: string
+          updated_at?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          child_id?: string
+          created_at?: string | null
+          day_of_week?: string
+          emoji?: string | null
+          id?: string
+          parent_id?: string
+          reminder_time?: string | null
+          title?: string
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "child_reminders_child_id_fkey"
+            columns: ["child_id"]
+            isOneToOne: false
+            referencedRelation: "children"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       children: {
         Row: {
           created_at: string
@@ -167,6 +214,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      onboarding_state: {
+        Row: {
+          collected_data: Json | null
+          created_at: string | null
+          current_child_index: number | null
+          id: string
+          phone_number: string
+          status: string
+          updated_at: string | null
+        }
+        Insert: {
+          collected_data?: Json | null
+          created_at?: string | null
+          current_child_index?: number | null
+          id?: string
+          phone_number: string
+          status?: string
+          updated_at?: string | null
+        }
+        Update: {
+          collected_data?: Json | null
+          created_at?: string | null
+          current_child_index?: number | null
+          id?: string
+          phone_number?: string
+          status?: string
+          updated_at?: string | null
+        }
+        Relationships: []
       }
       parent_notes: {
         Row: {
