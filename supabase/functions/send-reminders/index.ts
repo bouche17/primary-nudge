@@ -1,20 +1,37 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// ── Config ────────────────────────────────────────────────────────────────────
+
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-const TWILIO_ACCOUNT_SID = () => Deno.env.get("TWILIO_ACCOUNT_SID")!;
-const TWILIO_AUTH_TOKEN = () => Deno.env.get("TWILIO_AUTH_TOKEN")!;
-const TWILIO_WHATSAPP_NUMBER = () => Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
+const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
+const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 
-// ── Send WhatsApp ───────────────────────────────────────────────────
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-async function sendWhatsApp(to: string, text: string) {
-  const sid = TWILIO_ACCOUNT_SID();
-  const token = TWILIO_AUTH_TOKEN();
-  const from = TWILIO_WHATSAPP_NUMBER();
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface ReminderItem {
+  childName: string;
+  title: string;
+  emoji: string;
+  type: "reminder" | "event" | "note";
+  refId: string;
+}
+
+// ── WhatsApp sender ───────────────────────────────────────────────────────────
+
+async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+  const sid = TWILIO_ACCOUNT_SID;
+  const token = TWILIO_AUTH_TOKEN;
+  const from = TWILIO_WHATSAPP_NUMBER;
 
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
@@ -33,13 +50,11 @@ async function sendWhatsApp(to: string, text: string) {
     }
   );
 
-  if (!res.ok) {
-    console.error("Twilio error:", await res.text());
-  }
+  if (!res.ok) console.error("Twilio error:", await res.text());
   return res.ok;
 }
 
-// ── Dedup check ─────────────────────────────────────────────────────
+// ── Dedup check ───────────────────────────────────────────────────────────────
 
 async function alreadySent(
   phone: string,
@@ -55,7 +70,6 @@ async function alreadySent(
     .eq("period", period)
     .gte("sent_at", `${today}T00:00:00Z`)
     .limit(1);
-
   return (data?.length ?? 0) > 0;
 }
 
@@ -75,78 +89,135 @@ async function logReminder(
   });
 }
 
-// ── Build personalised messages ─────────────────────────────────────
+// ── Message builder ───────────────────────────────────────────────────────────
+// Builds ONE consolidated message per parent per period
+// rather than firing a separate message for each reminder
 
-function buildEventReminder(
-  childName: string,
-  schoolName: string,
-  eventTitle: string,
-  eventDate: Date,
-  period: string
+function buildConsolidatedMessage(
+  items: ReminderItem[],
+  period: "morning" | "evening"
 ): string {
-  const dayStr = eventDate.toLocaleDateString("en-GB", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-  });
+  const greeting = period === "morning"
+    ? "Good morning! ☀️"
+    : "Good evening! 🌙";
 
-  if (period === "evening") {
-    return `Good evening! 🌙 Just a heads up — ${childName} has *${eventTitle}* tomorrow at ${schoolName}. Make sure everything's ready tonight! 📋`;
+  // Single item — keep it short and personal
+  if (items.length === 1) {
+    const item = items[0];
+    if (period === "morning") {
+      return buildSingleMorning(item);
+    } else {
+      return buildSingleEvening(item);
+    }
   }
-  return `Good morning! ☀️ Quick reminder: ${childName} has *${eventTitle}* today (${dayStr}) at ${schoolName}. Have a great day! 🎒`;
+
+  // Multiple items — consolidated list
+  const lines = items.map((item) => buildItemLine(item, period));
+
+  if (period === "morning") {
+    const intro = items.length === 2
+      ? `${greeting} A couple of things for today:`
+      : `${greeting} Here's what's on today:`;
+    return `${intro}\n\n${lines.join("\n")}\n\nHave a great day! 😊`;
+  } else {
+    const intro = items.length === 2
+      ? `${greeting} Just a couple of things to prep for tomorrow:`
+      : `${greeting} A few things to get ready for tomorrow:`;
+    return `${intro}\n\n${lines.join("\n")}\n\nHope you have a lovely evening! 😊`;
+  }
 }
 
-function buildWeeklyReminder(
-  childName: string,
-  title: string,
-  emoji: string,
-  dayOfWeek: string,
-  period: string
-): string {
-  if (period === "evening") {
-    return `Hey! 👋 Don't forget — ${childName} needs *${title}* ${emoji} tomorrow (${dayOfWeek}). Best to get it sorted tonight! 😊`;
+function buildItemLine(item: ReminderItem, period: "morning" | "evening"): string {
+  const { childName, title, emoji, type } = item;
+
+  if (type === "event") {
+    if (period === "evening") {
+      return `${emoji} ${childName} has *${title}* tomorrow — worth getting ready tonight`;
+    }
+    return `${emoji} ${childName} has *${title}* today`;
   }
-  return `Good morning! ☀️ Reminder: ${childName} needs *${title}* ${emoji} today (${dayOfWeek}). You've got this! 💪`;
+
+  // Reminder — make it action-focused and natural
+  const actionMap: Record<string, string> = {
+    "PE kit needed": `Don't forget ${childName}'s PE kit`,
+    "Packed lunch": `${childName} needs a packed lunch`,
+    "Reading books returned": `${childName}'s reading book needs to go in their bag`,
+    "Dinner money due": `Dinner money is due for ${childName}`,
+    "Forest School": `${childName} has Forest School — they'll need their outdoor kit`,
+    "Homework due": `${childName}'s homework is due today`,
+  };
+
+  // Use mapped version if available, otherwise build naturally
+  const action = actionMap[title] || `${childName} has ${title}`;
+  return `${emoji} ${action}`;
 }
 
-function buildNoteReminder(
-  childName: string,
-  summary: string,
-  period: string
-): string {
-  if (period === "evening") {
-    return `Hey! 📝 Just checking — you saved a note about: *${summary}*. That's coming up tomorrow for ${childName}. All sorted? 😊`;
+function buildSingleMorning(item: ReminderItem): string {
+  const { childName, title, emoji, type } = item;
+
+  if (type === "event") {
+    return `Morning! ${emoji} Just a heads up — ${childName} has *${title}* today. Have a great one! 😊`;
   }
-  return `Good morning! 📝 Reminder about: *${summary}* — that's today for ${childName}! 🎯`;
+
+  const actionMap: Record<string, string> = {
+    "PE kit needed": `Morning! ${emoji} Quick one — don't forget ${childName}'s PE kit today. You've got this! 💪`,
+    "Packed lunch": `Morning! ${emoji} Don't forget ${childName}'s packed lunch today!`,
+    "Reading books returned": `Morning! ${emoji} ${childName}'s reading book needs to go back to school today 📚`,
+    "Dinner money due": `Morning! ${emoji} Dinner money is due for ${childName} today. Worth sorting before the school run!`,
+    "Forest School": `Morning! ${emoji} It's Forest School for ${childName} today — make sure they've got their outdoor kit! 🌲`,
+    "Homework due": `Morning! ${emoji} ${childName}'s homework is due in today — hope it's all done! ✏️`,
+  };
+
+  return actionMap[title] ||
+    `Morning! ${emoji} Quick reminder — ${childName} has *${title}* today. Have a great day! 😊`;
 }
 
-// ── Main logic ──────────────────────────────────────────────────────
+function buildSingleEvening(item: ReminderItem): string {
+  const { childName, title, emoji, type } = item;
 
-async function sendReminders(period: "evening" | "morning") {
+  if (type === "event") {
+    return `Hey! ${emoji} Just a heads up for tomorrow — ${childName} has *${title}*. Worth getting sorted tonight! 😊`;
+  }
+
+  const actionMap: Record<string, string> = {
+    "PE kit needed": `Hey! ${emoji} Don't forget — ${childName} needs their PE kit tomorrow. Best to pack it tonight! 👟`,
+    "Packed lunch": `Hey! ${emoji} ${childName} needs a packed lunch tomorrow — worth getting it ready tonight 🥪`,
+    "Reading books returned": `Hey! ${emoji} ${childName}'s reading book needs to go back tomorrow — worth popping it in their bag tonight 📚`,
+    "Dinner money due": `Hey! ${emoji} Dinner money is due for ${childName} tomorrow. Worth sorting it tonight! 💰`,
+    "Forest School": `Hey! ${emoji} ${childName} has Forest School tomorrow — make sure their outdoor kit is ready tonight 🌲`,
+    "Homework due": `Hey! ${emoji} ${childName}'s homework is due tomorrow — just checking it's all done! ✏️`,
+  };
+
+  return actionMap[title] ||
+    `Hey! ${emoji} Just a reminder — ${childName} has *${title}* tomorrow. Worth getting ready tonight! 😊`;
+}
+
+// ── Main send logic ───────────────────────────────────────────────────────────
+
+async function sendReminders(period: "morning" | "evening") {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
 
-  // For evening reminders, look at tomorrow; for morning, look at today
+  // For evening, look at tomorrow; for morning, look at today
   const targetDate = new Date(now);
-  if (period === "evening") {
-    targetDate.setDate(targetDate.getDate() + 1);
-  }
+  if (period === "evening") targetDate.setDate(targetDate.getDate() + 1);
+
   const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long" });
   const targetDateStr = targetDate.toISOString().split("T")[0];
   const targetStart = `${targetDateStr}T00:00:00Z`;
   const targetEnd = `${targetDateStr}T23:59:59Z`;
 
-  // Get all parent-child-school relationships
+  // Load all children
   const { data: children } = await supabase
     .from("children")
-    .select("first_name, school_id, parent_id");
+    .select("id, first_name, school_id, parent_id");
 
   if (!children || children.length === 0) {
     console.log("No children registered yet");
     return;
   }
 
-  // Map parent_id → phone_number via profiles
+  // Load parent phone numbers
   const parentIds = [...new Set(children.map((c) => c.parent_id))];
   const { data: profiles } = await supabase
     .from("profiles")
@@ -159,112 +230,149 @@ async function sendReminders(period: "evening" | "morning") {
     return;
   }
 
-  const phoneByParent = new Map(
-    profiles.map((p) => [p.user_id, p.phone_number!])
-  );
+  const phoneByParent = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
 
-  // Get school names
-  const schoolIds = [...new Set(children.map((c) => c.school_id))];
-  const { data: schools } = await supabase
-    .from("schools")
-    .select("id, name")
-    .in("id", schoolIds);
-  const schoolName = new Map(schools?.map((s) => [s.id, s.name]) ?? []);
-
-  let sentCount = 0;
-
+  // Group children by parent
+  const childrenByParent = new Map<string, typeof children>();
   for (const child of children) {
     const phone = phoneByParent.get(child.parent_id);
     if (!phone) continue;
+    if (!childrenByParent.has(child.parent_id)) {
+      childrenByParent.set(child.parent_id, []);
+    }
+    childrenByParent.get(child.parent_id)!.push(child);
+  }
 
-    const school = schoolName.get(child.school_id) || "school";
+  let sentCount = 0;
 
-    // 1. School events for the target date
-    const { data: events } = await supabase
-      .from("school_events")
-      .select("id, title, start_at")
-      .eq("school_id", child.school_id)
-      .gte("start_at", targetStart)
-      .lte("start_at", targetEnd);
+  // Process each parent — ONE message per parent
+  for (const [parentId, parentChildren] of childrenByParent) {
+    const phone = phoneByParent.get(parentId)!;
+    const reminderItems: ReminderItem[] = [];
+    const refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
 
-    for (const evt of events || []) {
-      const refId = `event_${evt.id}`;
-      if (await alreadySent(phone, refId, period, today)) continue;
+    for (const child of parentChildren) {
+      const schoolIds = [child.school_id].filter(Boolean);
 
-      const msg = buildEventReminder(
-        child.first_name,
-        school,
-        evt.title,
-        new Date(evt.start_at),
-        period
-      );
-      const ok = await sendWhatsApp(phone, msg);
-      if (ok) {
-        await logReminder(phone, "event", refId, evt.title, period);
-        sentCount++;
+      // 1. School events for target date
+      const { data: events } = await supabase
+        .from("school_events")
+        .select("id, title")
+        .eq("school_id", child.school_id)
+        .gte("start_at", targetStart)
+        .lte("start_at", targetEnd);
+
+      for (const evt of events || []) {
+        const refId = `event_${evt.id}_${period}`;
+        if (await alreadySent(phone, refId, period, today)) continue;
+        reminderItems.push({
+          childName: child.first_name,
+          title: evt.title,
+          emoji: "📅",
+          type: "event",
+          refId,
+        });
+        refIdsToLog.push({ refId, title: evt.title, type: "event" });
+      }
+
+      // 2. Child-specific reminders (e.g. Jude's PE on Monday)
+      const { data: childReminders } = await supabase
+        .from("child_reminders")
+        .select("id, title, emoji, reminder_time")
+        .eq("child_id", child.id)
+        .eq("active", true)
+        .eq("day_of_week", targetDay);
+
+      for (const rem of childReminders || []) {
+        const shouldSend =
+          rem.reminder_time === "both" ||
+          rem.reminder_time === period;
+        if (!shouldSend) continue;
+
+        const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
+        if (await alreadySent(phone, refId, period, today)) continue;
+        reminderItems.push({
+          childName: child.first_name,
+          title: rem.title,
+          emoji: rem.emoji || "✅",
+          type: "reminder",
+          refId,
+        });
+        refIdsToLog.push({ refId, title: rem.title, type: "child_reminder" });
+      }
+
+      // 3. School-wide recurring reminders
+      const schoolIdFilter = schoolIds.length > 0
+        ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null`
+        : `school_id.is.null`;
+
+      const { data: schoolReminders } = await supabase
+        .from("school_reminders")
+        .select("id, title, emoji")
+        .eq("active", true)
+        .or(schoolIdFilter)
+        .eq("day_of_week", targetDay);
+
+      for (const rem of schoolReminders || []) {
+        const refId = `reminder_${rem.id}_${targetDateStr}_${period}`;
+        if (await alreadySent(phone, refId, period, today)) continue;
+        reminderItems.push({
+          childName: child.first_name,
+          title: rem.title,
+          emoji: rem.emoji || "✅",
+          type: "reminder",
+          refId,
+        });
+        refIdsToLog.push({ refId, title: rem.title, type: "weekly" });
+      }
+
+      // 4. Parent notes matching target date
+      const { data: notes } = await supabase
+        .from("parent_notes")
+        .select("id, summary, extracted_dates")
+        .eq("phone_number", phone);
+
+      for (const note of notes || []) {
+        if (!note.summary || !note.extracted_dates) continue;
+        const dates = note.extracted_dates as Array<{ date: string }>;
+        if (!dates.some((d) => d.date === targetDateStr)) continue;
+
+        const refId = `note_${note.id}_${targetDateStr}_${period}`;
+        if (await alreadySent(phone, refId, period, today)) continue;
+        reminderItems.push({
+          childName: child.first_name,
+          title: note.summary,
+          emoji: "📝",
+          type: "note",
+          refId,
+        });
+        refIdsToLog.push({ refId, title: note.summary, type: "note" });
       }
     }
 
-    // 2. Weekly recurring reminders matching the target day
-    const { data: reminders } = await supabase
-      .from("school_reminders")
-      .select("id, title, emoji, day_of_week")
-      .eq("active", true)
-      .or(`school_id.eq.${child.school_id},school_id.is.null`)
-      .eq("day_of_week", targetDay);
+    // Skip if nothing to send
+    if (reminderItems.length === 0) continue;
 
-    for (const rem of reminders || []) {
-      const refId = `reminder_${rem.id}_${targetDateStr}`;
-      if (await alreadySent(phone, refId, period, today)) continue;
+    // Build ONE consolidated message for this parent
+    const message = buildConsolidatedMessage(reminderItems, period);
 
-      const msg = buildWeeklyReminder(
-        child.first_name,
-        rem.title,
-        rem.emoji || "✅",
-        targetDay,
-        period
-      );
-      const ok = await sendWhatsApp(phone, msg);
-      if (ok) {
-        await logReminder(phone, "weekly", refId, rem.title, period);
-        sentCount++;
+    // Send it
+    const ok = await sendWhatsApp(phone, message);
+
+    if (ok) {
+      // Log all reminder IDs that were included in this message
+      for (const { refId, title, type } of refIdsToLog) {
+        await logReminder(phone, type, refId, title, period);
       }
-    }
-
-    // 3. Parent notes with dates matching the target date
-    const { data: notes } = await supabase
-      .from("parent_notes")
-      .select("id, summary, extracted_dates")
-      .eq("phone_number", phone);
-
-    for (const note of notes || []) {
-      if (!note.summary || !note.extracted_dates) continue;
-      const dates = note.extracted_dates as Array<{ date: string }>;
-      const hasMatch = dates.some((d) => d.date === targetDateStr);
-      if (!hasMatch) continue;
-
-      const refId = `note_${note.id}_${targetDateStr}`;
-      if (await alreadySent(phone, refId, period, today)) continue;
-
-      const msg = buildNoteReminder(child.first_name, note.summary, period);
-      const ok = await sendWhatsApp(phone, msg);
-      if (ok) {
-        await logReminder(phone, "note", refId, note.summary, period);
-        sentCount++;
-      }
+      sentCount++;
+      console.log(`Sent consolidated ${period} message to ${phone} with ${reminderItems.length} items`);
     }
   }
 
-  console.log(`[${period}] Sent ${sentCount} reminders`);
+  console.log(`[${period}] Sent ${sentCount} consolidated messages`);
 }
 
-// ── HTTP handler ────────────────────────────────────────────────────
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
-};
+// ── HTTP handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -272,13 +380,11 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    // Determine period from query param or time of day
     const url = new URL(req.url);
     let period = url.searchParams.get("period") as "evening" | "morning" | null;
 
     if (!period) {
       const hour = new Date().getUTCHours();
-      // Default: before 12 UTC = morning, after = evening
       period = hour < 12 ? "morning" : "evening";
     }
 
