@@ -341,6 +341,7 @@ export type Database = {
           label: string | null
           last_synced_at: string | null
           school_id: string | null
+          year_group: string | null
         }
         Insert: {
           created_at?: string
@@ -350,6 +351,7 @@ export type Database = {
           label?: string | null
           last_synced_at?: string | null
           school_id?: string | null
+          year_group?: string | null
         }
         Update: {
           created_at?: string
@@ -359,6 +361,7 @@ export type Database = {
           label?: string | null
           last_synced_at?: string | null
           school_id?: string | null
+          year_group?: string | null
         }
         Relationships: [
           {
