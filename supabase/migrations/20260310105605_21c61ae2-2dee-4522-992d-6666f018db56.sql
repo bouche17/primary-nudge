@@ -1,0 +1,1 @@
+ALTER TABLE school_calendar_feeds ADD COLUMN year_group text DEFAULT 'all';
