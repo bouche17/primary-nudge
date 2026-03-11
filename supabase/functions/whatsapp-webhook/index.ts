@@ -712,12 +712,6 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
