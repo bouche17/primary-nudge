@@ -180,6 +180,27 @@ export type Database = {
         }
         Relationships: []
       }
+      lunch_checkin_log: {
+        Row: {
+          id: string
+          parent_id: string
+          sent_at: string | null
+          week_start: string
+        }
+        Insert: {
+          id?: string
+          parent_id: string
+          sent_at?: string | null
+          week_start: string
+        }
+        Update: {
+          id?: string
+          parent_id?: string
+          sent_at?: string | null
+          week_start?: string
+        }
+        Relationships: []
+      }
       messages: {
         Row: {
           content: string
@@ -524,6 +545,44 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      weekly_lunch_plans: {
+        Row: {
+          child_id: string
+          created_at: string | null
+          id: string
+          packed_lunch_days: string[]
+          parent_id: string
+          updated_at: string | null
+          week_start: string
+        }
+        Insert: {
+          child_id: string
+          created_at?: string | null
+          id?: string
+          packed_lunch_days?: string[]
+          parent_id: string
+          updated_at?: string | null
+          week_start: string
+        }
+        Update: {
+          child_id?: string
+          created_at?: string | null
+          id?: string
+          packed_lunch_days?: string[]
+          parent_id?: string
+          updated_at?: string | null
+          week_start?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "weekly_lunch_plans_child_id_fkey"
+            columns: ["child_id"]
+            isOneToOne: false
+            referencedRelation: "children"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {
