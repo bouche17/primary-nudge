@@ -237,6 +237,10 @@ ${upcomingEventsSummary}
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
 Example: Parent says "Jude has PE on Mondays" → save it → reply "Done! 👟 I'll remind you about Jude's PE kit every Sunday evening and Monday morning."
 
+## When a parent responds to the Sunday lunch check-in
+Use the save_weekly_lunch_plan tool for each child they mention. Save even if they say "school dinners all week" (just save an empty array for packed_lunch_days).
+Example: "Jude needs one Monday and Wednesday, Harry every day" → save Jude: [Monday, Wednesday], Harry: [Monday, Tuesday, Wednesday, Thursday, Friday]
+
 ## When a parent tells you about a school event or date
 Use the save_parent_note tool to save it so they get a reminder when it comes around.
 
@@ -312,6 +316,31 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "save_weekly_lunch_plan",
+      description: "Save which days a child needs a packed lunch for the upcoming week. Use this when a parent responds to the Sunday lunch check-in or tells you about packed lunch days for the week.",
+      parameters: {
+        type: "object",
+        properties: {
+          child_name: {
+            type: "string",
+            description: "The first name of the child",
+          },
+          packed_lunch_days: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+            },
+            description: "Which days this child needs a packed lunch. Empty array means school dinners all week.",
+          },
+        },
+        required: ["child_name", "packed_lunch_days"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "complete_onboarding",
       description: "Mark onboarding as complete once all foundational reminders have been collected for all children.",
       parameters: {
@@ -332,7 +361,6 @@ async function executeTool(
   phone: string
 ): Promise<string> {
   if (toolName === "save_child_reminder") {
-    // Find the child by name
     const child = context.children.find(
       (c) => c.first_name.toLowerCase() === toolArgs.child_name.toLowerCase()
     );
@@ -341,7 +369,6 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
-    // Check if reminder already exists for this child/day/title
     const { data: existing } = await supabase
       .from("child_reminders")
       .select("id")
@@ -351,7 +378,6 @@ async function executeTool(
       .maybeSingle();
 
     if (existing) {
-      // Update existing
       await supabase
         .from("child_reminders")
         .update({
@@ -362,7 +388,6 @@ async function executeTool(
         .eq("id", existing.id);
       return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     } else {
-      // Insert new
       const { error } = await supabase.from("child_reminders").insert({
         child_id: child.id,
         parent_id: context.parentId,
@@ -397,6 +422,44 @@ async function executeTool(
     return `Saved note: ${toolArgs.summary} on ${toolArgs.date}`;
   }
 
+  if (toolName === "save_weekly_lunch_plan") {
+    const child = context.children.find(
+      (c) => c.first_name.toLowerCase() === toolArgs.child_name.toLowerCase()
+    );
+
+    if (!child) {
+      return `Could not find child named ${toolArgs.child_name}`;
+    }
+
+    const now = new Date();
+    const day = now.getDay();
+    const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + daysUntilMonday);
+    monday.setHours(0, 0, 0, 0);
+    const weekStart = monday.toISOString().split("T")[0];
+
+    const { error } = await supabase
+      .from("weekly_lunch_plans")
+      .upsert({
+        child_id: child.id,
+        parent_id: context.parentId,
+        week_start: weekStart,
+        packed_lunch_days: toolArgs.packed_lunch_days,
+      }, { onConflict: "child_id,week_start" });
+
+    if (error) {
+      console.error("Error saving lunch plan:", error);
+      return `Error saving lunch plan: ${error.message}`;
+    }
+
+    const days = toolArgs.packed_lunch_days;
+    if (days.length === 0) {
+      return `Saved: ${toolArgs.child_name} has school dinners all week`;
+    }
+    return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
+  }
+
   if (toolName === "complete_onboarding") {
     await supabase
       .from("onboarding_state")
@@ -424,7 +487,6 @@ async function generateReply(
     { role: "user", content: incomingMessage },
   ];
 
-  // First API call — may include tool use
   const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -448,7 +510,6 @@ async function generateReply(
   const data = await response.json();
   const choice = data.choices?.[0];
 
-  // If AI wants to use a tool, execute it and get final response
   if (choice?.finish_reason === "tool_calls" && choice?.message?.tool_calls) {
     const toolResults = [];
 
@@ -467,7 +528,6 @@ async function generateReply(
       });
     }
 
-    // Second API call with tool results to get final conversational reply
     const followUpResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -572,14 +632,11 @@ async function sendWhatsApp(to: string, body: string): Promise<boolean> {
 }
 
 // ── Onboarding initiator ──────────────────────────────────────────────────────
-// This is called when a parent first signs up via the web app
-// It sends them a welcome WhatsApp and kicks off onboarding
 
 async function handleNewParent(phone: string, context: MontyContext): Promise<string> {
   const childNames = context.children.map((c) => c.first_name).join(" and ");
   const schoolName = context.children[0]?.school_name || "school";
 
-  // Mark as collecting
   await supabase
     .from("onboarding_state")
     .upsert({ phone_number: phone, status: "collecting" });
@@ -611,13 +668,11 @@ Deno.serve(async (req: Request) => {
 
     console.log(`Inbound from ${from}: "${incomingMessage}"`);
 
-    // Load context and conversation in parallel
     const [context, conversationId] = await Promise.all([
       loadParentContext(from),
       getOrCreateConversation(from),
     ]);
 
-    // Parent not found in system
     if (!context) {
       const reply = `Hi! 👋 I'm Monty, a school reminder assistant for UK primary school parents. To get set up, head to primary-nudge.lovable.app and create your account — it only takes a minute!`;
       await saveMessage(conversationId, "inbound", incomingMessage);
@@ -629,21 +684,17 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Save inbound message
     await saveMessage(conversationId, "inbound", incomingMessage);
 
     let reply: string;
 
-    // New parent — kick off onboarding
     if (context.onboardingStatus === "new") {
       reply = await handleNewParent(from, context);
     } else {
-      // Normal conversation (including mid-onboarding)
       const history = await getRecentHistory(conversationId, 10);
       reply = await generateReply(incomingMessage, history, context, from);
     }
 
-    // Save and send reply
     await saveMessage(conversationId, "outbound", reply);
     await sendWhatsApp(from, reply);
 
@@ -661,3 +712,4 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
+
