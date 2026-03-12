@@ -347,6 +347,36 @@ async function sendReminders(period: "morning" | "evening") {
         refIdsToLog.push({ refId, title: rem.title, type: "child_reminder" });
       }
 
+      // 2b. Weekly packed lunch plan
+      // Check if today/tomorrow is a packed lunch day for this child
+      const { data: lunchPlan } = await supabase
+        .from("weekly_lunch_plans")
+        .select("packed_lunch_days")
+        .eq("child_id", child.id)
+        .eq("week_start", (() => {
+          // Get Monday of the target week
+          const d = new Date(targetDate);
+          const day = d.getDay();
+          const diff = day === 0 ? -6 : 1 - day;
+          d.setDate(d.getDate() + diff);
+          return d.toISOString().split("T")[0];
+        })())
+        .maybeSingle();
+
+      if (lunchPlan && lunchPlan.packed_lunch_days?.includes(targetDay)) {
+        const refId = `lunch_${child.id}_${targetDateStr}_${period}`;
+        if (!(await alreadySent(phone, refId, period, today))) {
+          reminderItems.push({
+            childName: child.first_name,
+            title: "Packed lunch",
+            emoji: "🥪",
+            type: "reminder",
+            refId,
+          });
+          refIdsToLog.push({ refId, title: "Packed lunch", type: "lunch_plan" });
+        }
+      }
+
       // 3. School-wide recurring reminders
       const schoolIdFilter = schoolIds.length > 0
         ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null`
