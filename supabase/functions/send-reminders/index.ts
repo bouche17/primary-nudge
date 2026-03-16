@@ -349,18 +349,20 @@ async function sendReminders(period: "morning" | "evening") {
 
       // 2b. Weekly packed lunch plan
       // Check if today/tomorrow is a packed lunch day for this child
+      // Calculate Monday of the target week using local date arithmetic
+      // Avoids UTC conversion bugs by working with the date string directly
+      const targetDateObj = new Date(targetDateStr + "T12:00:00Z"); // noon UTC = safe local date
+      const targetDayNum = targetDateObj.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+      const daysFromMonday = targetDayNum === 0 ? 6 : targetDayNum - 1;
+      const mondayObj = new Date(targetDateObj);
+      mondayObj.setUTCDate(targetDateObj.getUTCDate() - daysFromMonday);
+      const weekStartStr = mondayObj.toISOString().split("T")[0];
+
       const { data: lunchPlan } = await supabase
         .from("weekly_lunch_plans")
         .select("packed_lunch_days")
         .eq("child_id", child.id)
-        .eq("week_start", (() => {
-          // Get Monday of the target week
-          const d = new Date(targetDate);
-          const day = d.getDay();
-          const diff = day === 0 ? -6 : 1 - day;
-          d.setDate(d.getDate() + diff);
-          return d.toISOString().split("T")[0];
-        })())
+        .eq("week_start", weekStartStr)
         .maybeSingle();
 
       if (lunchPlan && lunchPlan.packed_lunch_days?.includes(targetDay)) {
