@@ -2,10 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-);
+const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
@@ -45,9 +42,9 @@ function isEventRelevantToChild(eventTitle: string, childYearGroup: string): boo
 
   // Patterns that indicate a specific year group in the event title
   const yearPatterns = [
-    /\by(\d+)\b/,           // Y3, Y5 etc.
-    /\byear\s*(\d+)\b/,     // Year 3, Year3
-    /\byr\s*(\d+)\b/,       // Yr3, Yr 3
+    /\by(\d+)\b/, // Y3, Y5 etc.
+    /\byear\s*(\d+)\b/, // Year 3, Year3
+    /\byr\s*(\d+)\b/, // Yr3, Yr 3
   ];
 
   for (const pattern of yearPatterns) {
@@ -80,17 +77,14 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   params.append("From", `whatsapp:${from}`);
   params.append("Body", text);
 
-  const res = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: "Basic " + btoa(`${sid}:${token}`),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: params.toString(),
-    }
-  );
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + btoa(`${sid}:${token}`),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params.toString(),
+  });
 
   if (!res.ok) console.error("Twilio error:", await res.text());
   return res.ok;
@@ -98,12 +92,7 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
 
 // ── Dedup check ───────────────────────────────────────────────────────────────
 
-async function alreadySent(
-  phone: string,
-  refId: string,
-  period: string,
-  today: string
-): Promise<boolean> {
+async function alreadySent(phone: string, refId: string, period: string, today: string): Promise<boolean> {
   const { data } = await supabase
     .from("reminder_log")
     .select("id")
@@ -115,13 +104,7 @@ async function alreadySent(
   return (data?.length ?? 0) > 0;
 }
 
-async function logReminder(
-  phone: string,
-  type: string,
-  refId: string,
-  title: string,
-  period: string
-) {
+async function logReminder(phone: string, type: string, refId: string, title: string, period: string) {
   await supabase.from("reminder_log").insert({
     phone_number: phone,
     reminder_type: type,
@@ -135,13 +118,8 @@ async function logReminder(
 // Builds ONE consolidated message per parent per period
 // rather than firing a separate message for each reminder
 
-function buildConsolidatedMessage(
-  items: ReminderItem[],
-  period: "morning" | "evening"
-): string {
-  const greeting = period === "morning"
-    ? "Good morning! ☀️"
-    : "Good evening! 🌙";
+function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "evening"): string {
+  const greeting = period === "morning" ? "Good morning! ☀️" : "Good evening! 🌙";
 
   // Single item — keep it short and personal
   if (items.length === 1) {
@@ -157,14 +135,14 @@ function buildConsolidatedMessage(
   const lines = items.map((item) => buildItemLine(item, period));
 
   if (period === "morning") {
-    const intro = items.length === 2
-      ? `${greeting} A couple of things for today:`
-      : `${greeting} Here's what's on today:`;
+    const intro =
+      items.length === 2 ? `${greeting} A couple of things for today:` : `${greeting} Here's what's on today:`;
     return `${intro}\n\n${lines.join("\n")}\n\nHave a great day! 😊`;
   } else {
-    const intro = items.length === 2
-      ? `${greeting} Just a couple of things to prep for tomorrow:`
-      : `${greeting} A few things to get ready for tomorrow:`;
+    const intro =
+      items.length === 2
+        ? `${greeting} Just a couple of things to prep for tomorrow:`
+        : `${greeting} A few things to get ready for tomorrow:`;
     return `${intro}\n\n${lines.join("\n")}\n\nHope you have a lovely evening! 😊`;
   }
 }
@@ -210,8 +188,9 @@ function buildSingleMorning(item: ReminderItem): string {
     "Homework due": `Morning! ${emoji} ${childName}'s homework is due in today — hope it's all done! ✏️`,
   };
 
-  return actionMap[title] ||
-    `Morning! ${emoji} Quick reminder — ${childName} has *${title}* today. Have a great day! 😊`;
+  return (
+    actionMap[title] || `Morning! ${emoji} Quick reminder — ${childName} has *${title}* today. Have a great day! 😊`
+  );
 }
 
 function buildSingleEvening(item: ReminderItem): string {
@@ -230,8 +209,10 @@ function buildSingleEvening(item: ReminderItem): string {
     "Homework due": `Hey! ${emoji} ${childName}'s homework is due tomorrow — just checking it's all done! ✏️`,
   };
 
-  return actionMap[title] ||
-    `Hey! ${emoji} Just a reminder — ${childName} has *${title}* tomorrow. Worth getting ready tonight! 😊`;
+  return (
+    actionMap[title] ||
+    `Hey! ${emoji} Just a reminder — ${childName} has *${title}* tomorrow. Worth getting ready tonight! 😊`
+  );
 }
 
 // ── Main send logic ───────────────────────────────────────────────────────────
@@ -250,9 +231,7 @@ async function sendReminders(period: "morning" | "evening") {
   const targetEnd = `${targetDateStr}T23:59:59Z`;
 
   // Load all children including year_group for event filtering
-  const { data: children } = await supabase
-    .from("children")
-    .select("id, first_name, school_id, parent_id, year_group");
+  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id, year_group");
 
   if (!children || children.length === 0) {
     console.log("No children registered yet");
@@ -330,9 +309,7 @@ async function sendReminders(period: "morning" | "evening") {
         .eq("day_of_week", targetDay);
 
       for (const rem of childReminders || []) {
-        const shouldSend =
-          rem.reminder_time === "both" ||
-          rem.reminder_time === period;
+        const shouldSend = rem.reminder_time === "both" || rem.reminder_time === period;
         if (!shouldSend) continue;
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
@@ -380,9 +357,8 @@ async function sendReminders(period: "morning" | "evening") {
       }
 
       // 3. School-wide recurring reminders
-      const schoolIdFilter = schoolIds.length > 0
-        ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null`
-        : `school_id.is.null`;
+      const schoolIdFilter =
+        schoolIds.length > 0 ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null` : `school_id.is.null`;
 
       const { data: schoolReminders } = await supabase
         .from("school_reminders")
@@ -468,15 +444,14 @@ Deno.serve(async (req: Request) => {
 
     await sendReminders(period);
 
-    return new Response(
-      JSON.stringify({ success: true, period }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ success: true, period }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (error) {
     console.error("send-reminders error:", error);
-    return new Response(
-      JSON.stringify({ error: String(error) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: String(error) }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
