@@ -236,6 +236,38 @@ export type Database = {
           },
         ]
       }
+      newsletter_log: {
+        Row: {
+          id: string
+          newsletter_title: string | null
+          newsletter_url: string
+          notified_at: string | null
+          school_id: string
+        }
+        Insert: {
+          id?: string
+          newsletter_title?: string | null
+          newsletter_url: string
+          notified_at?: string | null
+          school_id: string
+        }
+        Update: {
+          id?: string
+          newsletter_title?: string | null
+          newsletter_url?: string
+          notified_at?: string | null
+          school_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "newsletter_log_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       onboarding_state: {
         Row: {
           collected_data: Json | null
