@@ -41,11 +41,6 @@ const Signup = () => {
       toast({ title: "Password too short", description: "Password must be at least 6 characters.", variant: "destructive" });
       return;
     }
-    if (phone.trim() && !isValidPhone(phone)) {
-      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
-      return;
-    }
-
     setLoading(true);
     const { data: signUpData, error } = await supabase.auth.signUp({
       email,
