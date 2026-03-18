@@ -206,13 +206,7 @@ const Onboarding = () => {
       consent_type: "signup",
     });
 
-    // Mark onboarding as complete
-    await supabase.from("onboarding_state").insert({
-      phone_number: phoneNumber,
-      status: "complete",
-    });
-
-    // Send welcome WhatsApp message (fire-and-forget)
+    // Send welcome WhatsApp message and mark onboarding complete (handled by edge function)
     supabase.functions.invoke("send-welcome", {
       body: { user_id: user.id },
     }).catch((err) => console.error("Welcome message failed:", err));
