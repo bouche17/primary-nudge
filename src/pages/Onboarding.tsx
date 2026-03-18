@@ -42,7 +42,9 @@ const Onboarding = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const [step, setStep] = useState<"school" | "children" | "done">("school");
+  const [step, setStep] = useState<"phone" | "school" | "children" | "done">("phone");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [schools, setSchools] = useState<School[]>([]);
   const [searching, setSearching] = useState(false);
