@@ -54,14 +54,6 @@ const Signup = () => {
       return;
     }
 
-    // Save phone number to profiles if provided
-    if (signUpData.user && phone.trim()) {
-      await supabase.from("profiles").insert({
-        user_id: signUpData.user.id,
-        phone_number: normalizePhone(phone),
-      });
-    }
-
     toast({
       title: "Check your email",
       description: "We've sent you a confirmation link. Please verify your email to continue.",
