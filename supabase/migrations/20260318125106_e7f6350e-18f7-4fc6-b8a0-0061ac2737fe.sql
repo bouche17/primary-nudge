@@ -1,0 +1,1 @@
+ALTER TABLE public.onboarding_state ADD COLUMN IF NOT EXISTS user_id uuid;

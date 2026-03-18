@@ -277,6 +277,7 @@ export type Database = {
           phone_number: string
           status: string
           updated_at: string | null
+          user_id: string | null
         }
         Insert: {
           collected_data?: Json | null
@@ -286,6 +287,7 @@ export type Database = {
           phone_number: string
           status?: string
           updated_at?: string | null
+          user_id?: string | null
         }
         Update: {
           collected_data?: Json | null
@@ -295,6 +297,7 @@ export type Database = {
           phone_number?: string
           status?: string
           updated_at?: string | null
+          user_id?: string | null
         }
         Relationships: []
       }
