@@ -64,7 +64,7 @@ const Hero = () => {
               </Button>
             </div>
             <p className="text-sm text-muted-foreground mt-4">
-              ✨ Free to use · No app needed · Works with any UK primary school
+              No app needed · Works with any UK primary school
             </p>
           </motion.div>
 
