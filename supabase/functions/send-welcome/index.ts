@@ -1,6 +1,9 @@
 // send-welcome/index.ts
-// Sends a welcome WhatsApp message to a newly onboarded parent
-// Called from the frontend after onboarding completes
+// Called by the frontend when a parent completes onboarding (clicks "Finish setup")
+// Inserts a row into onboarding_state and sends a welcome WhatsApp from Monty
+// 
+// Called via POST with JSON body: { user_id: "uuid" }
+// Or via GET with query param: ?user_id=uuid
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -18,7 +21,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const WELCOME_MESSAGE = `Hi! 👋 I'm Monty — I'm all set up and ready to help you stay on top of school life. Just message me here any time to add reminders, ask what's coming up, or tell me about upcoming events. I'll send you a morning heads-up on days when there's something to remember. Talk soon! 🎒`;
+// ── WhatsApp sender ───────────────────────────────────────────────────────────
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   const params = new URLSearchParams();
@@ -39,10 +42,31 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   );
 
   if (!res.ok) {
-    console.error("Twilio error:", await res.text());
+    const err = await res.text();
+    console.error("Twilio error:", err);
   }
   return res.ok;
 }
+
+// ── Welcome message builder ───────────────────────────────────────────────────
+
+function buildWelcomeMessage(childNames: string[]): string {
+  const sandboxNote = `\n\n_To receive reminders, make sure you've joined the Monty WhatsApp service by sending *join cannot-printed* to *+1 415 523 8886* first._`;
+
+  if (childNames.length === 0) {
+    return `Hi! 👋 I'm Monty — I'm all set up and ready to help you stay on top of school life.\n\nJust message me here any time to add reminders, ask what's coming up, or tell me about an upcoming event. I'll send you a morning heads-up on days when there's something to remember. 🎒${sandboxNote}`;
+  }
+
+  const names = childNames.length === 1
+    ? childNames[0]
+    : childNames.length === 2
+      ? `${childNames[0]} and ${childNames[1]}`
+      : `${childNames.slice(0, -1).join(", ")} and ${childNames[childNames.length - 1]}`;
+
+  return `Hi! 👋 I'm Monty — I'm all set up and ready to help you keep on top of school life for ${names}.\n\nJust message me here any time — tell me about PE days, packed lunch days, school trips, or anything else you want to remember. I'll send you a morning heads-up when it matters. 🎒\n\nTo get started, try saying something like *"${childNames[0]} has PE on Tuesdays"* 😊${sandboxNote}`;
+}
+
+// ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -50,35 +74,77 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { user_id } = await req.json();
+    // Get user_id from POST body or GET query param
+    let userId: string | null = null;
 
-    if (!user_id) {
+    if (req.method === "POST") {
+      const body = await req.json();
+      userId = body.user_id;
+    } else {
+      const url = new URL(req.url);
+      userId = url.searchParams.get("user_id");
+    }
+
+    if (!userId) {
       return new Response(
         JSON.stringify({ error: "user_id is required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Look up the user's phone number
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("phone_number")
-      .eq("user_id", user_id)
+    // Check if already welcomed
+    const { data: existing } = await supabase
+      .from("onboarding_state")
+      .select("id")
+      .eq("user_id", userId)
       .maybeSingle();
 
-    if (profileError || !profile?.phone_number) {
-      console.error("Could not find phone number for user:", user_id, profileError);
+    if (existing) {
+      console.log("Already welcomed user:", userId);
+      return new Response(
+        JSON.stringify({ message: "Already welcomed" }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Get their phone number
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("phone_number")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!profile?.phone_number) {
       return new Response(
         JSON.stringify({ error: "No phone number found for user" }),
         { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Send the welcome message
-    const sent = await sendWhatsApp(profile.phone_number, WELCOME_MESSAGE);
+    // Get their children's names
+    const { data: children } = await supabase
+      .from("children")
+      .select("first_name")
+      .eq("parent_id", userId);
+
+    const childNames = (children || []).map((c: any) => c.first_name);
+
+    // Build and send welcome message
+    const message = buildWelcomeMessage(childNames);
+    const ok = await sendWhatsApp(profile.phone_number, message);
+
+    // Mark onboarding as complete regardless of WhatsApp success
+    // (so we don't spam if they message manually before welcome arrives)
+    await supabase.from("onboarding_state").insert({
+      user_id: userId,
+      phone_number: profile.phone_number,
+      status: "complete",
+    });
+
+    console.log(`Welcome sent to ${profile.phone_number} for user ${userId}`);
 
     return new Response(
-      JSON.stringify({ success: sent, phone: profile.phone_number }),
+      JSON.stringify({ success: ok, phone: profile.phone_number }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
