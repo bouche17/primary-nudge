@@ -231,6 +231,7 @@ const Onboarding = () => {
           </h1>
           {step !== "done" && (
             <div className="flex items-center justify-center gap-2 mt-4">
+              <div className={`w-3 h-3 rounded-full ${step === "phone" ? "bg-primary" : "bg-primary/30"}`} />
               <div className={`w-3 h-3 rounded-full ${step === "school" ? "bg-primary" : "bg-primary/30"}`} />
               <div className={`w-3 h-3 rounded-full ${step === "children" ? "bg-primary" : "bg-primary/30"}`} />
             </div>
