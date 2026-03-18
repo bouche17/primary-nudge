@@ -60,10 +60,26 @@ const Onboarding = () => {
     }
   }, [user, authLoading, navigate]);
 
-  // Check if user already has children (already onboarded) - only redirect if not coming from dashboard
+  // Check if user already has children (already onboarded) or already has phone
   useEffect(() => {
+    if (!user) return;
     const fromDashboard = new URLSearchParams(window.location.search).get("add") === "true";
-    if (user && !fromDashboard) {
+    
+    // Check profile for existing phone number
+    supabase
+      .from("profiles")
+      .select("phone_number")
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(({ data: profile }) => {
+        if (profile?.phone_number) {
+          // Already has phone, skip to school step
+          setPhoneNumber(profile.phone_number);
+          if (step === "phone") setStep("school");
+        }
+      });
+
+    if (!fromDashboard) {
       supabase
         .from("children")
         .select("id")
