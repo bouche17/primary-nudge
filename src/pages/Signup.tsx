@@ -15,7 +15,6 @@ import { Separator } from "@/components/ui/separator";
 const Signup = () => {
   const { user, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [consent, setConsent] = useState(false);
