@@ -35,7 +35,7 @@ const Hero = () => {
 
             <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-secondary text-secondary-foreground text-sm font-semibold mb-6">
               <span className="w-2 h-2 rounded-full bg-primary animate-pulse-soft" />
-              AI-powered school reminders
+              Built by parents, for all those busy parents
             </span>
             <h1 className="text-4xl md:text-5xl lg:text-6xl text-foreground leading-tight mb-6" style={{ fontFamily: "'DM Sans', sans-serif", fontWeight: 900 }}>
               Never forget
