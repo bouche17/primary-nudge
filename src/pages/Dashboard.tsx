@@ -11,7 +11,7 @@ interface ChildWithSchool {
   id: string;
   first_name: string;
   year_group: string;
-  schools: { name: string; postcode: string } | null;
+  schools: {name: string;postcode: string;} | null;
 }
 
 const Dashboard = () => {
@@ -37,13 +37,13 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (user) {
-      supabase
-        .from("children")
-        .select("id, first_name, year_group, schools(name, postcode)")
-        .eq("parent_id", user.id)
-        .then(({ data }) => {
-          if (data) setChildren(data as unknown as ChildWithSchool[]);
-        });
+      supabase.
+      from("children").
+      select("id, first_name, year_group, schools(name, postcode)").
+      eq("parent_id", user.id).
+      then(({ data }) => {
+        if (data) setChildren(data as unknown as ChildWithSchool[]);
+      });
     }
   }, [user]);
 
@@ -59,8 +59,8 @@ const Dashboard = () => {
           <span className="font-heading font-black text-lg text-foreground">Monty</span>
         </div>
         <div className="flex items-center gap-2">
-          {isAdmin && (
-            <>
+          {isAdmin &&
+          <>
               <Link to="/bot-flows">
                 <Button variant="ghost" size="icon"><Bot className="w-4 h-4" /></Button>
               </Link>
@@ -71,7 +71,7 @@ const Dashboard = () => {
                 <Button variant="ghost" size="icon"><Bell className="w-4 h-4" /></Button>
               </Link>
             </>
-          )}
+          }
           <Link to="/settings">
             <Button variant="ghost" size="icon"><Settings className="w-4 h-4" /></Button>
           </Link>
@@ -80,12 +80,12 @@ const Dashboard = () => {
       </nav>
 
       <main className="max-w-2xl mx-auto px-6 py-10">
-        <h1 className="text-2xl font-display font-black text-foreground mb-1">Your children</h1>
+        <h1 className="text-2xl text-foreground mb-1 font-sans font-bold">Your children</h1>
         <p className="text-muted-foreground text-sm mb-6">Monty sends reminders for each child's school.</p>
 
         <div className="space-y-3">
-          {children.map((child) => (
-            <div key={child.id} className="flex items-center justify-between bg-card rounded-2xl p-5 border border-border">
+          {children.map((child) =>
+          <div key={child.id} className="flex items-center justify-between bg-card rounded-2xl p-5 border border-border">
               <div>
                 <p className="font-heading font-bold text-foreground">{child.first_name}</p>
                 <p className="text-sm text-muted-foreground">
@@ -96,29 +96,29 @@ const Dashboard = () => {
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
-          ))}
+          )}
         </div>
 
         <div className="flex gap-3 mt-4">
           <Button
             variant="outline"
             onClick={() => navigate("/onboarding?add=true")}
-            className="rounded-full font-cta font-semibold"
-          >
+            className="rounded-full font-cta font-semibold">
+            
             <Plus className="w-4 h-4 mr-2" />
             Add another child
           </Button>
           <Button
             onClick={() => window.open("https://wa.me/14155238886?text=join%20cannot-printed", "_blank")}
-            className="rounded-full font-cta font-bold"
-          >
+            className="rounded-full font-cta font-bold">
+            
             <MessageCircle className="w-4 h-4 mr-2" />
             Ask Monty
           </Button>
         </div>
       </main>
-    </div>
-  );
+    </div>);
+
 };
 
 export default Dashboard;
