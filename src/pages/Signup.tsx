@@ -81,11 +81,6 @@ const Signup = () => {
             <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="phone">WhatsApp number</Label>
-            <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900000" />
-            <p className="text-xs text-muted-foreground">So Monty can send you reminders via WhatsApp</p>
-          </div>
-          <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
             <Input id="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 6 characters" />
           </div>
