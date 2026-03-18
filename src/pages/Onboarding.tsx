@@ -239,7 +239,50 @@ const Onboarding = () => {
         </div>
 
         <AnimatePresence mode="wait">
-          {/* Step 1: Find school */}
+          {/* Step 1: WhatsApp number */}
+          {step === "phone" && (
+            <motion.div
+              key="phone"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="bg-card rounded-2xl p-6 border border-border shadow-sm"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <MessageCircle className="w-5 h-5 text-primary" />
+                <h2 className="font-heading font-bold text-lg text-foreground">Your WhatsApp number</h2>
+              </div>
+              <p className="text-muted-foreground text-sm mb-5">
+                Monty will send your reminders here. We'll only use it for school updates — nothing else!
+              </p>
+
+              <div className="space-y-2">
+                <Label htmlFor="phone">Phone number</Label>
+                <Input
+                  id="phone"
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  placeholder="+44 7700 900000"
+                  autoFocus
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter your number in international format, e.g. +44 7700 900000
+                </p>
+              </div>
+
+              <Button
+                onClick={savePhone}
+                disabled={savingPhone}
+                className="w-full rounded-full font-cta font-bold mt-5"
+              >
+                {savingPhone ? "Saving…" : "Continue"}
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
+            </motion.div>
+          )}
+
+          {/* Step 2: Find school */}
           {step === "school" && (
             <motion.div
               key="school"
