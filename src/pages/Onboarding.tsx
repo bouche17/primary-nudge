@@ -113,6 +113,37 @@ const Onboarding = () => {
     return () => clearTimeout(timer);
   }, [searchQuery, searchSchools]);
 
+  const savePhone = async () => {
+    if (!phoneNumber.trim()) {
+      toast({ title: "Phone number required", description: "Please enter your WhatsApp number so Monty can send you reminders.", variant: "destructive" });
+      return;
+    }
+    if (!isValidPhone(phoneNumber)) {
+      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
+      return;
+    }
+    if (!user) return;
+
+    setSavingPhone(true);
+    const normalized = normalizePhone(phoneNumber);
+
+    // Upsert profile with phone number
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase.from("profiles").update({ phone_number: normalized }).eq("user_id", user.id);
+    } else {
+      await supabase.from("profiles").insert({ user_id: user.id, phone_number: normalized });
+    }
+
+    setSavingPhone(false);
+    setStep("school");
+  };
+
   const selectSchool = (school: School) => {
     setSelectedSchool(school);
     setCurrentChild((prev) => ({ ...prev, school_id: school.id, school_name: school.name }));
