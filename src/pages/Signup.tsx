@@ -9,13 +9,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Sparkles } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { isValidPhone, normalizePhone } from "@/lib/phone";
+
 import { Separator } from "@/components/ui/separator";
 
 const Signup = () => {
   const { user, loading: authLoading } = useAuth();
   const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [consent, setConsent] = useState(false);
@@ -42,11 +41,6 @@ const Signup = () => {
       toast({ title: "Password too short", description: "Password must be at least 6 characters.", variant: "destructive" });
       return;
     }
-    if (phone.trim() && !isValidPhone(phone)) {
-      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
-      return;
-    }
-
     setLoading(true);
     const { data: signUpData, error } = await supabase.auth.signUp({
       email,
@@ -58,14 +52,6 @@ const Signup = () => {
       toast({ title: "Signup failed", description: error.message, variant: "destructive" });
       setLoading(false);
       return;
-    }
-
-    // Save phone number to profiles if provided
-    if (signUpData.user && phone.trim()) {
-      await supabase.from("profiles").insert({
-        user_id: signUpData.user.id,
-        phone_number: normalizePhone(phone),
-      });
     }
 
     toast({
@@ -93,11 +79,6 @@ const Signup = () => {
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input id="email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="phone">WhatsApp number</Label>
-            <Input id="phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+44 7700 900000" />
-            <p className="text-xs text-muted-foreground">So Monty can send you reminders via WhatsApp</p>
           </div>
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>

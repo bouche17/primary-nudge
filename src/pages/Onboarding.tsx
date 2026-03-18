@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Search, Plus, Trash2, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Sparkles, Search, Plus, Trash2, ArrowRight, CheckCircle2, MessageCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
+import { isValidPhone, normalizePhone } from "@/lib/phone";
 
 interface School {
   id: string;
@@ -41,7 +42,9 @@ const Onboarding = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const [step, setStep] = useState<"school" | "children" | "done">("school");
+  const [step, setStep] = useState<"phone" | "school" | "children" | "done">("phone");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [schools, setSchools] = useState<School[]>([]);
   const [searching, setSearching] = useState(false);
@@ -57,10 +60,26 @@ const Onboarding = () => {
     }
   }, [user, authLoading, navigate]);
 
-  // Check if user already has children (already onboarded) - only redirect if not coming from dashboard
+  // Check if user already has children (already onboarded) or already has phone
   useEffect(() => {
+    if (!user) return;
     const fromDashboard = new URLSearchParams(window.location.search).get("add") === "true";
-    if (user && !fromDashboard) {
+    
+    // Check profile for existing phone number
+    supabase
+      .from("profiles")
+      .select("phone_number")
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(({ data: profile }) => {
+        if (profile?.phone_number) {
+          // Already has phone, skip to school step
+          setPhoneNumber(profile.phone_number);
+          if (step === "phone") setStep("school");
+        }
+      });
+
+    if (!fromDashboard) {
       supabase
         .from("children")
         .select("id")
@@ -93,6 +112,37 @@ const Onboarding = () => {
     const timer = setTimeout(() => searchSchools(searchQuery), 300);
     return () => clearTimeout(timer);
   }, [searchQuery, searchSchools]);
+
+  const savePhone = async () => {
+    if (!phoneNumber.trim()) {
+      toast({ title: "Phone number required", description: "Please enter your WhatsApp number so Monty can send you reminders.", variant: "destructive" });
+      return;
+    }
+    if (!isValidPhone(phoneNumber)) {
+      toast({ title: "Invalid phone number", description: "Please enter a valid international number starting with + (e.g. +44 7700 900000).", variant: "destructive" });
+      return;
+    }
+    if (!user) return;
+
+    setSavingPhone(true);
+    const normalized = normalizePhone(phoneNumber);
+
+    // Upsert profile with phone number
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase.from("profiles").update({ phone_number: normalized }).eq("user_id", user.id);
+    } else {
+      await supabase.from("profiles").insert({ user_id: user.id, phone_number: normalized });
+    }
+
+    setSavingPhone(false);
+    setStep("school");
+  };
 
   const selectSchool = (school: School) => {
     setSelectedSchool(school);
@@ -181,6 +231,7 @@ const Onboarding = () => {
           </h1>
           {step !== "done" && (
             <div className="flex items-center justify-center gap-2 mt-4">
+              <div className={`w-3 h-3 rounded-full ${step === "phone" ? "bg-primary" : "bg-primary/30"}`} />
               <div className={`w-3 h-3 rounded-full ${step === "school" ? "bg-primary" : "bg-primary/30"}`} />
               <div className={`w-3 h-3 rounded-full ${step === "children" ? "bg-primary" : "bg-primary/30"}`} />
             </div>
@@ -188,7 +239,50 @@ const Onboarding = () => {
         </div>
 
         <AnimatePresence mode="wait">
-          {/* Step 1: Find school */}
+          {/* Step 1: WhatsApp number */}
+          {step === "phone" && (
+            <motion.div
+              key="phone"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="bg-card rounded-2xl p-6 border border-border shadow-sm"
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <MessageCircle className="w-5 h-5 text-primary" />
+                <h2 className="font-heading font-bold text-lg text-foreground">Your WhatsApp number</h2>
+              </div>
+              <p className="text-muted-foreground text-sm mb-5">
+                Monty will send your reminders here. We'll only use it for school updates — nothing else!
+              </p>
+
+              <div className="space-y-2">
+                <Label htmlFor="phone">Phone number</Label>
+                <Input
+                  id="phone"
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  placeholder="+44 7700 900000"
+                  autoFocus
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter your number in international format, e.g. +44 7700 900000
+                </p>
+              </div>
+
+              <Button
+                onClick={savePhone}
+                disabled={savingPhone}
+                className="w-full rounded-full font-cta font-bold mt-5"
+              >
+                {savingPhone ? "Saving…" : "Continue"}
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Button>
+            </motion.div>
+          )}
+
+          {/* Step 2: Find school */}
           {step === "school" && (
             <motion.div
               key="school"
