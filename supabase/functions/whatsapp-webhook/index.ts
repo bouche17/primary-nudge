@@ -10,7 +10,7 @@ const supabase = createClient(
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -251,103 +251,92 @@ UK time: ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-
 }
 
 // ── AI tools (actions Monty can take) ────────────────────────────────────────
+// Claude API uses a different tool format to OpenAI/Gemini
 
 const tools = [
   {
-    type: "function",
-    function: {
-      name: "save_child_reminder",
-      description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child.",
-      parameters: {
-        type: "object",
-        properties: {
-          child_name: {
-            type: "string",
-            description: "The first name of the child this reminder is for",
-          },
-          title: {
-            type: "string",
-            description: "Short description of the reminder e.g. 'PE kit needed', 'Packed lunch', 'Forest School'",
-          },
-          emoji: {
-            type: "string",
-            description: "A relevant emoji e.g. 🏃 for PE, 🥪 for packed lunch, 🌲 for Forest School, 📚 for reading",
-          },
-          day_of_week: {
+    name: "save_child_reminder",
+    description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child.",
+    input_schema: {
+      type: "object",
+      properties: {
+        child_name: {
+          type: "string",
+          description: "The first name of the child this reminder is for",
+        },
+        title: {
+          type: "string",
+          description: "Short description of the reminder e.g. 'PE kit needed', 'Packed lunch', 'Forest School'",
+        },
+        emoji: {
+          type: "string",
+          description: "A relevant emoji e.g. 🏃 for PE, 🥪 for packed lunch, 🌲 for Forest School, 📚 for reading",
+        },
+        day_of_week: {
+          type: "string",
+          enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
+          description: "The day of the week this reminder applies to",
+        },
+        reminder_time: {
+          type: "string",
+          enum: ["morning", "evening", "both"],
+          description: "When to send the reminder. Use 'both' for things like PE kit (remind evening before AND morning of). Use 'morning' for most things.",
+        },
+      },
+      required: ["child_name", "title", "emoji", "day_of_week", "reminder_time"],
+    },
+  },
+  {
+    name: "save_parent_note",
+    description: "Save a note about a school event or important date the parent has mentioned, so Monty can remind them when it comes around.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "string",
+          description: "Brief summary of the note e.g. 'School trip to Jodrell Bank'",
+        },
+        date: {
+          type: "string",
+          description: "The date in YYYY-MM-DD format",
+        },
+        child_name: {
+          type: "string",
+          description: "Which child this is for (optional)",
+        },
+      },
+      required: ["summary", "date"],
+    },
+  },
+  {
+    name: "save_weekly_lunch_plan",
+    description: "Save which days a child needs a packed lunch for the upcoming week. Use this when a parent responds to the Sunday lunch check-in or tells you about packed lunch days for the week.",
+    input_schema: {
+      type: "object",
+      properties: {
+        child_name: {
+          type: "string",
+          description: "The first name of the child",
+        },
+        packed_lunch_days: {
+          type: "array",
+          items: {
             type: "string",
             enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-            description: "The day of the week this reminder applies to",
           },
-          reminder_time: {
-            type: "string",
-            enum: ["morning", "evening", "both"],
-            description: "When to send the reminder. Use 'both' for things like PE kit (remind evening before AND morning of). Use 'morning' for most things.",
-          },
+          description: "Which days this child needs a packed lunch. Empty array means school dinners all week.",
         },
-        required: ["child_name", "title", "emoji", "day_of_week", "reminder_time"],
       },
+      required: ["child_name", "packed_lunch_days"],
     },
   },
   {
-    type: "function",
-    function: {
-      name: "save_parent_note",
-      description: "Save a note about a school event or important date the parent has mentioned, so Monty can remind them when it comes around.",
-      parameters: {
-        type: "object",
-        properties: {
-          summary: {
-            type: "string",
-            description: "Brief summary of the note e.g. 'School trip to Jodrell Bank'",
-          },
-          date: {
-            type: "string",
-            description: "The date in YYYY-MM-DD format",
-          },
-          child_name: {
-            type: "string",
-            description: "Which child this is for (optional)",
-          },
-        },
-        required: ["summary", "date"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "save_weekly_lunch_plan",
-      description: "Save which days a child needs a packed lunch for the upcoming week. Use this when a parent responds to the Sunday lunch check-in or tells you about packed lunch days for the week.",
-      parameters: {
-        type: "object",
-        properties: {
-          child_name: {
-            type: "string",
-            description: "The first name of the child",
-          },
-          packed_lunch_days: {
-            type: "array",
-            items: {
-              type: "string",
-              enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-            },
-            description: "Which days this child needs a packed lunch. Empty array means school dinners all week.",
-          },
-        },
-        required: ["child_name", "packed_lunch_days"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "complete_onboarding",
-      description: "Mark onboarding as complete once all foundational reminders have been collected for all children.",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
+    name: "complete_onboarding",
+    description: "Mark onboarding as complete once all foundational reminders have been collected for all children.",
+    input_schema: {
+      type: "object",
+      properties: {},
+      required: [],
     },
   },
 ];
@@ -361,6 +350,7 @@ async function executeTool(
   phone: string
 ): Promise<string> {
   if (toolName === "save_child_reminder") {
+    // Find the child by name
     const child = context.children.find(
       (c) => c.first_name.toLowerCase() === toolArgs.child_name.toLowerCase()
     );
@@ -369,6 +359,7 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
+    // Check if reminder already exists for this child/day/title
     const { data: existing } = await supabase
       .from("child_reminders")
       .select("id")
@@ -378,6 +369,7 @@ async function executeTool(
       .maybeSingle();
 
     if (existing) {
+      // Update existing
       await supabase
         .from("child_reminders")
         .update({
@@ -388,6 +380,7 @@ async function executeTool(
         .eq("id", existing.id);
       return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     } else {
+      // Insert new
       const { error } = await supabase.from("child_reminders").insert({
         child_id: child.id,
         parent_id: context.parentId,
@@ -431,6 +424,7 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
+    // Work out the Monday of the upcoming week
     const now = new Date();
     const day = now.getDay();
     const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
@@ -460,7 +454,7 @@ async function executeTool(
     return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
   }
 
-  if (toolName === "complete_onboarding") {
+
     await supabase
       .from("onboarding_state")
       .update({ status: "complete" })
@@ -481,81 +475,93 @@ async function generateReply(
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(context);
 
+  // Claude API uses messages without system role — system is a top-level param
+  // Convert history to Claude format (user/assistant only)
   const messages = [
-    { role: "system", content: systemPrompt },
-    ...history,
+    ...history.map((m) => ({
+      role: m.role,
+      content: m.content,
+    })),
     { role: "user", content: incomingMessage },
   ];
 
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  // First API call to Claude
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${LOVABLE_API_KEY}`,
-      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 500,
+      system: systemPrompt,
       messages,
       tools,
-      tool_choice: "auto",
     }),
   });
 
   if (!response.ok) {
-    console.error("AI error:", await response.text());
+    console.error("Claude API error:", await response.text());
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
   const data = await response.json();
-  const choice = data.choices?.[0];
 
-  if (choice?.finish_reason === "tool_calls" && choice?.message?.tool_calls) {
+  // Claude returns stop_reason "tool_use" when it wants to call a tool
+  if (data.stop_reason === "tool_use") {
+    const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
     const toolResults = [];
 
-    for (const toolCall of choice.message.tool_calls) {
-      const toolName = toolCall.function.name;
-      const toolArgs = JSON.parse(toolCall.function.arguments);
+    for (const toolBlock of toolUseBlocks) {
+      const toolName = toolBlock.name;
+      const toolArgs = toolBlock.input;
       console.log(`Executing tool: ${toolName}`, toolArgs);
 
       const result = await executeTool(toolName, toolArgs, context, phone);
       console.log(`Tool result: ${result}`);
 
       toolResults.push({
-        tool_call_id: toolCall.id,
-        role: "tool",
+        type: "tool_result",
+        tool_use_id: toolBlock.id,
         content: result,
       });
     }
 
-    const followUpResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    // Second API call with tool results to get final conversational reply
+    const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 400,
+        system: systemPrompt,
         messages: [
           ...messages,
-          choice.message,
-          ...toolResults,
+          { role: "assistant", content: data.content },
+          { role: "user", content: toolResults },
         ],
       }),
     });
 
     if (!followUpResponse.ok) {
-      console.error("Follow-up AI error:", await followUpResponse.text());
+      console.error("Claude follow-up error:", await followUpResponse.text());
       return "Done! I've saved that for you 😊";
     }
 
     const followUpData = await followUpResponse.json();
-    return followUpData.choices?.[0]?.message?.content?.trim() ||
-      "Done! I've saved that for you 😊";
+    const textBlock = followUpData.content?.find((b: any) => b.type === "text");
+    return textBlock?.text?.trim() || "Done! I've saved that for you 😊";
   }
 
-  return choice?.message?.content?.trim() ||
+  // No tool use — just return the text response
+  const textBlock = data.content?.find((b: any) => b.type === "text");
+  return textBlock?.text?.trim() ||
     "Sorry, I had a little hiccup there! Try again in a moment 😊";
 }
 
@@ -632,11 +638,14 @@ async function sendWhatsApp(to: string, body: string): Promise<boolean> {
 }
 
 // ── Onboarding initiator ──────────────────────────────────────────────────────
+// This is called when a parent first signs up via the web app
+// It sends them a welcome WhatsApp and kicks off onboarding
 
 async function handleNewParent(phone: string, context: MontyContext): Promise<string> {
   const childNames = context.children.map((c) => c.first_name).join(" and ");
   const schoolName = context.children[0]?.school_name || "school";
 
+  // Mark as collecting
   await supabase
     .from("onboarding_state")
     .upsert({ phone_number: phone, status: "collecting" });
@@ -668,11 +677,13 @@ Deno.serve(async (req: Request) => {
 
     console.log(`Inbound from ${from}: "${incomingMessage}"`);
 
+    // Load context and conversation in parallel
     const [context, conversationId] = await Promise.all([
       loadParentContext(from),
       getOrCreateConversation(from),
     ]);
 
+    // Parent not found in system
     if (!context) {
       const reply = `Hi! 👋 I'm Monty, a school reminder assistant for UK primary school parents. To get set up, head to primary-nudge.lovable.app and create your account — it only takes a minute!`;
       await saveMessage(conversationId, "inbound", incomingMessage);
@@ -684,17 +695,21 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    // Save inbound message
     await saveMessage(conversationId, "inbound", incomingMessage);
 
     let reply: string;
 
+    // New parent — kick off onboarding
     if (context.onboardingStatus === "new") {
       reply = await handleNewParent(from, context);
     } else {
+      // Normal conversation (including mid-onboarding)
       const history = await getRecentHistory(conversationId, 10);
       reply = await generateReply(incomingMessage, history, context, from);
     }
 
+    // Save and send reply
     await saveMessage(conversationId, "outbound", reply);
     await sendWhatsApp(from, reply);
 
@@ -712,4 +727,3 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
-
