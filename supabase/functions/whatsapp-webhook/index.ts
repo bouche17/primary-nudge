@@ -669,6 +669,161 @@ To get started, I'd love to set up some personal reminders for ${context.childre
 Let's start with ${context.children[0].first_name} — what day do they have PE? 🏃`;
 }
 
+// ── Image type checker ────────────────────────────────────────────────────────
+
+function isImageType(contentType: string): boolean {
+  return contentType.startsWith("image/");
+}
+
+// ── Image message handler ─────────────────────────────────────────────────────
+// Downloads the image from Twilio, converts to base64, sends to Claude vision
+// Claude reads the image and extracts dates/events, saves them as parent_notes
+
+async function handleImageMessage(
+  mediaUrl: string,
+  mediaType: string,
+  caption: string,
+  context: MontyContext,
+  phone: string
+): Promise<string> {
+  try {
+    console.log("Fetching image from Twilio:", mediaUrl);
+
+    // Fetch image from Twilio (requires auth)
+    const imageRes = await fetch(mediaUrl, {
+      headers: {
+        Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+      },
+    });
+
+    if (!imageRes.ok) {
+      console.error("Failed to fetch image:", imageRes.status);
+      return "I couldn't read that image — could you try forwarding it again, or copy and paste the text instead? 😊";
+    }
+
+    const imageBuffer = await imageRes.arrayBuffer();
+    const imageBase64 = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+
+    const childNames = context.children.map((c) => c.first_name).join(" and ");
+    const today = new Date().toISOString().split("T")[0];
+
+    // Build Claude vision request
+    const systemPrompt = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
+
+Your job is to:
+1. Read the image carefully
+2. Extract ANY dates, events, deadlines, or action items relevant to school life
+3. For each item found, call the save_parent_note tool to save it
+4. Reply in a warm, concise way confirming exactly what you found and saved
+
+The parent's children are: ${childNames}
+Today's date is: ${today}
+
+If you can't find any actionable dates or events, let the parent know warmly and suggest they try sending the text instead.
+If the image is unclear or unreadable, ask them to try again.
+
+Always use British English. Keep replies to 3-5 sentences max.`;
+
+    const userContent = [
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: mediaType,
+          data: imageBase64,
+        },
+      },
+    ];
+
+    // Add caption as text if parent included one
+    if (caption) {
+      userContent.push({
+        type: "text",
+        source: undefined,
+        // @ts-ignore
+        text: caption,
+      } as any);
+    } else {
+      userContent.push({
+        type: "text",
+        source: undefined,
+        // @ts-ignore
+        text: "I've forwarded this from the school WhatsApp group — can you save any important dates?",
+      } as any);
+    }
+
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userContent }],
+        tools,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("Claude vision error:", await response.text());
+      return "I had trouble reading that image. Could you try forwarding it again? 😊";
+    }
+
+    const data = await response.json();
+
+    // Handle tool use — save extracted dates
+    if (data.stop_reason === "tool_use") {
+      const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
+      const toolResults = [];
+
+      for (const toolBlock of toolUseBlocks) {
+        const result = await executeTool(toolBlock.name, toolBlock.input, context, phone);
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolBlock.id,
+          content: result,
+        });
+      }
+
+      // Get final reply after saving
+      const followUp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 400,
+          system: systemPrompt,
+          messages: [
+            { role: "user", content: userContent },
+            { role: "assistant", content: data.content },
+            { role: "user", content: toolResults },
+          ],
+        }),
+      });
+
+      const followUpData = await followUp.json();
+      const textBlock = followUpData.content?.find((b: any) => b.type === "text");
+      return textBlock?.text?.trim() || "Done! I've saved those dates for you 😊";
+    }
+
+    // No tool use — Claude couldn't find anything or image was unreadable
+    const textBlock = data.content?.find((b: any) => b.type === "text");
+    return textBlock?.text?.trim() || "I couldn't find any dates in that image — could you try sending the text instead? 😊";
+
+  } catch (err) {
+    console.error("Image handling error:", err);
+    return "I had trouble reading that image. Could you try forwarding the text instead? 😊";
+  }
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -682,12 +837,19 @@ Deno.serve(async (req: Request) => {
 
     const from = params.get("From")?.replace("whatsapp:", "") || "";
     const incomingMessage = params.get("Body")?.trim() || "";
+    const numMedia = parseInt(params.get("NumMedia") || "0");
+    const mediaUrl = params.get("MediaUrl0") || "";
+    const mediaType = params.get("MediaContentType0") || "";
 
-    if (!from || !incomingMessage) {
-      return new Response("Missing From or Body", { status: 400 });
+    if (!from) {
+      return new Response("Missing From", { status: 400 });
     }
 
-    console.log(`Inbound from ${from}: "${incomingMessage}"`);
+    if (!incomingMessage && numMedia === 0) {
+      return new Response("Missing Body and Media", { status: 400 });
+    }
+
+    console.log(`Inbound from ${from}: "${incomingMessage}" (media: ${numMedia})`);
 
     // Load context and conversation in parallel
     const [context, conversationId] = await Promise.all([
@@ -698,7 +860,7 @@ Deno.serve(async (req: Request) => {
     // Parent not found in system
     if (!context) {
       const reply = `Hi! 👋 I'm Monty, a school reminder assistant for UK primary school parents. To get set up, head to primary-nudge.lovable.app and create your account — it only takes a minute!`;
-      await saveMessage(conversationId, "inbound", incomingMessage);
+      await saveMessage(conversationId, "inbound", incomingMessage || "[image]");
       await saveMessage(conversationId, "outbound", reply);
       await sendWhatsApp(from, reply);
       return new Response(
@@ -708,15 +870,18 @@ Deno.serve(async (req: Request) => {
     }
 
     // Save inbound message
-    await saveMessage(conversationId, "inbound", incomingMessage);
+    await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]");
 
     let reply: string;
 
     // New parent — kick off onboarding
     if (context.onboardingStatus === "new") {
       reply = await handleNewParent(from, context);
+    } else if (numMedia > 0 && mediaUrl && isImageType(mediaType)) {
+      // Parent forwarded an image/screenshot
+      reply = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from);
     } else {
-      // Normal conversation (including mid-onboarding)
+      // Normal text conversation
       const history = await getRecentHistory(conversationId, 10);
       reply = await generateReply(incomingMessage, history, context, from);
     }
