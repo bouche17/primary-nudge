@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import GettingStarted from "@/components/GettingStarted";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
