@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import GettingStarted from "@/components/GettingStarted";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -47,7 +48,24 @@ const Dashboard = () => {
     }
   }, [user]);
 
+  const [showGettingStarted, setShowGettingStarted] = useState(() => {
+    return !localStorage.getItem("monty_getting_started_seen");
+  });
+
+  const handleDismissGettingStarted = () => {
+    localStorage.setItem("monty_getting_started_seen", "true");
+    setShowGettingStarted(false);
+  };
+
   if (loading) return null;
+
+  if (showGettingStarted) {
+    return (
+      <div className="min-h-screen bg-background">
+        <GettingStarted onDismiss={handleDismissGettingStarted} />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
