@@ -707,8 +707,9 @@ async function handleImageMessage(
 
     const childNames = context.children.map((c) => c.first_name).join(" and ");
     const childrenWithYearGroups = context.children
-      .map((c) => `${c.first_name} (${c.year_group})`)
+      .map((c) => `${c.first_name} (${c.year_group || "unknown year"})`)
       .join(", ");
+    console.log("Children with year groups:", childrenWithYearGroups);
     const today = new Date().toISOString().split("T")[0];
 
     // Build Claude vision request
