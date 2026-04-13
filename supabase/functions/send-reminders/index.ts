@@ -381,26 +381,34 @@ async function sendReminders(period: "morning" | "evening") {
       }
 
       // 4. Parent notes matching target date
-      const { data: notes } = await supabase
-        .from("parent_notes")
-        .select("id, summary, extracted_dates")
-        .eq("phone_number", phone);
+      // Notes are fetched per parent (not per child) since they're stored by phone number
+      // Only fetch once per parent — skip for subsequent children to avoid duplicates
+      if (parentChildren.indexOf(child) === 0) {
+        const { data: notes } = await supabase
+          .from("parent_notes")
+          .select("id, summary, extracted_dates, child_name")
+          .eq("phone_number", phone);
 
-      for (const note of notes || []) {
-        if (!note.summary || !note.extracted_dates) continue;
-        const dates = note.extracted_dates as Array<{ date: string }>;
-        if (!dates.some((d) => d.date === targetDateStr)) continue;
+        for (const note of notes || []) {
+          if (!note.summary || !note.extracted_dates) continue;
+          const dates = note.extracted_dates as Array<{ date: string }>;
+          if (!dates.some((d) => d.date === targetDateStr)) continue;
 
-        const refId = `note_${note.id}_${targetDateStr}_${period}`;
-        if (await alreadySent(phone, refId, period, today)) continue;
-        reminderItems.push({
-          childName: child.first_name,
-          title: note.summary,
-          emoji: "📝",
-          type: "note",
-          refId,
-        });
-        refIdsToLog.push({ refId, title: note.summary, type: "note" });
+          const refId = `note_${note.id}_${targetDateStr}_${period}`;
+          if (await alreadySent(phone, refId, period, today)) continue;
+
+          // Use child_name from the note if available, otherwise use generic name
+          const noteName = note.child_name || "the children";
+
+          reminderItems.push({
+            childName: noteName,
+            title: note.summary,
+            emoji: "📝",
+            type: "note",
+            refId,
+          });
+          refIdsToLog.push({ refId, title: note.summary, type: "note" });
+        }
       }
     }
 
