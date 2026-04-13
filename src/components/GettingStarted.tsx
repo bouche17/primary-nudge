@@ -168,7 +168,7 @@ export default function GettingStarted({ onDismiss }: GettingStartedProps) {
           </p>
         </div>
         <a
-          href="https://wa.me/14155238886"
+          href="https://wa.me/447455730962"
           target="_blank"
           rel="noopener noreferrer"
           style={{
