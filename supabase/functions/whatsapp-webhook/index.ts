@@ -805,6 +805,28 @@ If the image is unclear or unreadable, ask them to try again.`;
       const toolResults = [];
 
       for (const toolBlock of toolUseBlocks) {
+        // For save_parent_note, auto-inject child_name based on year group detection
+        if (toolBlock.name === "save_parent_note" && !toolBlock.input.child_name) {
+          const noteText = `${toolBlock.input.summary || ""} ${toolBlock.input.date || ""}`;
+          const matchedChildren = detectYearGroupChildren(noteText, context.children);
+
+          // Also check the image caption and any text Claude extracted
+          const allText = data.content
+            .filter((b: any) => b.type === "text")
+            .map((b: any) => b.text)
+            .join(" ");
+          const additionalMatches = detectYearGroupChildren(allText, context.children);
+          const allMatched = [...new Set([...matchedChildren, ...additionalMatches])];
+
+          if (allMatched.length === 1) {
+            toolBlock.input.child_name = allMatched[0];
+            console.log(`Auto-attributed note to: ${allMatched[0]}`);
+          } else if (allMatched.length > 1) {
+            toolBlock.input.child_name = allMatched[0]; // Primary child for first save
+            console.log(`Auto-attributed note to: ${allMatched.join(", ")}`);
+          }
+        }
+
         const result = await executeTool(toolBlock.name, toolBlock.input, context, phone);
         toolResults.push({
           type: "tool_result",
@@ -812,6 +834,14 @@ If the image is unclear or unreadable, ask them to try again.`;
           content: result,
         });
       }
+
+      // Build hint about which children were identified
+      const identifiedChildren = toolUseBlocks
+        .filter((b: any) => b.name === "save_parent_note" && b.input.child_name)
+        .map((b: any) => b.input.child_name);
+      const childHint = identifiedChildren.length > 0
+        ? `\n\n[Note: This was automatically attributed to ${[...new Set(identifiedChildren)].join(" and ")} based on year group. Please confirm this in your reply using their name.]`
+        : "";
 
       // Get final reply after saving
       const followUp = await fetch("https://api.anthropic.com/v1/messages", {
@@ -828,7 +858,7 @@ If the image is unclear or unreadable, ask them to try again.`;
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: data.content },
-            { role: "user", content: toolResults },
+            { role: "user", content: [...toolResults, ...(childHint ? [{ type: "text", text: childHint }] : [])] },
           ],
         }),
       });
