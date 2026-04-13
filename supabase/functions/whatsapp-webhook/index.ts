@@ -419,13 +419,14 @@ async function executeTool(
       summary: toolArgs.summary,
       extracted_dates: [{ date: toolArgs.date }],
       source_type: "whatsapp",
+      child_name: toolArgs.child_name || null,
     });
 
     if (error) {
       console.error("Error saving note:", error);
       return `Error saving note: ${error.message}`;
     }
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}`;
+    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${toolArgs.child_name ? ` for ${toolArgs.child_name}` : ""}`;
   }
 
   if (toolName === "save_weekly_lunch_plan") {
