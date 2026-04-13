@@ -469,7 +469,7 @@ async function executeTool(
     return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
   }
 
-
+  if (toolName === "complete_onboarding") {
     await supabase
       .from("onboarding_state")
       .update({ status: "complete" })
@@ -808,6 +808,9 @@ If the image is unclear or unreadable, ask them to try again.`;
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
         .join(" ");
+
+      console.log("DEBUG context children:", JSON.stringify(context.children.map(c => ({name: c.first_name, year: c.year_group}))));
+      console.log("DEBUG claude text:", claudeExtractedText.substring(0, 200));
 
       const toolResults = [];
 
