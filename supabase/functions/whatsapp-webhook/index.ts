@@ -848,6 +848,40 @@ If the image is unclear or unreadable, ask them to try again.`;
   }
 }
 
+// ── Year group pre-processor ──────────────────────────────────────────────────
+// Detects year group mentions in text and returns matching children
+// This runs in code rather than relying on the AI to figure it out
+
+function detectYearGroupChildren(
+  text: string,
+  children: Array<{ first_name: string; year_group: string }>
+): string[] {
+  const lowerText = text.toLowerCase();
+  const matchedChildren: string[] = [];
+
+  for (const child of children) {
+    if (!child.year_group) continue;
+
+    // Extract year number e.g. "Year 5" → "5"
+    const yearMatch = child.year_group.match(/(\d+)/);
+    if (!yearMatch) continue;
+    const yearNum = yearMatch[1];
+
+    // Check various formats: Year 2, Y2, Yr2, year2
+    const patterns = [
+      new RegExp(`\\byear\\s*${yearNum}\\b`, "i"),
+      new RegExp(`\\by${yearNum}\\b`, "i"),
+      new RegExp(`\\byr\\s*${yearNum}\\b`, "i"),
+    ];
+
+    if (patterns.some((p) => p.test(lowerText))) {
+      matchedChildren.push(child.first_name);
+    }
+  }
+
+  return matchedChildren;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -905,9 +939,21 @@ Deno.serve(async (req: Request) => {
       // Parent forwarded an image/screenshot
       reply = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from);
     } else {
+      // Pre-process text to detect year group mentions and inject child names
+      // This ensures Claude always knows which child to attribute events to
+      let processedMessage = incomingMessage;
+      if (context.children.length > 0) {
+        const matchedChildren = detectYearGroupChildren(incomingMessage, context.children);
+        if (matchedChildren.length > 0) {
+          const childList = matchedChildren.join(" and ");
+          processedMessage = `${incomingMessage}\n\n[System note: Based on year groups mentioned, this is relevant to: ${childList}. Please save notes with child_name set accordingly.]`;
+          console.log(`Year group pre-processor matched: ${childList}`);
+        }
+      }
+
       // Normal text conversation
       const history = await getRecentHistory(conversationId, 10);
-      reply = await generateReply(incomingMessage, history, context, from);
+      reply = await generateReply(processedMessage, history, context, from);
     }
 
     // Save and send reply
