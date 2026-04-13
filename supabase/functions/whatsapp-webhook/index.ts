@@ -1,4 +1,35 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { encode as encodeBase64 } from "https://deno.land/std@0.208.0/encoding/base64.ts";
+
+// ── Twilio Signature Validation ──────────────────────────────────────────────
+
+async function validateTwilioSignature(
+  authToken: string,
+  signature: string,
+  url: string,
+  params: Record<string, string>
+): Promise<boolean> {
+  // Build the data string: URL + sorted params concatenated
+  const sortedKeys = Object.keys(params).sort();
+  let data = url;
+  for (const key of sortedKeys) {
+    data += key + params[key];
+  }
+
+  // HMAC-SHA1
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(data));
+  const computed = encodeBase64(new Uint8Array(sig));
+
+  return computed === signature;
+}
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -922,6 +953,28 @@ Deno.serve(async (req: Request) => {
   try {
     const body = await req.text();
     const params = new URLSearchParams(body);
+
+    // ── Twilio Signature Validation ──────────────────────────────────────
+    const twilioWebhookUrl = Deno.env.get("TWILIO_WEBHOOK_URL");
+    if (twilioWebhookUrl) {
+      const twilioSignature = req.headers.get("x-twilio-signature") || "";
+      const formParams: Record<string, string> = {};
+      for (const [key, value] of params.entries()) {
+        formParams[key] = value;
+      }
+      const isValid = await validateTwilioSignature(
+        TWILIO_AUTH_TOKEN,
+        twilioSignature,
+        twilioWebhookUrl,
+        formParams
+      );
+      if (!isValid) {
+        console.warn("Invalid Twilio signature — rejecting request");
+        return new Response("Forbidden", { status: 403 });
+      }
+    } else {
+      console.warn("TWILIO_WEBHOOK_URL not set — skipping signature validation");
+    }
 
     const from = params.get("From")?.replace("whatsapp:", "") || "";
     const incomingMessage = params.get("Body")?.trim() || "";
