@@ -802,28 +802,25 @@ If the image is unclear or unreadable, ask them to try again.`;
     // Handle tool use — save extracted dates
     if (data.stop_reason === "tool_use") {
       const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
+
+      // Get all text Claude extracted from the image — use this for year group detection
+      const claudeExtractedText = data.content
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join(" ");
+
       const toolResults = [];
 
       for (const toolBlock of toolUseBlocks) {
         // For save_parent_note, auto-inject child_name based on year group detection
         if (toolBlock.name === "save_parent_note" && !toolBlock.input.child_name) {
-          const noteText = `${toolBlock.input.summary || ""} ${toolBlock.input.date || ""}`;
-          const matchedChildren = detectYearGroupChildren(noteText, context.children);
+          // Check the note summary AND Claude's full extracted text for year groups
+          const searchText = `${toolBlock.input.summary || ""} ${claudeExtractedText}`;
+          const matchedChildren = detectYearGroupChildren(searchText, context.children);
 
-          // Also check the image caption and any text Claude extracted
-          const allText = data.content
-            .filter((b: any) => b.type === "text")
-            .map((b: any) => b.text)
-            .join(" ");
-          const additionalMatches = detectYearGroupChildren(allText, context.children);
-          const allMatched = [...new Set([...matchedChildren, ...additionalMatches])];
-
-          if (allMatched.length === 1) {
-            toolBlock.input.child_name = allMatched[0];
-            console.log(`Auto-attributed note to: ${allMatched[0]}`);
-          } else if (allMatched.length > 1) {
-            toolBlock.input.child_name = allMatched[0]; // Primary child for first save
-            console.log(`Auto-attributed note to: ${allMatched.join(", ")}`);
+          if (matchedChildren.length >= 1) {
+            toolBlock.input.child_name = matchedChildren[0];
+            console.log(`Image: Auto-attributed note to: ${matchedChildren[0]}`);
           }
         }
 
@@ -835,12 +832,14 @@ If the image is unclear or unreadable, ask them to try again.`;
         });
       }
 
-      // Build hint about which children were identified
-      const identifiedChildren = toolUseBlocks
+      // Build explicit child attribution hint for the follow-up
+      const attributedChildren = toolUseBlocks
         .filter((b: any) => b.name === "save_parent_note" && b.input.child_name)
         .map((b: any) => b.input.child_name);
-      const childHint = identifiedChildren.length > 0
-        ? `\n\n[Note: This was automatically attributed to ${[...new Set(identifiedChildren)].join(" and ")} based on year group. Please confirm this in your reply using their name.]`
+      const uniqueChildren = [...new Set(attributedChildren)];
+
+      const childHint = uniqueChildren.length > 0
+        ? ` The note was saved specifically for ${uniqueChildren.join(" and ")}. In your reply, refer to them by name rather than saying "Year 1 and Year 2".`
         : "";
 
       // Get final reply after saving
@@ -854,11 +853,11 @@ If the image is unclear or unreadable, ask them to try again.`;
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 400,
-          system: systemPrompt,
+          system: systemPrompt + childHint,
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: data.content },
-            { role: "user", content: [...toolResults, ...(childHint ? [{ type: "text", text: childHint }] : [])] },
+            { role: "user", content: toolResults },
           ],
         }),
       });
