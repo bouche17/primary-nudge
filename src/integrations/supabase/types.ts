@@ -303,6 +303,7 @@ export type Database = {
       }
       parent_notes: {
         Row: {
+          child_name: string | null
           created_at: string | null
           extracted_actions: Json | null
           extracted_dates: Json | null
@@ -313,6 +314,7 @@ export type Database = {
           summary: string | null
         }
         Insert: {
+          child_name?: string | null
           created_at?: string | null
           extracted_actions?: Json | null
           extracted_dates?: Json | null
@@ -323,6 +325,7 @@ export type Database = {
           summary?: string | null
         }
         Update: {
+          child_name?: string | null
           created_at?: string | null
           extracted_actions?: Json | null
           extracted_dates?: Json | null
