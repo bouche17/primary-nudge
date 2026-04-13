@@ -51,10 +51,8 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
 // ── Welcome message builder ───────────────────────────────────────────────────
 
 function buildWelcomeMessage(childNames: string[]): string {
-  const sandboxNote = `\n\n_To receive reminders, make sure you've joined the Monty WhatsApp service by sending *join cannot-printed* to *+1 415 523 8886* first._`;
-
   if (childNames.length === 0) {
-    return `Hi! 👋 I'm Monty — I'm all set up and ready to help you stay on top of school life.\n\nJust message me here any time to add reminders, ask what's coming up, or tell me about an upcoming event. I'll send you a morning heads-up on days when there's something to remember. 🎒${sandboxNote}`;
+    return `Hi! 👋 I'm Monty — I'm all set up and ready to help you stay on top of school life.\n\nJust message me here any time to add reminders, ask what's coming up, or tell me about an upcoming event. I'll send you a morning heads-up on days when there's something to remember. 🎒`;
   }
 
   const names = childNames.length === 1
@@ -63,7 +61,7 @@ function buildWelcomeMessage(childNames: string[]): string {
       ? `${childNames[0]} and ${childNames[1]}`
       : `${childNames.slice(0, -1).join(", ")} and ${childNames[childNames.length - 1]}`;
 
-  return `Hi! 👋 I'm Monty — I'm all set up and ready to help you keep on top of school life for ${names}.\n\nJust message me here any time — tell me about PE days, packed lunch days, school trips, or anything else you want to remember. I'll send you a morning heads-up when it matters. 🎒\n\nTo get started, try saying something like *"${childNames[0]} has PE on Tuesdays"* 😊${sandboxNote}`;
+  return `Hi! 👋 I'm Monty — I'm all set up and ready to help you keep on top of school life for ${names}.\n\nJust message me here any time — tell me about PE days, packed lunch days, school trips, or anything else you want to remember. I'll send you a morning heads-up when it matters. 🎒\n\nTo get started, try saying something like *"${childNames[0]} has PE on Tuesdays"* 😊`;
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
