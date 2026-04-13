@@ -467,7 +467,7 @@ async function executeTool(
     return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
   }
 
-
+  if (toolName === "complete_onboarding") {
     await supabase
       .from("onboarding_state")
       .update({ status: "complete" })
