@@ -1,4 +1,3 @@
-// whatsapp-webhook edge function
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -249,13 +248,14 @@ Use the save_parent_note tool to save it so they get a reminder when it comes ar
 ## When a parent forwards a message or pastes text from a WhatsApp group or school email
 This is one of the most useful things you can do. The parent may say "just got this in the school group:" or "school emailed this:" or simply paste a chunk of text.
 - Read it carefully and extract ANY dates, events, deadlines or action items
-- Save each one using save_parent_note
-- Confirm back exactly what you've extracted and saved in a friendly, concise way
+- If the message mentions a specific year group, automatically attribute it to the correct child — never ask the parent which child it's for
+- Save each one using save_parent_note, including child_name where you can identify it
+- Confirm back exactly what you extracted, saved, and which child it's for
 - If something is ambiguous (e.g. "next Friday") clarify which date you've assumed
 - If there's nothing actionable, let them know warmly
-Example: Parent forwards "Reminder — Y5 trip to Jodrell Bank on Friday 24th April. Permission slips back by Wednesday 16th April."
-→ Save two notes: trip on 24th April, permission slip deadline 16th April
-→ Reply: "Got it! 📅 I've saved Jude's trip to Jodrell Bank on 24th April, and I'll remind you about the permission slip on 16th April. 👍"
+Example: Parent forwards "Y2 parents — Earth Day litter pick Wednesday 22nd April, leaving at 1:15pm. Children need outdoor clothing."
+→ Harry is in Year 2 → save note for Harry: Earth Day litter pick, 22nd April
+→ Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving school at 1:15pm. Make sure Harry has outdoor clothing and sturdy footwear that day."
 
 ${onboardingInstructions}
 
@@ -467,7 +467,7 @@ async function executeTool(
     return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
   }
 
-  if (toolName === "complete_onboarding") {
+
     await supabase
       .from("onboarding_state")
       .update({ status: "complete" })
@@ -706,6 +706,9 @@ async function handleImageMessage(
     const imageBase64 = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
 
     const childNames = context.children.map((c) => c.first_name).join(" and ");
+    const childrenWithYearGroups = context.children
+      .map((c) => `${c.first_name} (${c.year_group})`)
+      .join(", ");
     const today = new Date().toISOString().split("T")[0];
 
     // Build Claude vision request
@@ -714,19 +717,28 @@ async function handleImageMessage(
 Your job is to:
 1. Read the image carefully
 2. Extract ANY dates, events, deadlines, or action items relevant to school life
-3. For each item found, call the save_parent_note tool to save it
-4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible)
+3. For each item found, call the save_parent_note tool to save it — include the child_name if you can identify which child it's for
+4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
 
-The parent's children are: ${childNames}
+The parent's children and their year groups: ${childrenWithYearGroups}
 Today's date is: ${today}
 
+## Year group attribution — IMPORTANT
+If the event or message mentions a specific year group, automatically attribute it to the correct child:
+- Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
+- Match "Year 2", "Y2" etc. to the child in Year 2
+- If an event is for multiple year groups (e.g. "Year 1 and Year 2"), attribute it to all children in those year groups
+- If no year group is mentioned, save it as a general note
+- Never ask the parent which child — figure it out from the year group information above
+
 ## Confirmation style
-- Always state specifically what you saved: event name, date, time if mentioned
-- Good: "Got it! I've saved the Easter Extravaganza on Thursday 26th March, 3:20–6pm."
+- Always state specifically what you saved: event name, date, time, and which child it's for
+- Good: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm. They'll need outdoor clothing and walking footwear."
 - Bad: "Done! I've saved that for you 😊"
 - Use ONE emoji at most, only if it naturally fits — never as punctuation at the end
 - Keep it to 2-3 sentences max
 - British English always
+- Use the child's first name, never pronouns like "they/their" if you know which child it is
 
 If you can't find any actionable dates or events, let the parent know warmly.
 If the image is unclear or unreadable, ask them to try again.`;
