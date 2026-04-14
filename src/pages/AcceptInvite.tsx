@@ -58,6 +58,7 @@ const AcceptInvite = () => {
 
     if (invite.used_at) {
       console.log("[AcceptInvite] Token already used at:", invite.used_at);
+      localStorage.removeItem("pending_invite_token");
       toast({ title: "Invite already used", variant: "destructive" });
       setStatus("invalid");
       return;
@@ -65,6 +66,7 @@ const AcceptInvite = () => {
 
     if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
       console.log("[AcceptInvite] Token expired at:", invite.expires_at);
+      localStorage.removeItem("pending_invite_token");
       toast({ title: "Invite link has expired", variant: "destructive" });
       setStatus("invalid");
       return;
@@ -72,6 +74,7 @@ const AcceptInvite = () => {
 
     if (invite.inviter_user_id === user.id) {
       console.log("[AcceptInvite] User is the inviter — self-invite blocked");
+      localStorage.removeItem("pending_invite_token");
       toast({ title: "You can't accept your own invite", variant: "destructive" });
       setStatus("invalid");
       return;
