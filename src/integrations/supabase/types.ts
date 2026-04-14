@@ -180,6 +180,63 @@ export type Database = {
         }
         Relationships: []
       }
+      invite_tokens: {
+        Row: {
+          created_at: string | null
+          email: string | null
+          expires_at: string | null
+          id: string
+          inviter_user_id: string
+          token: string
+          used_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          email?: string | null
+          expires_at?: string | null
+          id?: string
+          inviter_user_id: string
+          token?: string
+          used_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          email?: string | null
+          expires_at?: string | null
+          id?: string
+          inviter_user_id?: string
+          token?: string
+          used_at?: string | null
+        }
+        Relationships: []
+      }
+      linked_accounts: {
+        Row: {
+          accepted_at: string | null
+          id: string
+          invited_at: string | null
+          linked_user_id: string
+          primary_user_id: string
+          status: string
+        }
+        Insert: {
+          accepted_at?: string | null
+          id?: string
+          invited_at?: string | null
+          linked_user_id: string
+          primary_user_id: string
+          status?: string
+        }
+        Update: {
+          accepted_at?: string | null
+          id?: string
+          invited_at?: string | null
+          linked_user_id?: string
+          primary_user_id?: string
+          status?: string
+        }
+        Relationships: []
+      }
       lunch_checkin_log: {
         Row: {
           id: string

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Sparkles, ArrowLeft, Download, Trash2, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { isValidPhone, normalizePhone } from "@/lib/phone";
+import InvitePartner from "@/components/InvitePartner";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -150,6 +151,8 @@ const SettingsPage = () => {
             </Button>
           </div>
         </div>
+
+        <InvitePartner />
 
         <div className="bg-card rounded-2xl p-5 border border-border space-y-4">
           <div>
