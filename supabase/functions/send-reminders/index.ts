@@ -253,6 +253,25 @@ async function sendReminders(period: "morning" | "evening") {
 
   const phoneByParent = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
 
+  // Load linked accounts — so reminders fire to both parents
+  // A linked account means Partner B should receive the same reminders as Parent A
+  const { data: linkedAccounts } = await supabase
+    .from("linked_accounts")
+    .select("primary_user_id, linked_user_id")
+    .eq("status", "accepted");
+
+  // Build a map of linked phone numbers per primary parent
+  // e.g. if Matt and Sarah are linked, Sarah also gets Matt's reminders
+  const linkedPhones = new Map<string, string[]>();
+  for (const link of linkedAccounts || []) {
+    const linkedPhone = phoneByParent.get(link.linked_user_id);
+    if (!linkedPhone) continue;
+    if (!linkedPhones.has(link.primary_user_id)) {
+      linkedPhones.set(link.primary_user_id, []);
+    }
+    linkedPhones.get(link.primary_user_id)!.push(linkedPhone);
+  }
+
   // Group children by parent
   const childrenByParent = new Map<string, typeof children>();
   for (const child of children) {
@@ -418,16 +437,28 @@ async function sendReminders(period: "morning" | "evening") {
     // Build ONE consolidated message for this parent
     const message = buildConsolidatedMessage(reminderItems, period);
 
-    // Send it
+    // Send to primary parent
     const ok = await sendWhatsApp(phone, message);
 
     if (ok) {
-      // Log all reminder IDs that were included in this message
       for (const { refId, title, type } of refIdsToLog) {
         await logReminder(phone, type, refId, title, period);
       }
       sentCount++;
       console.log(`Sent consolidated ${period} message to ${phone} with ${reminderItems.length} items`);
+    }
+
+    // Send to linked partner accounts (e.g. both Mum and Dad)
+    const partnerPhones = linkedPhones.get(parentId) || [];
+    for (const partnerPhone of partnerPhones) {
+      const partnerOk = await sendWhatsApp(partnerPhone, message);
+      if (partnerOk) {
+        for (const { refId, title, type } of refIdsToLog) {
+          await logReminder(partnerPhone, type, refId, title, period);
+        }
+        sentCount++;
+        console.log(`Sent consolidated ${period} message to linked partner ${partnerPhone}`);
+      }
     }
   }
 
