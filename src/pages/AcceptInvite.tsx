@@ -75,8 +75,11 @@ const AcceptInvite = () => {
       return;
     }
 
-    // Mark token as used — we can't UPDATE via client (no UPDATE policy for invitee),
-    // so we skip marking used_at here. The link is consumed by the linked_accounts entry.
+    // Mark token as used
+    await supabase
+      .from("invite_tokens")
+      .update({ used_at: new Date().toISOString() })
+      .eq("token", token);
 
     localStorage.removeItem("pending_invite_token");
     setStatus("done");
