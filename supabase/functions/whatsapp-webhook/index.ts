@@ -956,24 +956,24 @@ Deno.serve(async (req: Request) => {
 
     // ── Twilio Signature Validation ──────────────────────────────────────
     const twilioWebhookUrl = Deno.env.get("TWILIO_WEBHOOK_URL");
-    if (twilioWebhookUrl) {
-      const twilioSignature = req.headers.get("x-twilio-signature") || "";
-      const formParams: Record<string, string> = {};
-      for (const [key, value] of params.entries()) {
-        formParams[key] = value;
-      }
-      const isValid = await validateTwilioSignature(
-        TWILIO_AUTH_TOKEN,
-        twilioSignature,
-        twilioWebhookUrl,
-        formParams
-      );
-      if (!isValid) {
-        console.warn("Invalid Twilio signature — rejecting request");
-        return new Response("Forbidden", { status: 403 });
-      }
-    } else {
-      console.warn("TWILIO_WEBHOOK_URL not set — skipping signature validation");
+    if (!twilioWebhookUrl) {
+      console.error("TWILIO_WEBHOOK_URL is not configured — rejecting request");
+      return new Response("Forbidden", { status: 403 });
+    }
+    const twilioSignature = req.headers.get("x-twilio-signature") || "";
+    const formParams: Record<string, string> = {};
+    for (const [key, value] of params.entries()) {
+      formParams[key] = value;
+    }
+    const isValid = await validateTwilioSignature(
+      TWILIO_AUTH_TOKEN,
+      twilioSignature,
+      twilioWebhookUrl,
+      formParams
+    );
+    if (!isValid) {
+      console.warn("Invalid Twilio signature — rejecting request");
+      return new Response("Forbidden", { status: 403 });
     }
 
     const from = params.get("From")?.replace("whatsapp:", "") || "";
