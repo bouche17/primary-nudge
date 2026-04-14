@@ -28,7 +28,7 @@ const InvitePartner = () => {
       .maybeSingle()
       .then(({ data }) => {
         if (data && data.expires_at && new Date(data.expires_at) > new Date()) {
-          setInviteLink(`${window.location.origin}/invite/${data.token}`);
+          setInviteLink(`${PUBLIC_BASE_URL}/invite/${data.token}`);
         }
       });
   }, [user]);
@@ -46,7 +46,7 @@ const InvitePartner = () => {
     if (error) {
       toast({ title: "Error generating invite", description: error.message, variant: "destructive" });
     } else if (data) {
-      const link = `${window.location.origin}/invite/${data.token}`;
+      const link = `${PUBLIC_BASE_URL}/invite/${data.token}`;
       setInviteLink(link);
       toast({ title: "Invite link created!" });
     }
