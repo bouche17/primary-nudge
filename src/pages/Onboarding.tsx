@@ -60,7 +60,7 @@ const Onboarding = () => {
     }
   }, [user, authLoading, navigate]);
 
-  // Check if user already has children (already onboarded) or already has phone
+  // Check if user already has children (already onboarded) or is linked via invite
   useEffect(() => {
     if (!user) return;
     const fromDashboard = new URLSearchParams(window.location.search).get("add") === "true";
@@ -73,22 +73,36 @@ const Onboarding = () => {
       .maybeSingle()
       .then(({ data: profile }) => {
         if (profile?.phone_number) {
-          // Already has phone, skip to school step
           setPhoneNumber(profile.phone_number);
           if (step === "phone") setStep("school");
         }
       });
 
     if (!fromDashboard) {
+      // Check if user came via invite (linked account exists) — skip onboarding entirely
       supabase
-        .from("children")
+        .from("linked_accounts")
         .select("id")
-        .eq("parent_id", user.id)
+        .eq("linked_user_id", user.id)
+        .eq("status", "accepted")
         .limit(1)
-        .then(({ data }) => {
-          if (data && data.length > 0) {
+        .then(({ data: links }) => {
+          if (links && links.length > 0) {
             navigate("/dashboard");
+            return;
           }
+
+          // Otherwise check if they already have children
+          supabase
+            .from("children")
+            .select("id")
+            .eq("parent_id", user.id)
+            .limit(1)
+            .then(({ data }) => {
+              if (data && data.length > 0) {
+                navigate("/dashboard");
+              }
+            });
         });
     }
   }, [user, navigate]);
