@@ -96,6 +96,7 @@ const AcceptInvite = () => {
 
     if (linkError) {
       console.error("[AcceptInvite] linked_accounts insert FAILED:", linkError);
+      localStorage.removeItem("pending_invite_token");
       toast({ title: "Error linking accounts", description: linkError.message, variant: "destructive" });
       setStatus("invalid");
       return;
