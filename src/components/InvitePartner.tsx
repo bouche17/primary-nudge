@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+
+const PUBLIC_BASE_URL = "https://primary-nudge.lovable.app";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -26,7 +28,7 @@ const InvitePartner = () => {
       .maybeSingle()
       .then(({ data }) => {
         if (data && data.expires_at && new Date(data.expires_at) > new Date()) {
-          setInviteLink(`${window.location.origin}/invite/${data.token}`);
+          setInviteLink(`${PUBLIC_BASE_URL}/invite/${data.token}`);
         }
       });
   }, [user]);
@@ -44,7 +46,7 @@ const InvitePartner = () => {
     if (error) {
       toast({ title: "Error generating invite", description: error.message, variant: "destructive" });
     } else if (data) {
-      const link = `${window.location.origin}/invite/${data.token}`;
+      const link = `${PUBLIC_BASE_URL}/invite/${data.token}`;
       setInviteLink(link);
       toast({ title: "Invite link created!" });
     }
