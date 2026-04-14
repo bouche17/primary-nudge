@@ -16,6 +16,7 @@ import Privacy from "./pages/Privacy";
 import BotFlows from "./pages/BotFlows";
 import CalendarFeeds from "./pages/CalendarFeeds";
 import SchoolReminders from "./pages/SchoolReminders";
+import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -39,6 +40,7 @@ const App = () => (
             <Route path="/school-reminders" element={<SchoolReminders />} />
             <Route path="/calendar-feeds" element={<CalendarFeeds />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/invite/:token" element={<AcceptInvite />} />
             <Route path="/privacy" element={<Privacy />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
