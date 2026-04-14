@@ -51,6 +51,7 @@ const AcceptInvite = () => {
 
     if (!invite || lookupError) {
       console.error("[AcceptInvite] Token lookup failed or not found");
+      localStorage.removeItem("pending_invite_token");
       setStatus("invalid");
       return;
     }
