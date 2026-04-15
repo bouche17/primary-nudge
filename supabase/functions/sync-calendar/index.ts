@@ -57,6 +57,74 @@ function parseIcal(ical: string) {
   return events;
 }
 
+// ── FullCalendar JS array extractor ──────────────────────────
+function parseFullCalendarHtml(html: string): Array<{
+  uid: string;
+  title: string;
+  description: string;
+  location: string;
+  startAt: string;
+  endAt: string | null;
+  allDay: boolean;
+  yearGroup: string | null;
+}> {
+  // Extract the events array from fullCalendar({events:[...]})
+  const match = html.match(/\.fullCalendar\(\s*\{[\s\S]*?events\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
+  if (!match) {
+    console.error("Could not find fullCalendar events array in HTML");
+    return [];
+  }
+
+  let eventsRaw: any[];
+  try {
+    // The JS array may use single quotes or unquoted keys — normalise to valid JSON
+    let arrStr = match[1];
+    // Replace single quotes with double quotes
+    arrStr = arrStr.replace(/'/g, '"');
+    // Quote unquoted keys: word before colon
+    arrStr = arrStr.replace(/(\{|,)\s*([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
+    eventsRaw = JSON.parse(arrStr);
+  } catch (e) {
+    console.error("Failed to parse fullCalendar events JSON:", e);
+    return [];
+  }
+
+  console.log(`Extracted ${eventsRaw.length} events from fullCalendar JS`);
+
+  return eventsRaw.map((e: any, i: number) => {
+    // Map className to year group
+    let yearGroup: string | null = null;
+    const cls = e.className || "";
+    if (cls) {
+      // multi_3_4 → "Year 3, Year 4"
+      const multiMatch = cls.match(/multi_(\d+(?:_\d+)*)/);
+      if (multiMatch) {
+        yearGroup = multiMatch[1].split("_").map((y: string) => `Year ${y}`).join(", ");
+      } else {
+        // custom5 → "Year 5"
+        const singleMatch = cls.match(/custom(\d+)/);
+        if (singleMatch) {
+          yearGroup = `Year ${singleMatch[1]}`;
+        }
+      }
+      // No className match = whole school (yearGroup stays null)
+    }
+
+    const allDay = !e.start?.includes("T");
+
+    return {
+      uid: `fullcal-${i}-${e.start || Date.now()}`,
+      title: e.title || "Untitled",
+      description: yearGroup ? `${yearGroup}` : "",
+      location: "",
+      startAt: e.start ? new Date(e.start).toISOString() : new Date().toISOString(),
+      endAt: e.end ? new Date(e.end).toISOString() : null,
+      allDay,
+      yearGroup,
+    };
+  });
+}
+
 // ── HTML scraper + AI extraction ─────────────────────────────
 async function scrapeAndExtract(url: string): Promise<Array<{
   uid: string;
