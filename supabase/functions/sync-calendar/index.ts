@@ -296,6 +296,7 @@ Deno.serve(async (req: Request) => {
           startAt: string;
           endAt: string | null;
           allDay: boolean;
+          yearGroup?: string;
         }>;
 
         if (feed.feed_type === "fullcalendar") {
@@ -338,6 +339,7 @@ Deno.serve(async (req: Request) => {
             end_at: e.endAt,
             all_day: e.allDay,
             uid: e.uid,
+            year_group: e.yearGroup || "all",
           }));
 
           const { error: insertErr } = await supabase
