@@ -267,7 +267,15 @@ Deno.serve(async (req: Request) => {
           allDay: boolean;
         }>;
 
-        if (feed.feed_type === "scrape") {
+        if (feed.feed_type === "fullcalendar") {
+          const res = await fetch(feed.feed_url);
+          if (!res.ok) {
+            console.error(`Failed to fetch feed ${feed.id}: ${res.status}`);
+            continue;
+          }
+          const html = await res.text();
+          events = parseFullCalendarHtml(html);
+        } else if (feed.feed_type === "scrape") {
           events = await scrapeAndExtract(feed.feed_url);
         } else {
           // Default: iCal
