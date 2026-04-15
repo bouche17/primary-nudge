@@ -272,15 +272,14 @@ async function sendReminders(period: "morning" | "evening") {
       // 1. School events for target date
       const { data: events } = await supabase
         .from("school_events")
-        .select("id, title")
+        .select("id, title, year_group")
         .eq("school_id", child.school_id)
         .gte("start_at", targetStart)
         .lte("start_at", targetEnd);
 
       for (const evt of events || []) {
         // Skip events not relevant to this child's year group
-        // e.g. "Y3 Trip" won't fire for Jude (Y5) or Harry (Y2)
-        if (!isEventRelevantToChild(evt.title, child.year_group || "")) continue;
+        if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
 
         const refId = `event_${evt.id}_${period}`;
         if (await alreadySent(phone, refId, period, today)) continue;
