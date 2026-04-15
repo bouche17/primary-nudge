@@ -68,21 +68,22 @@ function parseFullCalendarHtml(html: string): Array<{
   allDay: boolean;
   yearGroup: string | null;
 }> {
-  // Extract the events array from fullCalendar({events:[...]})
-  const match = html.match(/\.fullCalendar\(\s*\{[\s\S]*?events\s*:\s*(\[[\s\S]*?\])\s*[,}]/);
-  if (!match) {
-    console.error("Could not find fullCalendar events array in HTML");
+  // Find the NON-empty events array — the page has an empty one first, then the real data
+  const matches = [...html.matchAll(/events\s*:\s*(\[[\s\S]*?\])\s*[,}]/g)];
+  let arrStr = "";
+  for (const m of matches) {
+    if (m[1].trim() !== "[]") {
+      arrStr = m[1];
+      break;
+    }
+  }
+  if (!arrStr) {
+    console.error("Could not find non-empty fullCalendar events array in HTML");
     return [];
   }
 
   let eventsRaw: any[];
   try {
-    // The JS array may use single quotes or unquoted keys — normalise to valid JSON
-    let arrStr = match[1];
-    // Replace single quotes with double quotes
-    arrStr = arrStr.replace(/'/g, '"');
-    // Quote unquoted keys: word before colon
-    arrStr = arrStr.replace(/(\{|,)\s*([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
     eventsRaw = JSON.parse(arrStr);
   } catch (e) {
     console.error("Failed to parse fullCalendar events JSON:", e);
@@ -91,35 +92,52 @@ function parseFullCalendarHtml(html: string): Array<{
 
   console.log(`Extracted ${eventsRaw.length} events from fullCalendar JS`);
 
-  return eventsRaw.map((e: any, i: number) => {
-    // Map className to year group
-    let yearGroup: string | null = null;
-    const cls = e.className || "";
-    if (cls) {
-      // multi_3_4 → "Year 3, Year 4"
-      const multiMatch = cls.match(/multi_(\d+(?:_\d+)*)/);
-      if (multiMatch) {
-        yearGroup = multiMatch[1].split("_").map((y: string) => `Year ${y}`).join(", ");
-      } else {
-        // custom5 → "Year 5"
-        const singleMatch = cls.match(/custom(\d+)/);
-        if (singleMatch) {
-          yearGroup = `Year ${singleMatch[1]}`;
-        }
-      }
-      // No className match = whole school (yearGroup stays null)
+  // className mapping:
+  // custom0 = Reception, custom (no digit) = Year 1, custom2..6 = Year 2..6
+  // customstaff = Staff only
+  // multi_X_Y = multiple year groups (0=Reception, _2=Year 2, etc.)
+  // empty = whole school
+  function classNameToYearGroup(cls: string): string | null {
+    if (!cls) return null; // whole school
+
+    if (cls === "customstaff") return "Staff";
+    if (cls === "custom") return "Year 1";
+    if (cls === "custom0") return "Reception";
+
+    const singleMatch = cls.match(/^custom(\d)$/);
+    if (singleMatch) {
+      const n = parseInt(singleMatch[1]);
+      return n === 0 ? "Reception" : `Year ${n}`;
     }
 
-    const allDay = !e.start?.includes("T");
+    if (cls.startsWith("multi_")) {
+      // Parse all digits from the multi string, e.g. multi_3_4_5 or multi_0__2
+      const parts = cls.replace("multi_", "").split("_").filter(Boolean);
+      const years: string[] = [];
+      for (const p of parts) {
+        if (p === "staff") { years.push("Staff"); continue; }
+        const n = parseInt(p);
+        if (isNaN(n)) continue;
+        years.push(n === 0 ? "Reception" : `Year ${n}`);
+      }
+      return years.length > 0 ? years.join(", ") : null;
+    }
+
+    return null;
+  }
+
+  return eventsRaw.map((e: any, i: number) => {
+    const yearGroup = classNameToYearGroup(e.className || "");
+    const hasTime = e.start?.includes(" ") && !e.start?.endsWith("00:00:00");
 
     return {
       uid: `fullcal-${i}-${e.start || Date.now()}`,
       title: e.title || "Untitled",
-      description: yearGroup ? `${yearGroup}` : "",
+      description: yearGroup || "",
       location: "",
-      startAt: e.start ? new Date(e.start).toISOString() : new Date().toISOString(),
-      endAt: e.end ? new Date(e.end).toISOString() : null,
-      allDay,
+      startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
+      endAt: e.end ? new Date(e.end.replace(" ", "T") + "Z").toISOString() : null,
+      allDay: !hasTime,
       yearGroup,
     };
   });
