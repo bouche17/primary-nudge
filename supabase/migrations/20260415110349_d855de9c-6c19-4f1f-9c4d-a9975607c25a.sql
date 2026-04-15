@@ -1,0 +1,1 @@
+ALTER TABLE public.school_events ADD COLUMN year_group text DEFAULT 'all';

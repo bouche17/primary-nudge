@@ -58,7 +58,42 @@ function parseIcal(ical: string) {
 }
 
 // ── FullCalendar JS array extractor ──────────────────────────
-function parseFullCalendarHtml(html: string): Array<{
+
+// Explicit className → year_group mapping from the Dean Valley site
+const CLASS_NAME_MAP: Record<string, string | null> = {
+  "": "all",
+  "custom0": "Reception",
+  "custom": "Year 1",
+  "custom2": "Year 2",
+  "custom3": "Year 3",
+  "custom4": "Year 4",
+  "custom5": "Year 5",
+  "custom6": "Year 6",
+  "customstaff": null, // skip staff events
+  "multi_3_4": "Year 3,Year 4",
+  "multi_5_6": "Year 5,Year 6",
+  "multi_3_4_5": "Year 3,Year 4,Year 5",
+  "multi_4_5_6": "Year 4,Year 5,Year 6",
+  "multi_3_4_5_6": "Year 3,Year 4,Year 5,Year 6",
+  "multi_0__2": "Reception,Year 1,Year 2",
+  "multi__2": "Year 1,Year 2",
+  "multi__2_3_4_5_6": "Year 1,Year 2,Year 3,Year 4,Year 5,Year 6",
+  "multi_4_5_3": "Year 3,Year 4,Year 5",
+  "multi_4_5": "Year 4,Year 5",
+  "multi_6_5": "Year 5,Year 6",
+  "multi_2_3": "Year 2,Year 3",
+  "multi_2_3_4": "Year 2,Year 3,Year 4",
+  "multi_3_4_5_6_2": "Year 2,Year 3,Year 4,Year 5,Year 6",
+  "multi_5_6_2": "Year 2,Year 5,Year 6",
+  "multi_0_6": "Reception,Year 6",
+  "multi_0_2_": "Reception,Year 1,Year 2",
+  "multi_0__2_4_5_6": "Reception,Year 1,Year 2,Year 4,Year 5,Year 6",
+  "multi_0__2_3": "Reception,Year 1,Year 2,Year 3",
+  "multi_0_3_2": "Reception,Year 2,Year 3",
+  "multi_0_staff": null, // skip staff events
+};
+
+interface FullCalEvent {
   uid: string;
   title: string;
   description: string;
@@ -66,8 +101,10 @@ function parseFullCalendarHtml(html: string): Array<{
   startAt: string;
   endAt: string | null;
   allDay: boolean;
-  yearGroup: string | null;
-}> {
+  yearGroup: string;
+}
+
+function parseFullCalendarHtml(html: string): FullCalEvent[] {
   // Find the NON-empty events array — the page has an empty one first, then the real data
   const matches = [...html.matchAll(/events\s*:\s*(\[[\s\S]*?\])\s*[,}]/g)];
   let arrStr = "";
@@ -90,57 +127,33 @@ function parseFullCalendarHtml(html: string): Array<{
     return [];
   }
 
-  console.log(`Extracted ${eventsRaw.length} events from fullCalendar JS`);
+  console.log(`Extracted ${eventsRaw.length} raw events from fullCalendar JS`);
 
-  // className mapping:
-  // custom0 = Reception, custom (no digit) = Year 1, custom2..6 = Year 2..6
-  // customstaff = Staff only
-  // multi_X_Y = multiple year groups (0=Reception, _2=Year 2, etc.)
-  // empty = whole school
-  function classNameToYearGroup(cls: string): string | null {
-    if (!cls) return null; // whole school
+  const results: FullCalEvent[] = [];
+  for (let i = 0; i < eventsRaw.length; i++) {
+    const e = eventsRaw[i];
+    const cls = e.className || "";
+    const mapped = CLASS_NAME_MAP.hasOwnProperty(cls) ? CLASS_NAME_MAP[cls] : "all";
 
-    if (cls === "customstaff") return "Staff";
-    if (cls === "custom") return "Year 1";
-    if (cls === "custom0") return "Reception";
+    // null means skip (staff events)
+    if (mapped === null) continue;
 
-    const singleMatch = cls.match(/^custom(\d)$/);
-    if (singleMatch) {
-      const n = parseInt(singleMatch[1]);
-      return n === 0 ? "Reception" : `Year ${n}`;
-    }
-
-    if (cls.startsWith("multi_")) {
-      // Parse all digits from the multi string, e.g. multi_3_4_5 or multi_0__2
-      const parts = cls.replace("multi_", "").split("_").filter(Boolean);
-      const years: string[] = [];
-      for (const p of parts) {
-        if (p === "staff") { years.push("Staff"); continue; }
-        const n = parseInt(p);
-        if (isNaN(n)) continue;
-        years.push(n === 0 ? "Reception" : `Year ${n}`);
-      }
-      return years.length > 0 ? years.join(", ") : null;
-    }
-
-    return null;
-  }
-
-  return eventsRaw.map((e: any, i: number) => {
-    const yearGroup = classNameToYearGroup(e.className || "");
     const hasTime = e.start?.includes(" ") && !e.start?.endsWith("00:00:00");
 
-    return {
+    results.push({
       uid: `fullcal-${i}-${e.start || Date.now()}`,
       title: e.title || "Untitled",
-      description: yearGroup || "",
+      description: "",
       location: "",
       startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
       endAt: e.end ? new Date(e.end.replace(" ", "T") + "Z").toISOString() : null,
       allDay: !hasTime,
-      yearGroup,
-    };
-  });
+      yearGroup: mapped,
+    });
+  }
+
+  console.log(`After filtering staff events: ${results.length} events`);
+  return results;
 }
 
 // ── HTML scraper + AI extraction ─────────────────────────────
@@ -283,6 +296,7 @@ Deno.serve(async (req: Request) => {
           startAt: string;
           endAt: string | null;
           allDay: boolean;
+          yearGroup?: string;
         }>;
 
         if (feed.feed_type === "fullcalendar") {
@@ -325,6 +339,7 @@ Deno.serve(async (req: Request) => {
             end_at: e.endAt,
             all_day: e.allDay,
             uid: e.uid,
+            year_group: e.yearGroup || "all",
           }));
 
           const { error: insertErr } = await supabase
