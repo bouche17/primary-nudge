@@ -24,45 +24,20 @@ interface ReminderItem {
 }
 
 // ── Year group filter ─────────────────────────────────────────────────────────
-// Checks if a school event title is relevant to a specific child's year group.
-// If the event title contains a year group reference (e.g. "Y3", "Year 3",
-// "Yr3"), it only matches children in that year group.
-// If no year group is mentioned, the event is relevant to all children.
+// Checks if a school event is relevant to a specific child based on the
+// event's year_group field (set during calendar sync).
+// year_group is "all" for whole-school events, or a comma-separated list
+// like "Year 3,Year 4" or "Reception".
 
-function isEventRelevantToChild(eventTitle: string, childYearGroup: string): boolean {
-  // Normalise the child's year group for comparison
-  // e.g. "Year 5" → 5, "Reception" → "reception"
-  const title = eventTitle.toLowerCase();
+function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string): boolean {
+  // "all" means whole school — always relevant
+  if (!eventYearGroup || eventYearGroup === "all") return true;
 
-  // Extract year number from child's year group e.g. "Year 5" → "5"
-  const childYearMatch = childYearGroup.match(/(\d+)/);
-  const childYear = childYearMatch ? childYearMatch[1] : null;
-  const isReception = childYearGroup.toLowerCase().includes("reception");
-  const isNursery = childYearGroup.toLowerCase().includes("nursery");
+  // Split the event's year groups and check for a match
+  const eventGroups = eventYearGroup.split(",").map((g) => g.trim().toLowerCase());
+  const childGroup = childYearGroup.trim().toLowerCase();
 
-  // Patterns that indicate a specific year group in the event title
-  const yearPatterns = [
-    /\by(\d+)\b/, // Y3, Y5 etc.
-    /\byear\s*(\d+)\b/, // Year 3, Year3
-    /\byr\s*(\d+)\b/, // Yr3, Yr 3
-  ];
-
-  for (const pattern of yearPatterns) {
-    const match = title.match(pattern);
-    if (match) {
-      // Event has a specific year group — check if it matches this child
-      const eventYear = match[1];
-      if (childYear && eventYear === childYear) return true;
-      return false; // Doesn't match this child's year
-    }
-  }
-
-  // Check for Reception/Nursery specific events
-  if (title.includes("reception") && !isReception) return false;
-  if (title.includes("nursery") && !isNursery) return false;
-
-  // No year group mentioned — relevant to all children
-  return true;
+  return eventGroups.includes(childGroup);
 }
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
