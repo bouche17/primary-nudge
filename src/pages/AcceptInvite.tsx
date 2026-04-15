@@ -80,8 +80,26 @@ const AcceptInvite = () => {
       return;
     }
 
-    // Step 2: Create linked account
-    console.log("[AcceptInvite] Step 2: Inserting into linked_accounts…", {
+    // Step 2: Check for existing link
+    console.log("[AcceptInvite] Step 2: Checking for existing linked_accounts row…");
+    const { data: existingLink } = await supabase
+      .from("linked_accounts")
+      .select("id")
+      .eq("primary_user_id", invite.inviter_user_id)
+      .eq("linked_user_id", user.id)
+      .maybeSingle();
+
+    if (existingLink) {
+      console.log("[AcceptInvite] Accounts already linked, skipping insert");
+      localStorage.removeItem("pending_invite_token");
+      setStatus("done");
+      toast({ title: "Accounts already linked", description: "You're already connected." });
+      setTimeout(() => navigate("/dashboard"), 1500);
+      return;
+    }
+
+    // Step 3: Create linked account
+    console.log("[AcceptInvite] Step 3: Inserting into linked_accounts…", {
       primary_user_id: invite.inviter_user_id,
       linked_user_id: user.id,
     });
@@ -92,7 +110,7 @@ const AcceptInvite = () => {
       accepted_at: new Date().toISOString(),
     }).select();
 
-    console.log("[AcceptInvite] Step 2 result:", { linkData, linkError });
+    console.log("[AcceptInvite] Step 3 result:", { linkData, linkError });
 
     if (linkError) {
       console.error("[AcceptInvite] linked_accounts insert FAILED:", linkError);
