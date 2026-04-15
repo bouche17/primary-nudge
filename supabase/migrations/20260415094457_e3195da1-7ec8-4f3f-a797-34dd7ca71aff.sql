@@ -1,0 +1,1 @@
+UPDATE children SET school_id = 'c0517733-e4a6-45f4-9fd1-9056aba084e6' WHERE school_id = 'f656deff-dedf-4d00-a6aa-8a779f83a3b5';
