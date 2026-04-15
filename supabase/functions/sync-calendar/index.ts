@@ -57,6 +57,92 @@ function parseIcal(ical: string) {
   return events;
 }
 
+// ── FullCalendar JS array extractor ──────────────────────────
+function parseFullCalendarHtml(html: string): Array<{
+  uid: string;
+  title: string;
+  description: string;
+  location: string;
+  startAt: string;
+  endAt: string | null;
+  allDay: boolean;
+  yearGroup: string | null;
+}> {
+  // Find the NON-empty events array — the page has an empty one first, then the real data
+  const matches = [...html.matchAll(/events\s*:\s*(\[[\s\S]*?\])\s*[,}]/g)];
+  let arrStr = "";
+  for (const m of matches) {
+    if (m[1].trim() !== "[]") {
+      arrStr = m[1];
+      break;
+    }
+  }
+  if (!arrStr) {
+    console.error("Could not find non-empty fullCalendar events array in HTML");
+    return [];
+  }
+
+  let eventsRaw: any[];
+  try {
+    eventsRaw = JSON.parse(arrStr);
+  } catch (e) {
+    console.error("Failed to parse fullCalendar events JSON:", e);
+    return [];
+  }
+
+  console.log(`Extracted ${eventsRaw.length} events from fullCalendar JS`);
+
+  // className mapping:
+  // custom0 = Reception, custom (no digit) = Year 1, custom2..6 = Year 2..6
+  // customstaff = Staff only
+  // multi_X_Y = multiple year groups (0=Reception, _2=Year 2, etc.)
+  // empty = whole school
+  function classNameToYearGroup(cls: string): string | null {
+    if (!cls) return null; // whole school
+
+    if (cls === "customstaff") return "Staff";
+    if (cls === "custom") return "Year 1";
+    if (cls === "custom0") return "Reception";
+
+    const singleMatch = cls.match(/^custom(\d)$/);
+    if (singleMatch) {
+      const n = parseInt(singleMatch[1]);
+      return n === 0 ? "Reception" : `Year ${n}`;
+    }
+
+    if (cls.startsWith("multi_")) {
+      // Parse all digits from the multi string, e.g. multi_3_4_5 or multi_0__2
+      const parts = cls.replace("multi_", "").split("_").filter(Boolean);
+      const years: string[] = [];
+      for (const p of parts) {
+        if (p === "staff") { years.push("Staff"); continue; }
+        const n = parseInt(p);
+        if (isNaN(n)) continue;
+        years.push(n === 0 ? "Reception" : `Year ${n}`);
+      }
+      return years.length > 0 ? years.join(", ") : null;
+    }
+
+    return null;
+  }
+
+  return eventsRaw.map((e: any, i: number) => {
+    const yearGroup = classNameToYearGroup(e.className || "");
+    const hasTime = e.start?.includes(" ") && !e.start?.endsWith("00:00:00");
+
+    return {
+      uid: `fullcal-${i}-${e.start || Date.now()}`,
+      title: e.title || "Untitled",
+      description: yearGroup || "",
+      location: "",
+      startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
+      endAt: e.end ? new Date(e.end.replace(" ", "T") + "Z").toISOString() : null,
+      allDay: !hasTime,
+      yearGroup,
+    };
+  });
+}
+
 // ── HTML scraper + AI extraction ─────────────────────────────
 async function scrapeAndExtract(url: string): Promise<Array<{
   uid: string;
@@ -199,7 +285,15 @@ Deno.serve(async (req: Request) => {
           allDay: boolean;
         }>;
 
-        if (feed.feed_type === "scrape") {
+        if (feed.feed_type === "fullcalendar") {
+          const res = await fetch(feed.feed_url);
+          if (!res.ok) {
+            console.error(`Failed to fetch feed ${feed.id}: ${res.status}`);
+            continue;
+          }
+          const html = await res.text();
+          events = parseFullCalendarHtml(html);
+        } else if (feed.feed_type === "scrape") {
           events = await scrapeAndExtract(feed.feed_url);
         } else {
           // Default: iCal
