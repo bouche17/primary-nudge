@@ -502,6 +502,7 @@ export type Database = {
           start_at: string
           title: string
           uid: string | null
+          year_group: string | null
         }
         Insert: {
           all_day?: boolean | null
@@ -515,6 +516,7 @@ export type Database = {
           start_at: string
           title: string
           uid?: string | null
+          year_group?: string | null
         }
         Update: {
           all_day?: boolean | null
@@ -528,6 +530,7 @@ export type Database = {
           start_at?: string
           title?: string
           uid?: string | null
+          year_group?: string | null
         }
         Relationships: [
           {
