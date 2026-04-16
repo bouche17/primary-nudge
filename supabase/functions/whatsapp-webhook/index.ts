@@ -736,7 +736,14 @@ async function handleImageMessage(
     }
 
     const imageBuffer = await imageRes.arrayBuffer();
-    const imageBase64 = btoa(String.fromCharCode(...new Uint8Array(imageBuffer)));
+    // Chunk the encoding to avoid call-stack overflow on large images
+    const bytes = new Uint8Array(imageBuffer);
+    let imageBase64 = "";
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      imageBase64 += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    }
+    imageBase64 = btoa(imageBase64);
 
     const childNames = context.children.map((c) => c.first_name).join(" and ");
     const childrenWithYearGroups = context.children
