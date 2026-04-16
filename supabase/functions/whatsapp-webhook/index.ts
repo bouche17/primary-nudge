@@ -446,55 +446,61 @@ async function executeTool(
   }
 
   if (toolName === "save_parent_note") {
-    // Deduplicate: check if we already have this event for this phone/child/date
     const noteDate = toolArgs.date;
     const noteChild = toolArgs.child_name || null;
 
-    if (noteDate) {
-      const { data: existing } = await supabase
-        .from("parent_notes")
-        .select("id, summary")
-        .eq("phone_number", phone)
-        .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
+    // If no specific child, save for ALL children
+    const childNames: (string | null)[] = noteChild
+      ? [noteChild]
+      : context.children.length > 0
+        ? context.children.map((c) => c.first_name)
+        : [null];
 
-      if (existing && existing.length > 0) {
-        // Check child_name match among duplicates
-        const childMatch = existing.some((row: any) =>
-          noteChild ? row.summary && (row as any).child_name === noteChild : true
-        );
+    const savedFor: string[] = [];
+    const alreadySavedFor: string[] = [];
 
-        // Re-query with child_name check via a narrower approach
+    for (const childName of childNames) {
+      // Deduplicate: check if we already have this event for this phone/child/date
+      if (noteDate) {
         const { data: exactMatch } = await supabase
           .from("parent_notes")
-          .select("id, summary, child_name")
+          .select("id, child_name")
           .eq("phone_number", phone)
           .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
 
         const isDuplicate = exactMatch?.some((row: any) => {
-          if (noteChild) return row.child_name === noteChild;
+          if (childName) return row.child_name === childName;
           return !row.child_name;
         });
 
         if (isDuplicate) {
-          return `ALREADY_SAVED:${toolArgs.summary}:${noteDate}:${noteChild || ""}`;
+          alreadySavedFor.push(childName || "general");
+          continue;
         }
+      }
+
+      const { error } = await supabase.from("parent_notes").insert({
+        phone_number: phone,
+        raw_content: toolArgs.summary,
+        summary: toolArgs.summary,
+        extracted_dates: [{ date: toolArgs.date }],
+        source_type: "whatsapp",
+        child_name: childName,
+      });
+
+      if (error) {
+        console.error("Error saving note:", error);
+      } else {
+        savedFor.push(childName || "general");
       }
     }
 
-    const { error } = await supabase.from("parent_notes").insert({
-      phone_number: phone,
-      raw_content: toolArgs.summary,
-      summary: toolArgs.summary,
-      extracted_dates: [{ date: toolArgs.date }],
-      source_type: "whatsapp",
-      child_name: noteChild,
-    });
-
-    if (error) {
-      console.error("Error saving note:", error);
-      return `Error saving note: ${error.message}`;
+    if (savedFor.length === 0 && alreadySavedFor.length > 0) {
+      return `ALREADY_SAVED:${toolArgs.summary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${noteChild ? ` for ${noteChild}` : ""}`;
+
+    const names = savedFor.filter((n) => n !== "general");
+    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}`;
   }
 
   if (toolName === "save_weekly_lunch_plan") {
