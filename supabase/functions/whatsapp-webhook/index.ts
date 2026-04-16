@@ -1051,7 +1051,7 @@ Deno.serve(async (req: Request) => {
 
     // Parent not found in system
     if (!context) {
-      const reply = `Hi! 👋 I'm Monty, a school reminder assistant for UK primary school parents. To get set up, head to primary-nudge.lovable.app and create your account — it only takes a minute!`;
+      const reply = `Hi! 👋 I'm Monty, a school reminder assistant for UK primary school parents. To get set up, head to heymonty.co.uk and create your account — it only takes a minute!`;
       await saveMessage(conversationId, "inbound", incomingMessage || "[image]");
       await saveMessage(conversationId, "outbound", reply);
       await sendWhatsApp(from, reply);
