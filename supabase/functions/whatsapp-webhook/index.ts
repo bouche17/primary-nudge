@@ -283,6 +283,7 @@ This is one of the most useful things you can do. The parent may say "just got t
 - Even if the event is for multiple year groups (e.g. "Year 1 and Year 2"), check if ANY of the parent's children are in those year groups and attribute accordingly
 - Always pass child_name to save_parent_note when you can identify the child
 - Confirm back exactly what you extracted, saved, and which child it's for by first name
+- If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
 - If something is ambiguous (e.g. "next Friday") clarify which date you've assumed
 - If there's nothing actionable, let them know warmly
 Example: Parent forwards "Year 1 and Year 2 — Earth Day litter pick Wednesday 22nd April, leaving at 1:15pm."
@@ -445,20 +446,55 @@ async function executeTool(
   }
 
   if (toolName === "save_parent_note") {
+    // Deduplicate: check if we already have this event for this phone/child/date
+    const noteDate = toolArgs.date;
+    const noteChild = toolArgs.child_name || null;
+
+    if (noteDate) {
+      const { data: existing } = await supabase
+        .from("parent_notes")
+        .select("id, summary")
+        .eq("phone_number", phone)
+        .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
+
+      if (existing && existing.length > 0) {
+        // Check child_name match among duplicates
+        const childMatch = existing.some((row: any) =>
+          noteChild ? row.summary && (row as any).child_name === noteChild : true
+        );
+
+        // Re-query with child_name check via a narrower approach
+        const { data: exactMatch } = await supabase
+          .from("parent_notes")
+          .select("id, summary, child_name")
+          .eq("phone_number", phone)
+          .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
+
+        const isDuplicate = exactMatch?.some((row: any) => {
+          if (noteChild) return row.child_name === noteChild;
+          return !row.child_name;
+        });
+
+        if (isDuplicate) {
+          return `ALREADY_SAVED:${toolArgs.summary}:${noteDate}:${noteChild || ""}`;
+        }
+      }
+    }
+
     const { error } = await supabase.from("parent_notes").insert({
       phone_number: phone,
       raw_content: toolArgs.summary,
       summary: toolArgs.summary,
       extracted_dates: [{ date: toolArgs.date }],
       source_type: "whatsapp",
-      child_name: toolArgs.child_name || null,
+      child_name: noteChild,
     });
 
     if (error) {
       console.error("Error saving note:", error);
       return `Error saving note: ${error.message}`;
     }
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${toolArgs.child_name ? ` for ${toolArgs.child_name}` : ""}`;
+    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${noteChild ? ` for ${noteChild}` : ""}`;
   }
 
   if (toolName === "save_weekly_lunch_plan") {
@@ -784,6 +820,7 @@ If the event or message mentions a specific year group, automatically attribute 
 - British English always
 - Use the child's first name, never pronouns like "they/their" if you know which child it is
 
+If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
 If you can't find any actionable dates or events, let the parent know warmly.
 If the image is unclear or unreadable, ask them to try again.`;
 
