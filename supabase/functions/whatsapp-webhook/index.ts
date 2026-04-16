@@ -445,20 +445,55 @@ async function executeTool(
   }
 
   if (toolName === "save_parent_note") {
+    // Deduplicate: check if we already have this event for this phone/child/date
+    const noteDate = toolArgs.date;
+    const noteChild = toolArgs.child_name || null;
+
+    if (noteDate) {
+      const { data: existing } = await supabase
+        .from("parent_notes")
+        .select("id, summary")
+        .eq("phone_number", phone)
+        .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
+
+      if (existing && existing.length > 0) {
+        // Check child_name match among duplicates
+        const childMatch = existing.some((row: any) =>
+          noteChild ? row.summary && (row as any).child_name === noteChild : true
+        );
+
+        // Re-query with child_name check via a narrower approach
+        const { data: exactMatch } = await supabase
+          .from("parent_notes")
+          .select("id, summary, child_name")
+          .eq("phone_number", phone)
+          .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
+
+        const isDuplicate = exactMatch?.some((row: any) => {
+          if (noteChild) return row.child_name === noteChild;
+          return !row.child_name;
+        });
+
+        if (isDuplicate) {
+          return `ALREADY_SAVED:${toolArgs.summary}:${noteDate}:${noteChild || ""}`;
+        }
+      }
+    }
+
     const { error } = await supabase.from("parent_notes").insert({
       phone_number: phone,
       raw_content: toolArgs.summary,
       summary: toolArgs.summary,
       extracted_dates: [{ date: toolArgs.date }],
       source_type: "whatsapp",
-      child_name: toolArgs.child_name || null,
+      child_name: noteChild,
     });
 
     if (error) {
       console.error("Error saving note:", error);
       return `Error saving note: ${error.message}`;
     }
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${toolArgs.child_name ? ` for ${toolArgs.child_name}` : ""}`;
+    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${noteChild ? ` for ${noteChild}` : ""}`;
   }
 
   if (toolName === "save_weekly_lunch_plan") {
