@@ -29,6 +29,26 @@ interface ReminderItem {
 // year_group is "all" for whole-school events, or a comma-separated list
 // like "Year 3,Year 4" or "Reception".
 
+// Strip year group / key stage prefixes from event titles
+// Examples: "Y3,4,5 Swimming" → "Swimming", "Y5/6 Football" → "Football",
+// "KS1 Nativity" → "Nativity", "Year 3 Trip" → "Trip", "Reception Assembly" → "Assembly"
+function cleanEventTitle(title: string): string {
+  if (!title) return title;
+  // Matches leading year/keystage tokens followed by separator(s)
+  // Y/Yr/Year + numbers (with , / & - and spaces), or KS1/KS2/EYFS/Reception/Nursery
+  const pattern =
+    /^\s*(?:(?:y(?:ea)?r?s?)\s*[\d]+(?:\s*[,/&\-]\s*\d+)*|ks\s*[1-4]|eyfs|reception|nursery)\b[\s:.\-–—]*/i;
+  let cleaned = title;
+  // Strip up to 2 prefixes (e.g. "KS2 Y5/6 Trip")
+  for (let i = 0; i < 2; i++) {
+    const next = cleaned.replace(pattern, "");
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  cleaned = cleaned.trim();
+  return cleaned.length > 0 ? cleaned : title.trim();
+}
+
 function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string): boolean {
   // "all" means whole school — always relevant
   if (!eventYearGroup || eventYearGroup === "all") return true;
@@ -283,14 +303,15 @@ async function sendReminders(period: "morning" | "evening") {
 
         const refId = `event_${evt.id}_${period}`;
         if (await alreadySent(phone, refId, period, today)) continue;
+        const cleanTitle = cleanEventTitle(evt.title);
         reminderItems.push({
           childName: child.first_name,
-          title: evt.title,
+          title: cleanTitle,
           emoji: "📅",
           type: "event",
           refId,
         });
-        refIdsToLog.push({ refId, title: evt.title, type: "event" });
+        refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
       }
 
       // 2. Child-specific reminders (e.g. Jude's PE on Monday)
