@@ -303,14 +303,15 @@ async function sendReminders(period: "morning" | "evening") {
 
         const refId = `event_${evt.id}_${period}`;
         if (await alreadySent(phone, refId, period, today)) continue;
+        const cleanTitle = cleanEventTitle(evt.title);
         reminderItems.push({
           childName: child.first_name,
-          title: evt.title,
+          title: cleanTitle,
           emoji: "📅",
           type: "event",
           refId,
         });
-        refIdsToLog.push({ refId, title: evt.title, type: "event" });
+        refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
       }
 
       // 2. Child-specific reminders (e.g. Jude's PE on Monday)
