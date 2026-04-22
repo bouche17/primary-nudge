@@ -72,18 +72,18 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
 
   const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
 
+  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
+
+  if (!templateSid) {
+    console.error(`No template SID configured for period=${period} — refusing to send freeform.`);
+    return false;
+  }
+
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${from}`);
-
-  if (templateSid) {
-    // Send as approved WhatsApp template — works outside the 24h window
-    params.append("ContentSid", templateSid);
-    params.append("ContentVariables", JSON.stringify({ "1": text }));
-  } else {
-    // Fallback to free-form (only delivers within 24h window)
-    params.append("Body", text);
-  }
+  params.append("ContentSid", templateSid);
+  params.append("ContentVariables", JSON.stringify({ "1": text }));
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
@@ -94,7 +94,12 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     body: params.toString(),
   });
 
-  if (!res.ok) console.error("Twilio error:", await res.text());
+  if (!res.ok) {
+    console.error(`Twilio error [${res.status}]:`, await res.text());
+  } else {
+    const body = await res.json();
+    console.log(`Twilio OK sid=${body.sid} status=${body.status} to=${to} template=${templateSid}`);
+  }
   return res.ok;
 }
 
