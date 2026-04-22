@@ -7,6 +7,8 @@ const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPAB
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const TWILIO_MORNING_TEMPLATE_SID = Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "";
+const TWILIO_EVENING_TEMPLATE_SID = Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -62,15 +64,25 @@ function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string):
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+async function sendWhatsApp(to: string, text: string, period: "morning" | "evening"): Promise<boolean> {
   const sid = TWILIO_ACCOUNT_SID;
   const token = TWILIO_AUTH_TOKEN;
   const from = TWILIO_WHATSAPP_NUMBER;
 
+  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
+
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${from}`);
-  params.append("Body", text);
+
+  if (templateSid) {
+    // Send as approved WhatsApp template — works outside the 24h window
+    params.append("ContentSid", templateSid);
+    params.append("ContentVariables", JSON.stringify({ "1": text }));
+  } else {
+    // Fallback to free-form (only delivers within 24h window)
+    params.append("Body", text);
+  }
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
@@ -433,7 +445,7 @@ async function sendReminders(period: "morning" | "evening") {
     const message = buildConsolidatedMessage(reminderItems, period);
 
     // Send to primary parent
-    const ok = await sendWhatsApp(phone, message);
+    const ok = await sendWhatsApp(phone, message, period);
 
     if (ok) {
       for (const { refId, title, type } of refIdsToLog) {
@@ -446,7 +458,7 @@ async function sendReminders(period: "morning" | "evening") {
     // Send to linked partner accounts (e.g. both Mum and Dad)
     const partnerPhones = linkedPhones.get(parentId) || [];
     for (const partnerPhone of partnerPhones) {
-      const partnerOk = await sendWhatsApp(partnerPhone, message);
+      const partnerOk = await sendWhatsApp(partnerPhone, message, period);
       if (partnerOk) {
         for (const { refId, title, type } of refIdsToLog) {
           await logReminder(partnerPhone, type, refId, title, period);
