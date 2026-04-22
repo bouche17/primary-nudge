@@ -38,10 +38,10 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (user) {
+      // RLS already restricts this to the user's family (own + linked partners' children)
       supabase.
       from("children").
       select("id, first_name, year_group, schools(name, postcode)").
-      eq("parent_id", user.id).
       then(({ data }) => {
         if (data) setChildren(data as unknown as ChildWithSchool[]);
       });
