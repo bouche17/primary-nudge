@@ -458,7 +458,7 @@ async function sendReminders(period: "morning" | "evening") {
     // Send to linked partner accounts (e.g. both Mum and Dad)
     const partnerPhones = linkedPhones.get(parentId) || [];
     for (const partnerPhone of partnerPhones) {
-      const partnerOk = await sendWhatsApp(partnerPhone, message);
+      const partnerOk = await sendWhatsApp(partnerPhone, message, period);
       if (partnerOk) {
         for (const { refId, title, type } of refIdsToLog) {
           await logReminder(partnerPhone, type, refId, title, period);
