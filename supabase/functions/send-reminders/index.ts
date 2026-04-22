@@ -7,6 +7,8 @@ const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPAB
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const TWILIO_MORNING_TEMPLATE_SID = Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "";
+const TWILIO_EVENING_TEMPLATE_SID = Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
