@@ -245,12 +245,10 @@ async function sendReminders(period: "morning" | "evening") {
     return;
   }
 
-  // Load parent phone numbers
-  const parentIds = [...new Set(children.map((c) => c.parent_id))];
+  // Load all parent phone numbers (we'll need linked partners too)
   const { data: profiles } = await supabase
     .from("profiles")
     .select("user_id, phone_number")
-    .in("user_id", parentIds)
     .not("phone_number", "is", null);
 
   if (!profiles || profiles.length === 0) {
@@ -258,47 +256,71 @@ async function sendReminders(period: "morning" | "evening") {
     return;
   }
 
-  const phoneByParent = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
+  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
 
-  // Load linked accounts — so reminders fire to both parents
-  // A linked account means Partner B should receive the same reminders as Parent A
+  // Load all accepted linked accounts and build a union-find of family groups
   const { data: linkedAccounts } = await supabase
     .from("linked_accounts")
     .select("primary_user_id, linked_user_id")
     .eq("status", "accepted");
 
-  // Build a map of linked phone numbers per primary parent
-  // e.g. if Matt and Sarah are linked, Sarah also gets Matt's reminders
-  const linkedPhones = new Map<string, string[]>();
+  // familyOf[user_id] = canonical family-leader user_id
+  const familyOf = new Map<string, string>();
+  const find = (u: string): string => {
+    const p = familyOf.get(u);
+    if (!p || p === u) return u;
+    const root = find(p);
+    familyOf.set(u, root);
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) familyOf.set(rb, ra);
+  };
+  // Seed every known parent
+  for (const c of children) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
+  for (const p of profiles) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
   for (const link of linkedAccounts || []) {
-    const linkedPhone = phoneByParent.get(link.linked_user_id);
-    if (!linkedPhone) continue;
-    if (!linkedPhones.has(link.primary_user_id)) {
-      linkedPhones.set(link.primary_user_id, []);
-    }
-    linkedPhones.get(link.primary_user_id)!.push(linkedPhone);
+    if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+    if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+    union(link.primary_user_id, link.linked_user_id);
   }
 
-  // Group children by parent
-  const childrenByParent = new Map<string, typeof children>();
+  // Group children + phones by family
+  const childrenByFamily = new Map<string, typeof children>();
+  const phonesByFamily = new Map<string, Set<string>>();
+
   for (const child of children) {
-    const phone = phoneByParent.get(child.parent_id);
+    const fam = find(child.parent_id);
+    if (!childrenByFamily.has(fam)) childrenByFamily.set(fam, []);
+    childrenByFamily.get(fam)!.push(child);
+  }
+
+  // Walk every user we've seen and bucket their phone into their family
+  const allUsers = new Set<string>([...familyOf.keys()]);
+  for (const userId of allUsers) {
+    const phone = phoneByUser.get(userId);
     if (!phone) continue;
-    if (!childrenByParent.has(child.parent_id)) {
-      childrenByParent.set(child.parent_id, []);
-    }
-    childrenByParent.get(child.parent_id)!.push(child);
+    const fam = find(userId);
+    if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+    phonesByFamily.get(fam)!.add(phone);
   }
 
   let sentCount = 0;
 
-  // Process each parent — ONE message per parent
-  for (const [parentId, parentChildren] of childrenByParent) {
-    const phone = phoneByParent.get(parentId)!;
+  // Process each FAMILY — one message per family, sent to every family phone
+  for (const [familyId, familyChildren] of childrenByFamily) {
+    const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
+    if (familyPhones.length === 0) continue;
+
+    // Use first family phone as the dedup anchor (so retries don't re-send to anyone)
+    const anchorPhone = familyPhones[0];
+
     const reminderItems: ReminderItem[] = [];
     const refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
 
-    for (const child of parentChildren) {
+    for (const child of familyChildren) {
       const schoolIds = [child.school_id].filter(Boolean);
 
       // 1. School events for target date
@@ -310,11 +332,10 @@ async function sendReminders(period: "morning" | "evening") {
         .lte("start_at", targetEnd);
 
       for (const evt of events || []) {
-        // Skip events not relevant to this child's year group
         if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
 
-        const refId = `event_${evt.id}_${period}`;
-        if (await alreadySent(phone, refId, period, today)) continue;
+        const refId = `event_${evt.id}_${child.id}_${period}`;
+        if (await alreadySent(anchorPhone, refId, period, today)) continue;
         const cleanTitle = cleanEventTitle(evt.title);
         reminderItems.push({
           childName: child.first_name,
@@ -326,7 +347,7 @@ async function sendReminders(period: "morning" | "evening") {
         refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
       }
 
-      // 2. Child-specific reminders (e.g. Jude's PE on Monday)
+      // 2. Child-specific reminders (any family parent's reminders for this child)
       const { data: childReminders } = await supabase
         .from("child_reminders")
         .select("id, title, emoji, reminder_time")
@@ -339,7 +360,7 @@ async function sendReminders(period: "morning" | "evening") {
         if (!shouldSend) continue;
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
-        if (await alreadySent(phone, refId, period, today)) continue;
+        if (await alreadySent(anchorPhone, refId, period, today)) continue;
         reminderItems.push({
           childName: child.first_name,
           title: rem.title,
@@ -351,11 +372,8 @@ async function sendReminders(period: "morning" | "evening") {
       }
 
       // 2b. Weekly packed lunch plan
-      // Check if today/tomorrow is a packed lunch day for this child
-      // Calculate Monday of the target week using local date arithmetic
-      // Avoids UTC conversion bugs by working with the date string directly
-      const targetDateObj = new Date(targetDateStr + "T12:00:00Z"); // noon UTC = safe local date
-      const targetDayNum = targetDateObj.getUTCDay(); // 0=Sun, 1=Mon ... 6=Sat
+      const targetDateObj = new Date(targetDateStr + "T12:00:00Z");
+      const targetDayNum = targetDateObj.getUTCDay();
       const daysFromMonday = targetDayNum === 0 ? 6 : targetDayNum - 1;
       const mondayObj = new Date(targetDateObj);
       mondayObj.setUTCDate(targetDateObj.getUTCDate() - daysFromMonday);
@@ -370,7 +388,7 @@ async function sendReminders(period: "morning" | "evening") {
 
       if (lunchPlan && lunchPlan.packed_lunch_days?.includes(targetDay)) {
         const refId = `lunch_${child.id}_${targetDateStr}_${period}`;
-        if (!(await alreadySent(phone, refId, period, today))) {
+        if (!(await alreadySent(anchorPhone, refId, period, today))) {
           reminderItems.push({
             childName: child.first_name,
             title: "Packed lunch",
@@ -394,8 +412,8 @@ async function sendReminders(period: "morning" | "evening") {
         .eq("day_of_week", targetDay);
 
       for (const rem of schoolReminders || []) {
-        const refId = `reminder_${rem.id}_${targetDateStr}_${period}`;
-        if (await alreadySent(phone, refId, period, today)) continue;
+        const refId = `reminder_${rem.id}_${child.id}_${targetDateStr}_${period}`;
+        if (await alreadySent(anchorPhone, refId, period, today)) continue;
         reminderItems.push({
           childName: child.first_name,
           title: rem.title,
@@ -405,66 +423,47 @@ async function sendReminders(period: "morning" | "evening") {
         });
         refIdsToLog.push({ refId, title: rem.title, type: "weekly" });
       }
+    }
 
-      // 4. Parent notes matching target date
-      // Notes are fetched per parent (not per child) since they're stored by phone number
-      // Only fetch once per parent — skip for subsequent children to avoid duplicates
-      if (parentChildren.indexOf(child) === 0) {
-        const { data: notes } = await supabase
-          .from("parent_notes")
-          .select("id, summary, extracted_dates, child_name")
-          .eq("phone_number", phone);
+    // 4. Parent notes — fetch ALL notes from ANY family phone, once per family
+    const { data: notes } = await supabase
+      .from("parent_notes")
+      .select("id, summary, extracted_dates, child_name")
+      .in("phone_number", familyPhones);
 
-        for (const note of notes || []) {
-          if (!note.summary || !note.extracted_dates) continue;
-          const dates = note.extracted_dates as Array<{ date: string }>;
-          if (!dates.some((d) => d.date === targetDateStr)) continue;
+    for (const note of notes || []) {
+      if (!note.summary || !note.extracted_dates) continue;
+      const dates = note.extracted_dates as Array<{ date: string }>;
+      if (!dates.some((d) => d.date === targetDateStr)) continue;
 
-          const refId = `note_${note.id}_${targetDateStr}_${period}`;
-          if (await alreadySent(phone, refId, period, today)) continue;
+      const refId = `note_${note.id}_${targetDateStr}_${period}`;
+      if (await alreadySent(anchorPhone, refId, period, today)) continue;
 
-          // Use child_name from the note if available, otherwise use generic name
-          const noteName = note.child_name || "the children";
-
-          reminderItems.push({
-            childName: noteName,
-            title: note.summary,
-            emoji: "📝",
-            type: "note",
-            refId,
-          });
-          refIdsToLog.push({ refId, title: note.summary, type: "note" });
-        }
-      }
+      const noteName = note.child_name || "the children";
+      reminderItems.push({
+        childName: noteName,
+        title: note.summary,
+        emoji: "📝",
+        type: "note",
+        refId,
+      });
+      refIdsToLog.push({ refId, title: note.summary, type: "note" });
     }
 
     // Skip if nothing to send
     if (reminderItems.length === 0) continue;
 
-    // Build ONE consolidated message for this parent
+    // Build ONE consolidated message and send to every family phone
     const message = buildConsolidatedMessage(reminderItems, period);
 
-    // Send to primary parent
-    const ok = await sendWhatsApp(phone, message, period);
-
-    if (ok) {
-      for (const { refId, title, type } of refIdsToLog) {
-        await logReminder(phone, type, refId, title, period);
-      }
-      sentCount++;
-      console.log(`Sent consolidated ${period} message to ${phone} with ${reminderItems.length} items`);
-    }
-
-    // Send to linked partner accounts (e.g. both Mum and Dad)
-    const partnerPhones = linkedPhones.get(parentId) || [];
-    for (const partnerPhone of partnerPhones) {
-      const partnerOk = await sendWhatsApp(partnerPhone, message, period);
-      if (partnerOk) {
+    for (const phone of familyPhones) {
+      const ok = await sendWhatsApp(phone, message, period);
+      if (ok) {
         for (const { refId, title, type } of refIdsToLog) {
-          await logReminder(partnerPhone, type, refId, title, period);
+          await logReminder(phone, type, refId, title, period);
         }
         sentCount++;
-        console.log(`Sent consolidated ${period} message to linked partner ${partnerPhone}`);
+        console.log(`[${period}] Sent to family phone ${phone} with ${reminderItems.length} items`);
       }
     }
   }
