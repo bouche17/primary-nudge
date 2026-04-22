@@ -78,6 +78,8 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     return false;
   }
 
+  console.log('Sending to:', to, 'templateSid:', templateSid);
+
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${from}`);
@@ -93,12 +95,10 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     body: params.toString(),
   });
 
-  if (!res.ok) {
-    console.error(`Twilio error [${res.status}]:`, await res.text());
-  } else {
-    const body = await res.json();
-    console.log(`Twilio OK sid=${body.sid} status=${body.status} to=${to} template=${templateSid}`);
-  }
+  console.log('Twilio response status:', res.status);
+  const responseBody = await res.text();
+  console.log('Twilio response body:', responseBody);
+
   return res.ok;
 }
 
