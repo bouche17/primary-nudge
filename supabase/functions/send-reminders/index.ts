@@ -445,7 +445,7 @@ async function sendReminders(period: "morning" | "evening") {
     const message = buildConsolidatedMessage(reminderItems, period);
 
     // Send to primary parent
-    const ok = await sendWhatsApp(phone, message);
+    const ok = await sendWhatsApp(phone, message, period);
 
     if (ok) {
       for (const { refId, title, type } of refIdsToLog) {
