@@ -245,12 +245,10 @@ async function sendReminders(period: "morning" | "evening") {
     return;
   }
 
-  // Load parent phone numbers
-  const parentIds = [...new Set(children.map((c) => c.parent_id))];
+  // Load all parent phone numbers (we'll need linked partners too)
   const { data: profiles } = await supabase
     .from("profiles")
     .select("user_id, phone_number")
-    .in("user_id", parentIds)
     .not("phone_number", "is", null);
 
   if (!profiles || profiles.length === 0) {
@@ -258,36 +256,55 @@ async function sendReminders(period: "morning" | "evening") {
     return;
   }
 
-  const phoneByParent = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
+  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
 
-  // Load linked accounts — so reminders fire to both parents
-  // A linked account means Partner B should receive the same reminders as Parent A
+  // Load all accepted linked accounts and build a union-find of family groups
   const { data: linkedAccounts } = await supabase
     .from("linked_accounts")
     .select("primary_user_id, linked_user_id")
     .eq("status", "accepted");
 
-  // Build a map of linked phone numbers per primary parent
-  // e.g. if Matt and Sarah are linked, Sarah also gets Matt's reminders
-  const linkedPhones = new Map<string, string[]>();
+  // familyOf[user_id] = canonical family-leader user_id
+  const familyOf = new Map<string, string>();
+  const find = (u: string): string => {
+    const p = familyOf.get(u);
+    if (!p || p === u) return u;
+    const root = find(p);
+    familyOf.set(u, root);
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) familyOf.set(rb, ra);
+  };
+  // Seed every known parent
+  for (const c of children) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
+  for (const p of profiles) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
   for (const link of linkedAccounts || []) {
-    const linkedPhone = phoneByParent.get(link.linked_user_id);
-    if (!linkedPhone) continue;
-    if (!linkedPhones.has(link.primary_user_id)) {
-      linkedPhones.set(link.primary_user_id, []);
-    }
-    linkedPhones.get(link.primary_user_id)!.push(linkedPhone);
+    if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+    if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+    union(link.primary_user_id, link.linked_user_id);
   }
 
-  // Group children by parent
-  const childrenByParent = new Map<string, typeof children>();
+  // Group children + phones by family
+  const childrenByFamily = new Map<string, typeof children>();
+  const phonesByFamily = new Map<string, Set<string>>();
+
   for (const child of children) {
-    const phone = phoneByParent.get(child.parent_id);
+    const fam = find(child.parent_id);
+    if (!childrenByFamily.has(fam)) childrenByFamily.set(fam, []);
+    childrenByFamily.get(fam)!.push(child);
+  }
+
+  // Walk every user we've seen and bucket their phone into their family
+  const allUsers = new Set<string>([...familyOf.keys()]);
+  for (const userId of allUsers) {
+    const phone = phoneByUser.get(userId);
     if (!phone) continue;
-    if (!childrenByParent.has(child.parent_id)) {
-      childrenByParent.set(child.parent_id, []);
-    }
-    childrenByParent.get(child.parent_id)!.push(child);
+    const fam = find(userId);
+    if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+    phonesByFamily.get(fam)!.add(phone);
   }
 
   let sentCount = 0;
