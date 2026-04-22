@@ -64,15 +64,25 @@ function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string):
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+async function sendWhatsApp(to: string, text: string, period: "morning" | "evening"): Promise<boolean> {
   const sid = TWILIO_ACCOUNT_SID;
   const token = TWILIO_AUTH_TOKEN;
   const from = TWILIO_WHATSAPP_NUMBER;
 
+  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
+
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${from}`);
-  params.append("Body", text);
+
+  if (templateSid) {
+    // Send as approved WhatsApp template — works outside the 24h window
+    params.append("ContentSid", templateSid);
+    params.append("ContentVariables", JSON.stringify({ "1": text }));
+  } else {
+    // Fallback to free-form (only delivers within 24h window)
+    params.append("Body", text);
+  }
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
