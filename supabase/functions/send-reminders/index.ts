@@ -73,8 +73,6 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
 
   const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
 
-  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
-
   if (!templateSid) {
     console.error(`No template SID configured for period=${period} — refusing to send freeform.`);
     return false;
