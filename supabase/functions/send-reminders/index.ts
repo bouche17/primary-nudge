@@ -145,32 +145,14 @@ async function logReminder(phone: string, type: string, refId: string, title: st
 // rather than firing a separate message for each reminder
 
 function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "evening"): string {
-  const greeting = period === "morning" ? "Good morning! ☀️" : "Good evening! 🌙";
+  // The Twilio template already provides the greeting header and sign-off footer.
+  // {{1}} should ONLY contain the reminder body (single line or list).
 
-  // Single item — keep it short and personal
   if (items.length === 1) {
-    const item = items[0];
-    if (period === "morning") {
-      return buildSingleMorning(item);
-    } else {
-      return buildSingleEvening(item);
-    }
+    return period === "morning" ? buildSingleMorning(items[0]) : buildSingleEvening(items[0]);
   }
 
-  // Multiple items — consolidated list
-  const lines = items.map((item) => buildItemLine(item, period));
-
-  if (period === "morning") {
-    const intro =
-      items.length === 2 ? `${greeting} A couple of things for today:` : `${greeting} Here's what's on today:`;
-    return `${intro}\n\n${lines.join("\n")}\n\nHave a great day! 😊`;
-  } else {
-    const intro =
-      items.length === 2
-        ? `${greeting} Just a couple of things to prep for tomorrow:`
-        : `${greeting} A few things to get ready for tomorrow:`;
-    return `${intro}\n\n${lines.join("\n")}\n\nHope you have a lovely evening! 😊`;
-  }
+  return items.map((item) => buildItemLine(item, period)).join("\n");
 }
 
 function buildItemLine(item: ReminderItem, period: "morning" | "evening"): string {
@@ -183,7 +165,6 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
     return `${emoji} ${childName} has *${title}* today`;
   }
 
-  // Reminder — make it action-focused and natural
   const actionMap: Record<string, string> = {
     "PE kit needed": `Don't forget ${childName}'s PE kit`,
     "Packed lunch": `${childName} needs a packed lunch`,
@@ -193,52 +174,47 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
     "Homework due": `${childName}'s homework is due today`,
   };
 
-  // Use mapped version if available, otherwise build naturally
   const action = actionMap[title] || `${childName} has ${title}`;
   return `${emoji} ${action}`;
 }
 
+// Single-item builders — return just the body line (no greeting/sign-off; template provides those)
 function buildSingleMorning(item: ReminderItem): string {
   const { childName, title, emoji, type } = item;
 
   if (type === "event") {
-    return `Morning! ${emoji} Just a heads up — ${childName} has *${title}* today. Have a great one! 😊`;
+    return `${emoji} Just a heads up — ${childName} has *${title}* today.`;
   }
 
   const actionMap: Record<string, string> = {
-    "PE kit needed": `Morning! ${emoji} Quick one — don't forget ${childName}'s PE kit today. You've got this! 💪`,
-    "Packed lunch": `Morning! ${emoji} Don't forget ${childName}'s packed lunch today!`,
-    "Reading books returned": `Morning! ${emoji} ${childName}'s reading book needs to go back to school today 📚`,
-    "Dinner money due": `Morning! ${emoji} Dinner money is due for ${childName} today. Worth sorting before the school run!`,
-    "Forest School": `Morning! ${emoji} It's Forest School for ${childName} today — make sure they've got their outdoor kit! 🌲`,
-    "Homework due": `Morning! ${emoji} ${childName}'s homework is due in today — hope it's all done! ✏️`,
+    "PE kit needed": `${emoji} Quick one — don't forget ${childName}'s PE kit today. You've got this! 💪`,
+    "Packed lunch": `${emoji} Don't forget ${childName}'s packed lunch today!`,
+    "Reading books returned": `${emoji} ${childName}'s reading book needs to go back to school today 📚`,
+    "Dinner money due": `${emoji} Dinner money is due for ${childName} today. Worth sorting before the school run!`,
+    "Forest School": `${emoji} It's Forest School for ${childName} today — make sure they've got their outdoor kit! 🌲`,
+    "Homework due": `${emoji} ${childName}'s homework is due in today — hope it's all done! ✏️`,
   };
 
-  return (
-    actionMap[title] || `Morning! ${emoji} Quick reminder — ${childName} has *${title}* today. Have a great day! 😊`
-  );
+  return actionMap[title] || `${emoji} Quick reminder — ${childName} has *${title}* today.`;
 }
 
 function buildSingleEvening(item: ReminderItem): string {
   const { childName, title, emoji, type } = item;
 
   if (type === "event") {
-    return `Hey! ${emoji} Just a heads up for tomorrow — ${childName} has *${title}*. Worth getting sorted tonight! 😊`;
+    return `${emoji} Just a heads up for tomorrow — ${childName} has *${title}*. Worth getting sorted tonight!`;
   }
 
   const actionMap: Record<string, string> = {
-    "PE kit needed": `Hey! ${emoji} Don't forget — ${childName} needs their PE kit tomorrow. Best to pack it tonight! 👟`,
-    "Packed lunch": `Hey! ${emoji} ${childName} needs a packed lunch tomorrow — worth getting it ready tonight 🥪`,
-    "Reading books returned": `Hey! ${emoji} ${childName}'s reading book needs to go back tomorrow — worth popping it in their bag tonight 📚`,
-    "Dinner money due": `Hey! ${emoji} Dinner money is due for ${childName} tomorrow. Worth sorting it tonight! 💰`,
-    "Forest School": `Hey! ${emoji} ${childName} has Forest School tomorrow — make sure their outdoor kit is ready tonight 🌲`,
-    "Homework due": `Hey! ${emoji} ${childName}'s homework is due tomorrow — just checking it's all done! ✏️`,
+    "PE kit needed": `${emoji} Don't forget — ${childName} needs their PE kit tomorrow. Best to pack it tonight! 👟`,
+    "Packed lunch": `${emoji} ${childName} needs a packed lunch tomorrow — worth getting it ready tonight 🥪`,
+    "Reading books returned": `${emoji} ${childName}'s reading book needs to go back tomorrow — worth popping it in their bag tonight 📚`,
+    "Dinner money due": `${emoji} Dinner money is due for ${childName} tomorrow. Worth sorting it tonight! 💰`,
+    "Forest School": `${emoji} ${childName} has Forest School tomorrow — make sure their outdoor kit is ready tonight 🌲`,
+    "Homework due": `${emoji} ${childName}'s homework is due tomorrow — just checking it's all done! ✏️`,
   };
 
-  return (
-    actionMap[title] ||
-    `Hey! ${emoji} Just a reminder — ${childName} has *${title}* tomorrow. Worth getting ready tonight! 😊`
-  );
+  return actionMap[title] || `${emoji} Just a reminder — ${childName} has *${title}* tomorrow. Worth getting ready tonight!`;
 }
 
 // ── Main send logic ───────────────────────────────────────────────────────────
