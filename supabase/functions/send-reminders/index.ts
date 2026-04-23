@@ -80,11 +80,25 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
 
   console.log('Sending to:', to, 'templateSid:', templateSid);
 
+  // Sanitise reminder text for Twilio ContentVariables:
+  // - Strip control characters (Twilio rejects raw newlines/tabs in {{1}})
+  // - Collapse runs of whitespace into single spaces
+  // - Trim and cap length (Twilio limit is 1024 chars per variable)
+  const sanitisedText = text
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1024);
+
+  // JSON.stringify handles escaping of quotes, backslashes, and unicode correctly
+  const contentVariables = JSON.stringify({ "1": sanitisedText });
+  console.log('ContentVariables string:', contentVariables);
+
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${from}`);
   params.append("ContentSid", templateSid);
-  params.append("ContentVariables", JSON.stringify({ "1": text }));
+  params.append("ContentVariables", contentVariables);
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
