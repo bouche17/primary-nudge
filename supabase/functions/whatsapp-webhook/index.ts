@@ -902,8 +902,22 @@ If the image is unclear or unreadable, ask them to try again.`;
           const matchedChildren = detectYearGroupChildren(searchText, context.children);
 
           if (matchedChildren.length >= 1) {
-            toolBlock.input.child_name = matchedChildren[0];
-            console.log(`Image: Auto-attributed note to: ${matchedChildren[0]}`);
+            // Save once per matched child (so each child gets their own attributed note).
+            // If no year group matched, executeTool will fall back to saving for all children.
+            const results: string[] = [];
+            for (const childName of matchedChildren) {
+              const childInput = { ...toolBlock.input, child_name: childName };
+              const r = await executeTool(toolBlock.name, childInput, context, phone);
+              results.push(r);
+            }
+            console.log(`Image: Auto-attributed note to: ${matchedChildren.join(", ")}`);
+            toolBlock.input.child_name = matchedChildren.join(" and ");
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: results.join("\n"),
+            });
+            continue;
           }
         }
 
