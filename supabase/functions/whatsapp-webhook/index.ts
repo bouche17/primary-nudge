@@ -894,6 +894,9 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       const toolResults = [];
 
+      // Track notes that need clarification (no child identified, 2+ children in family)
+      const pendingClarifications: Array<{ summary: string; date: string }> = [];
+
       for (const toolBlock of toolUseBlocks) {
         // For save_parent_note, auto-inject child_name based on year group detection
         if (toolBlock.name === "save_parent_note" && !toolBlock.input.child_name) {
@@ -903,7 +906,6 @@ If the image is unclear or unreadable, ask them to try again.`;
 
           if (matchedChildren.length >= 1) {
             // Save once per matched child (so each child gets their own attributed note).
-            // If no year group matched, executeTool will fall back to saving for all children.
             const results: string[] = [];
             for (const childName of matchedChildren) {
               const childInput = { ...toolBlock.input, child_name: childName };
@@ -919,6 +921,22 @@ If the image is unclear or unreadable, ask them to try again.`;
             });
             continue;
           }
+
+          // No year group matched. If parent has 2+ children, defer and ask for clarification.
+          if (context.children.length >= 2) {
+            pendingClarifications.push({
+              summary: toolBlock.input.summary,
+              date: toolBlock.input.date,
+            });
+            console.log(`Image: Deferring note for clarification — ${toolBlock.input.summary}`);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `PENDING_CLARIFICATION: not saved yet — awaiting parent to confirm which child this is for`,
+            });
+            continue;
+          }
+          // Single child or no children — fall through to normal save (executeTool handles fallback)
         }
 
         const result = await executeTool(toolBlock.name, toolBlock.input, context, phone);
@@ -927,6 +945,26 @@ If the image is unclear or unreadable, ask them to try again.`;
           tool_use_id: toolBlock.id,
           content: result,
         });
+      }
+
+      // If we have pending clarifications, store them on the conversation and short-circuit reply
+      if (pendingClarifications.length > 0) {
+        const childOptions = context.children.map((c) => c.first_name);
+        await supabase
+          .from("conversations")
+          .update({
+            context: { pending_notes: pendingClarifications },
+          })
+          .eq("phone_number", phone);
+
+        const note = pendingClarifications[0];
+        const dateLabel = note.date
+          ? new Date(note.date).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })
+          : "";
+        const childList = childOptions.length === 2
+          ? `${childOptions[0]} or ${childOptions[1]}?`
+          : `${childOptions.slice(0, -1).join(", ")} or ${childOptions[childOptions.length - 1]}?`;
+        return `Got it — I can see there's ${note.summary}${dateLabel ? ` on ${dateLabel}` : ""}! Which child is this for? ${childList}`;
       }
 
       // Build explicit child attribution hint for the follow-up
