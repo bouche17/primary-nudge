@@ -829,7 +829,16 @@ Your job is to:
 4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
 
 The parent's children and their year groups: ${childrenWithYearGroups}
-Today's date is: ${today}
+Today's date is: ${todayHuman} (${today})
+
+## Resolving relative dates — CRITICAL
+When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
+${dateAnchors}
+
+- "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
+- "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
+- "tomorrow" → the date marked (tomorrow) above
+- Always output dates in YYYY-MM-DD format using the anchors above — never guess
 
 ## Year group attribution — IMPORTANT
 If the event or message mentions a specific year group, automatically attribute it to the correct child:
