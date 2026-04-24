@@ -932,7 +932,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       // Build explicit child attribution hint for the follow-up
       const attributedChildren = toolUseBlocks
         .filter((b: any) => b.name === "save_parent_note" && b.input.child_name)
-        .map((b: any) => b.input.child_name);
+        .flatMap((b: any) => String(b.input.child_name).split(" and "));
       const uniqueChildren = [...new Set(attributedChildren)];
 
       const childHint = uniqueChildren.length > 0
