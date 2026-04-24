@@ -1046,6 +1046,70 @@ function detectYearGroupChildren(
   return matchedChildren;
 }
 
+// ── Pending note clarification resolver ───────────────────────────────────────
+// If a previous image had unattributable notes, we stored them on the conversation
+// and asked the parent which child. This resolves the parent's reply.
+
+async function tryResolvePendingClarification(
+  phone: string,
+  message: string,
+  context: MontyContext
+): Promise<string | null> {
+  const { data: convo } = await supabase
+    .from("conversations")
+    .select("id, context")
+    .eq("phone_number", phone)
+    .maybeSingle();
+
+  const pending: Array<{ summary: string; date: string }> =
+    convo?.context?.pending_notes || [];
+  if (!convo || pending.length === 0) return null;
+
+  // Match the parent's reply against children's first names (case-insensitive, word boundary)
+  const lower = message.toLowerCase();
+  const mentionedChildren: string[] = [];
+  for (const c of context.children) {
+    const re = new RegExp(`\\b${c.first_name.toLowerCase()}\\b`, "i");
+    if (re.test(lower)) mentionedChildren.push(c.first_name);
+  }
+
+  // Also match "all" / "both" / "everyone" → all children
+  if (mentionedChildren.length === 0 && /\b(all|both|everyone|all of them)\b/i.test(message)) {
+    mentionedChildren.push(...context.children.map((c) => c.first_name));
+  }
+
+  if (mentionedChildren.length === 0) {
+    // Couldn't identify a child — leave pending state, let normal flow handle it
+    return null;
+  }
+
+  // Save each pending note for each matched child
+  const savedSummaries: string[] = [];
+  for (const note of pending) {
+    for (const childName of mentionedChildren) {
+      await executeTool(
+        "save_parent_note",
+        { summary: note.summary, date: note.date, child_name: childName },
+        context,
+        phone
+      );
+    }
+    savedSummaries.push(note.summary);
+  }
+
+  // Clear pending notes from conversation context
+  await supabase
+    .from("conversations")
+    .update({ context: { ...(convo.context || {}), pending_notes: [] } })
+    .eq("id", convo.id);
+
+  const childLabel = mentionedChildren.join(" and ");
+  const summaryLabel = savedSummaries.length === 1
+    ? savedSummaries[0]
+    : `${savedSummaries.length} notes`;
+  return `Perfect — saved ${summaryLabel} for ${childLabel}. I'll give you a nudge nearer the time 👍`;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
