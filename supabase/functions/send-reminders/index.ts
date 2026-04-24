@@ -431,6 +431,15 @@ async function sendReminders(period: "morning" | "evening") {
       const dates = note.extracted_dates as Array<{ date: string }>;
       if (!dates.some((d) => d.date === targetDateStr)) continue;
 
+      // Defence in depth: skip notes where every extracted date is in the past
+      // (guards against Gemini extracting a stale year, e.g. "2025" instead of "2026")
+      const todayStr = now.toISOString().split("T")[0];
+      const hasFutureOrTodayDate = dates.some((d) => d.date && d.date >= todayStr);
+      if (!hasFutureOrTodayDate) {
+        console.log(`Skipping note ${note.id} — all extracted dates are in the past:`, dates);
+        continue;
+      }
+
       const refId = `note_${note.id}_${targetDateStr}_${period}`;
       if (await alreadySent(anchorPhone, refId, period, today)) continue;
 
