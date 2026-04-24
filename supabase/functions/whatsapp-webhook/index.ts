@@ -894,6 +894,9 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       const toolResults = [];
 
+      // Track notes that need clarification (no child identified, 2+ children in family)
+      const pendingClarifications: Array<{ summary: string; date: string }> = [];
+
       for (const toolBlock of toolUseBlocks) {
         // For save_parent_note, auto-inject child_name based on year group detection
         if (toolBlock.name === "save_parent_note" && !toolBlock.input.child_name) {
@@ -903,7 +906,6 @@ If the image is unclear or unreadable, ask them to try again.`;
 
           if (matchedChildren.length >= 1) {
             // Save once per matched child (so each child gets their own attributed note).
-            // If no year group matched, executeTool will fall back to saving for all children.
             const results: string[] = [];
             for (const childName of matchedChildren) {
               const childInput = { ...toolBlock.input, child_name: childName };
@@ -919,6 +921,22 @@ If the image is unclear or unreadable, ask them to try again.`;
             });
             continue;
           }
+
+          // No year group matched. If parent has 2+ children, defer and ask for clarification.
+          if (context.children.length >= 2) {
+            pendingClarifications.push({
+              summary: toolBlock.input.summary,
+              date: toolBlock.input.date,
+            });
+            console.log(`Image: Deferring note for clarification — ${toolBlock.input.summary}`);
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `PENDING_CLARIFICATION: not saved yet — awaiting parent to confirm which child this is for`,
+            });
+            continue;
+          }
+          // Single child or no children — fall through to normal save (executeTool handles fallback)
         }
 
         const result = await executeTool(toolBlock.name, toolBlock.input, context, phone);
@@ -927,6 +945,26 @@ If the image is unclear or unreadable, ask them to try again.`;
           tool_use_id: toolBlock.id,
           content: result,
         });
+      }
+
+      // If we have pending clarifications, store them on the conversation and short-circuit reply
+      if (pendingClarifications.length > 0) {
+        const childOptions = context.children.map((c) => c.first_name);
+        await supabase
+          .from("conversations")
+          .update({
+            context: { pending_notes: pendingClarifications },
+          })
+          .eq("phone_number", phone);
+
+        const note = pendingClarifications[0];
+        const dateLabel = note.date
+          ? new Date(note.date).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })
+          : "";
+        const childList = childOptions.length === 2
+          ? `${childOptions[0]} or ${childOptions[1]}?`
+          : `${childOptions.slice(0, -1).join(", ")} or ${childOptions[childOptions.length - 1]}?`;
+        return `Got it — I can see there's ${note.summary}${dateLabel ? ` on ${dateLabel}` : ""}! Which child is this for? ${childList}`;
       }
 
       // Build explicit child attribution hint for the follow-up
@@ -1008,6 +1046,70 @@ function detectYearGroupChildren(
   return matchedChildren;
 }
 
+// ── Pending note clarification resolver ───────────────────────────────────────
+// If a previous image had unattributable notes, we stored them on the conversation
+// and asked the parent which child. This resolves the parent's reply.
+
+async function tryResolvePendingClarification(
+  phone: string,
+  message: string,
+  context: MontyContext
+): Promise<string | null> {
+  const { data: convo } = await supabase
+    .from("conversations")
+    .select("id, context")
+    .eq("phone_number", phone)
+    .maybeSingle();
+
+  const pending: Array<{ summary: string; date: string }> =
+    convo?.context?.pending_notes || [];
+  if (!convo || pending.length === 0) return null;
+
+  // Match the parent's reply against children's first names (case-insensitive, word boundary)
+  const lower = message.toLowerCase();
+  const mentionedChildren: string[] = [];
+  for (const c of context.children) {
+    const re = new RegExp(`\\b${c.first_name.toLowerCase()}\\b`, "i");
+    if (re.test(lower)) mentionedChildren.push(c.first_name);
+  }
+
+  // Also match "all" / "both" / "everyone" → all children
+  if (mentionedChildren.length === 0 && /\b(all|both|everyone|all of them)\b/i.test(message)) {
+    mentionedChildren.push(...context.children.map((c) => c.first_name));
+  }
+
+  if (mentionedChildren.length === 0) {
+    // Couldn't identify a child — leave pending state, let normal flow handle it
+    return null;
+  }
+
+  // Save each pending note for each matched child
+  const savedSummaries: string[] = [];
+  for (const note of pending) {
+    for (const childName of mentionedChildren) {
+      await executeTool(
+        "save_parent_note",
+        { summary: note.summary, date: note.date, child_name: childName },
+        context,
+        phone
+      );
+    }
+    savedSummaries.push(note.summary);
+  }
+
+  // Clear pending notes from conversation context
+  await supabase
+    .from("conversations")
+    .update({ context: { ...(convo.context || {}), pending_notes: [] } })
+    .eq("id", convo.id);
+
+  const childLabel = mentionedChildren.join(" and ");
+  const summaryLabel = savedSummaries.length === 1
+    ? savedSummaries[0]
+    : `${savedSummaries.length} notes`;
+  return `Perfect — saved ${summaryLabel} for ${childLabel}. I'll give you a nudge nearer the time 👍`;
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
@@ -1087,21 +1189,31 @@ Deno.serve(async (req: Request) => {
       // Parent forwarded an image/screenshot
       reply = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from);
     } else {
-      // Pre-process text to detect year group mentions and inject child names
-      // This ensures Claude always knows which child to attribute events to
-      let processedMessage = incomingMessage;
-      if (context.children.length > 0) {
-        const matchedChildren = detectYearGroupChildren(incomingMessage, context.children);
-        if (matchedChildren.length > 0) {
-          const childList = matchedChildren.join(" and ");
-          processedMessage = `${incomingMessage}\n\n[System note: Based on year groups mentioned, this is relevant to: ${childList}. Please save notes with child_name set accordingly.]`;
-          console.log(`Year group pre-processor matched: ${childList}`);
+      // Check if there are pending notes awaiting child clarification
+      const clarification = await tryResolvePendingClarification(
+        from,
+        incomingMessage,
+        context
+      );
+      if (clarification) {
+        reply = clarification;
+      } else {
+        // Pre-process text to detect year group mentions and inject child names
+        // This ensures Claude always knows which child to attribute events to
+        let processedMessage = incomingMessage;
+        if (context.children.length > 0) {
+          const matchedChildren = detectYearGroupChildren(incomingMessage, context.children);
+          if (matchedChildren.length > 0) {
+            const childList = matchedChildren.join(" and ");
+            processedMessage = `${incomingMessage}\n\n[System note: Based on year groups mentioned, this is relevant to: ${childList}. Please save notes with child_name set accordingly.]`;
+            console.log(`Year group pre-processor matched: ${childList}`);
+          }
         }
-      }
 
-      // Normal text conversation
-      const history = await getRecentHistory(conversationId, 10);
-      reply = await generateReply(processedMessage, history, context, from);
+        // Normal text conversation
+        const history = await getRecentHistory(conversationId, 10);
+        reply = await generateReply(processedMessage, history, context, from);
+      }
     }
 
     // Save and send reply
