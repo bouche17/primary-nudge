@@ -792,7 +792,32 @@ async function handleImageMessage(
       .map((c) => `${c.first_name} (${c.year_group || "unknown year"})`)
       .join(", ");
     console.log("Children with year groups:", childrenWithYearGroups);
-    const today = new Date().toISOString().split("T")[0];
+    const nowDate = new Date();
+    const today = nowDate.toISOString().split("T")[0];
+    const todayHuman = nowDate.toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      timeZone: "Europe/London",
+    });
+    // Compute the next 7 days as explicit anchors so Claude doesn't miscalculate
+    const upcomingDays: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(nowDate);
+      d.setUTCDate(d.getUTCDate() + i);
+      const iso = d.toISOString().split("T")[0];
+      const human = d.toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        timeZone: "Europe/London",
+      });
+      const label = i === 0 ? " (today)" : i === 1 ? " (tomorrow)" : "";
+      upcomingDays.push(`- ${human} = ${iso}${label}`);
+    }
+    const dateAnchors = upcomingDays.join("\n");
 
     // Build Claude vision request
     const systemPrompt = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
@@ -804,7 +829,16 @@ Your job is to:
 4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
 
 The parent's children and their year groups: ${childrenWithYearGroups}
-Today's date is: ${today}
+Today's date is: ${todayHuman} (${today})
+
+## Resolving relative dates — CRITICAL
+When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
+${dateAnchors}
+
+- "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
+- "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
+- "tomorrow" → the date marked (tomorrow) above
+- Always output dates in YYYY-MM-DD format using the anchors above — never guess
 
 ## Year group attribution — IMPORTANT
 If the event or message mentions a specific year group, automatically attribute it to the correct child:
