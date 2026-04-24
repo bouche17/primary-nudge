@@ -792,7 +792,32 @@ async function handleImageMessage(
       .map((c) => `${c.first_name} (${c.year_group || "unknown year"})`)
       .join(", ");
     console.log("Children with year groups:", childrenWithYearGroups);
-    const today = new Date().toISOString().split("T")[0];
+    const nowDate = new Date();
+    const today = nowDate.toISOString().split("T")[0];
+    const todayHuman = nowDate.toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      timeZone: "Europe/London",
+    });
+    // Compute the next 7 days as explicit anchors so Claude doesn't miscalculate
+    const upcomingDays: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const d = new Date(nowDate);
+      d.setUTCDate(d.getUTCDate() + i);
+      const iso = d.toISOString().split("T")[0];
+      const human = d.toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        timeZone: "Europe/London",
+      });
+      const label = i === 0 ? " (today)" : i === 1 ? " (tomorrow)" : "";
+      upcomingDays.push(`- ${human} = ${iso}${label}`);
+    }
+    const dateAnchors = upcomingDays.join("\n");
 
     // Build Claude vision request
     const systemPrompt = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
