@@ -326,12 +326,14 @@ async function sendReminders(period: "morning" | "evening") {
         .gte("start_at", targetStart)
         .lte("start_at", targetEnd);
 
+      const eventTitlesForChild: string[] = [];
       for (const evt of events || []) {
         if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
 
         const refId = `event_${evt.id}_${child.id}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
         const cleanTitle = cleanEventTitle(evt.title);
+        eventTitlesForChild.push(cleanTitle);
         reminderItems.push({
           childName: child.first_name,
           title: cleanTitle,
@@ -341,6 +343,10 @@ async function sendReminders(period: "morning" | "evening") {
         });
         refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
       }
+
+      const hasSwimmingEvent = eventTitlesForChild.some((t) =>
+        t.toLowerCase().includes("swimming")
+      );
 
       // 2. Child-specific reminders (any family parent's reminders for this child)
       const { data: childReminders } = await supabase
@@ -353,6 +359,14 @@ async function sendReminders(period: "morning" | "evening") {
       for (const rem of childReminders || []) {
         const shouldSend = rem.reminder_time === "both" || rem.reminder_time === period;
         if (!shouldSend) continue;
+
+        // Skip Swimming child_reminder if a school_event for Swimming already covers today
+        if (hasSwimmingEvent && rem.title.toLowerCase().includes("swimming")) {
+          console.log(
+            `Skipping child_reminder "${rem.title}" for ${child.first_name} — Swimming school_event already scheduled.`
+          );
+          continue;
+        }
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
