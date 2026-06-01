@@ -459,23 +459,76 @@ async function executeTool(
     const savedFor: string[] = [];
     const alreadySavedFor: string[] = [];
 
+    const newSummary: string = (toolArgs.summary || "").toString();
+    const newTitleLower = newSummary.toLowerCase().trim();
+    // Simple case-insensitive partial match: either side contains a meaningful substring of the other
+    const titlesSimilar = (a: string, b: string) => {
+      const x = a.toLowerCase().trim();
+      const y = b.toLowerCase().trim();
+      if (!x || !y) return false;
+      if (x === y) return true;
+      if (x.includes(y) || y.includes(x)) return true;
+      // Word overlap: share a content word of 4+ chars
+      const stop = new Set(["the", "and", "for", "with", "trip", "year", "school", "day"]);
+      const wordsA = x.split(/\W+/).filter((w) => w.length >= 4 && !stop.has(w));
+      const wordsB = new Set(y.split(/\W+/).filter((w) => w.length >= 4));
+      return wordsA.some((w) => wordsB.has(w));
+    };
+
+    let dupSummary: string | null = null;
+
     for (const childName of childNames) {
-      // Deduplicate: check if we already have this event for this phone/child/date
+      // Deduplicate against existing parent_notes for this phone/child/date with similar title
       if (noteDate) {
-        const { data: exactMatch } = await supabase
+        const { data: existingNotes } = await supabase
           .from("parent_notes")
-          .select("id, child_name")
+          .select("id, child_name, summary, extracted_dates")
           .eq("phone_number", phone)
           .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
 
-        const isDuplicate = exactMatch?.some((row: any) => {
-          if (childName) return row.child_name === childName;
-          return !row.child_name;
+        const noteDup = existingNotes?.find((row: any) => {
+          const childMatches = childName ? row.child_name === childName : !row.child_name;
+          if (!childMatches) return false;
+          return titlesSimilar(row.summary || "", newSummary);
         });
 
-        if (isDuplicate) {
+        if (noteDup) {
           alreadySavedFor.push(childName || "general");
+          dupSummary = dupSummary || (noteDup as any).summary || newSummary;
           continue;
+        }
+
+        // Also check school_events on same date with similar title for this child's school/year
+        const child = childName
+          ? context.children.find((c) => c.first_name === childName)
+          : null;
+        const schoolIds = child
+          ? [child.school_id]
+          : context.children.map((c) => c.school_id);
+
+        if (schoolIds.length > 0) {
+          const dayStart = `${noteDate}T00:00:00.000Z`;
+          const dayEnd = `${noteDate}T23:59:59.999Z`;
+          const { data: events } = await supabase
+            .from("school_events")
+            .select("title, year_group, school_id")
+            .in("school_id", schoolIds)
+            .gte("start_at", dayStart)
+            .lte("start_at", dayEnd);
+
+          const eventDup = events?.find((ev: any) => {
+            if (!titlesSimilar(ev.title || "", newSummary)) return false;
+            if (!child) return true;
+            const yg = (ev.year_group || "all").toLowerCase();
+            if (yg === "all") return true;
+            return yg.includes((child.year_group || "").toLowerCase());
+          });
+
+          if (eventDup) {
+            alreadySavedFor.push(childName || "general");
+            dupSummary = dupSummary || (eventDup as any).title || newSummary;
+            continue;
+          }
         }
       }
 
@@ -496,7 +549,7 @@ async function executeTool(
     }
 
     if (savedFor.length === 0 && alreadySavedFor.length > 0) {
-      return `ALREADY_SAVED:${toolArgs.summary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
+      return `ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
 
     const names = savedFor.filter((n) => n !== "general");
