@@ -123,9 +123,9 @@ Deno.serve(async (req: Request) => {
 
     const childNames = (children || []).map((c: any) => c.first_name);
 
-    // Build and send welcome message
-    const message = buildWelcomeMessage(childNames);
-    const ok = await sendWhatsApp(profile.phone_number, message);
+    // Build and send welcome template
+    const ok = await sendWelcomeTemplate(profile.phone_number, formatChildNames(childNames));
+
 
     // Mark onboarding as complete regardless of WhatsApp success
     // (so we don't spam if they message manually before welcome arrives)
