@@ -15,19 +15,21 @@ const supabase = createClient(
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
+const TWILIO_WELCOME_TEMPLATE_SID = Deno.env.get("TWILIO_WELCOME_TEMPLATE_SID")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// ── WhatsApp sender ───────────────────────────────────────────────────────────
+// ── WhatsApp template sender ──────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+async function sendWelcomeTemplate(to: string, childNamesText: string): Promise<boolean> {
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
-  params.append("Body", text);
+  params.append("ContentSid", TWILIO_WELCOME_TEMPLATE_SID);
+  params.append("ContentVariables", JSON.stringify({ "1": childNamesText }));
 
   const res = await fetch(
     `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
@@ -48,21 +50,15 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   return res.ok;
 }
 
-// ── Welcome message builder ───────────────────────────────────────────────────
+// ── Child names formatter ─────────────────────────────────────────────────────
 
-function buildWelcomeMessage(childNames: string[]): string {
-  if (childNames.length === 0) {
-    return `Hi! 👋 I'm Monty — I'm all set up and ready to help you stay on top of school life.\n\nJust message me here any time to add reminders, ask what's coming up, or tell me about an upcoming event. I'll send you a morning heads-up on days when there's something to remember. 🎒`;
-  }
-
-  const names = childNames.length === 1
-    ? childNames[0]
-    : childNames.length === 2
-      ? `${childNames[0]} and ${childNames[1]}`
-      : `${childNames.slice(0, -1).join(", ")} and ${childNames[childNames.length - 1]}`;
-
-  return `Hi! 👋 I'm Monty — I'm all set up and ready to help you keep on top of school life for ${names}.\n\nJust message me here any time — tell me about PE days, packed lunch days, school trips, or anything else you want to remember. I'll send you a morning heads-up when it matters. 🎒\n\nTo get started, try saying something like *"${childNames[0]} has PE on Tuesdays"* 😊`;
+function formatChildNames(childNames: string[]): string {
+  if (childNames.length === 0) return "your child";
+  if (childNames.length === 1) return childNames[0];
+  if (childNames.length === 2) return `${childNames[0]} and ${childNames[1]}`;
+  return `${childNames.slice(0, -1).join(", ")} and ${childNames[childNames.length - 1]}`;
 }
+
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 
@@ -127,9 +123,9 @@ Deno.serve(async (req: Request) => {
 
     const childNames = (children || []).map((c: any) => c.first_name);
 
-    // Build and send welcome message
-    const message = buildWelcomeMessage(childNames);
-    const ok = await sendWhatsApp(profile.phone_number, message);
+    // Build and send welcome template
+    const ok = await sendWelcomeTemplate(profile.phone_number, formatChildNames(childNames));
+
 
     // Mark onboarding as complete regardless of WhatsApp success
     // (so we don't spam if they message manually before welcome arrives)
