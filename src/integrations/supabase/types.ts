@@ -180,6 +180,35 @@ export type Database = {
         }
         Relationships: []
       }
+      event_exclusions: {
+        Row: {
+          child_id: string
+          created_at: string
+          id: string
+          keyword: string
+        }
+        Insert: {
+          child_id: string
+          created_at?: string
+          id?: string
+          keyword: string
+        }
+        Update: {
+          child_id?: string
+          created_at?: string
+          id?: string
+          keyword?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "event_exclusions_child_id_fkey"
+            columns: ["child_id"]
+            isOneToOne: false
+            referencedRelation: "children"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       invite_tokens: {
         Row: {
           created_at: string | null

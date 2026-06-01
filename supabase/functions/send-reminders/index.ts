@@ -326,9 +326,27 @@ async function sendReminders(period: "morning" | "evening") {
         .gte("start_at", targetStart)
         .lte("start_at", targetEnd);
 
+      // Load this child's event exclusion keywords
+      const { data: exclusions } = await supabase
+        .from("event_exclusions")
+        .select("keyword")
+        .eq("child_id", child.id);
+      const exclusionKeywords = (exclusions || [])
+        .map((e: any) => (e.keyword || "").toLowerCase())
+        .filter(Boolean);
+
       const eventTitlesForChild: string[] = [];
       for (const evt of events || []) {
         if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
+
+        const titleLower = (evt.title || "").toLowerCase();
+        if (exclusionKeywords.some((kw) => titleLower.includes(kw))) {
+          console.log(
+            `Skipping event "${evt.title}" for ${child.first_name} — matches exclusion keyword.`
+          );
+          continue;
+        }
+
 
         const refId = `event_${evt.id}_${child.id}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
