@@ -333,14 +333,14 @@ const Dashboard = () => {
           raw_content: string | null;
         }) => {
           const title = n.summary || n.raw_content?.slice(0, 80) || "Reminder";
-          const dedupeKey = `note|${n.id}`;
+          const dedupeKey = `note|${n.event_date}|${title.trim().toLowerCase()}`;
           addItem(dedupeKey, {
             key: `note-${n.id}`,
             date: n.event_date,
             title,
             childNames: n.child_name ? [n.child_name] : [],
             source: "note",
-            noteId: n.id,
+            noteIds: [n.id],
           });
         }
       );
