@@ -355,9 +355,16 @@ const Dashboard = () => {
                       <li key={item.key} className="px-5 py-3 flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="font-medium text-foreground text-sm truncate">{item.title}</p>
-                          {item.childName && (
-                            <p className="text-xs text-muted-foreground mt-0.5">{item.childName}</p>
+                          {item.childNames.length > 0 && (
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                              {item.childNames.length === 1
+                                ? item.childNames[0]
+                                : item.childNames.length === 2
+                                ? `${item.childNames[0]} and ${item.childNames[1]}`
+                                : `${item.childNames.slice(0, -1).join(", ")} and ${item.childNames[item.childNames.length - 1]}`}
+                            </p>
                           )}
+
                         </div>
                         <span className="text-[10px] font-semibold uppercase tracking-wide text-primary shrink-0 mt-1">
                           {item.source === "event" ? "School" : "Note"}
