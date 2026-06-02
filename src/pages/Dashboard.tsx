@@ -48,7 +48,7 @@ interface UpcomingItem {
   title: string;
   childNames: string[];
   source: "event" | "note";
-  noteId?: string;
+  noteIds?: string[];
 }
 
 interface RecurringItem {
