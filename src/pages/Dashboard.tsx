@@ -140,9 +140,23 @@ const Dashboard = () => {
         if (data) setRecurring(data as RecurringItem[]);
       });
 
-    // Upcoming events + parent notes
+    // Upcoming events + parent notes — merged across children
     const buildItems = async () => {
-      const items: UpcomingItem[] = [];
+      const merged = new Map<string, UpcomingItem>();
+
+      const addItem = (
+        dedupeKey: string,
+        item: Omit<UpcomingItem, "childNames"> & { childNames: string[] }
+      ) => {
+        const existing = merged.get(dedupeKey);
+        if (existing) {
+          item.childNames.forEach((n) => {
+            if (n && !existing.childNames.includes(n)) existing.childNames.push(n);
+          });
+        } else {
+          merged.set(dedupeKey, item);
+        }
+      };
 
       if (schoolIds.length > 0) {
         const allowedYears = ["all", ...yearGroups];
@@ -156,12 +170,17 @@ const Dashboard = () => {
 
         events?.forEach((e) => {
           if (e.year_group && !allowedYears.includes(e.year_group)) return;
-          const matchedChild = children.find((c) => c.school_id === e.school_id);
-          items.push({
-            key: `event-${e.id}`,
-            date: new Date(e.start_at).toISOString().slice(0, 10),
+          const date = new Date(e.start_at).toISOString().slice(0, 10);
+          const matchedChildren = children
+            .filter((c) => c.school_id === e.school_id)
+            .filter((c) => !e.year_group || e.year_group === "all" || c.year_group === e.year_group)
+            .map((c) => c.first_name);
+          const dedupeKey = `event|${date}|${e.title.trim().toLowerCase()}`;
+          addItem(dedupeKey, {
+            key: `event-${date}-${e.title}`,
+            date,
             title: e.title,
-            childName: matchedChild?.first_name ?? null,
+            childNames: matchedChildren,
             source: "event",
           });
         });
@@ -171,14 +190,24 @@ const Dashboard = () => {
         _user_id: user.id,
         _days: 7,
       });
-      notes?.forEach((n: { id: string; child_name: string | null; summary: string | null; event_date: string; raw_content: string | null }) => {
-        items.push({
-          key: `note-${n.id}-${n.event_date}`,
-          date: n.event_date,
-          title: n.summary || n.raw_content?.slice(0, 80) || "Reminder",
-          childName: n.child_name,
-          source: "note",
-        });
+      notes?.forEach(
+        (n: { id: string; child_name: string | null; summary: string | null; event_date: string; raw_content: string | null }) => {
+          const title = n.summary || n.raw_content?.slice(0, 80) || "Reminder";
+          const dedupeKey = `note|${n.event_date}|${title.trim().toLowerCase()}`;
+          addItem(dedupeKey, {
+            key: `note-${n.event_date}-${title}`,
+            date: n.event_date,
+            title,
+            childNames: n.child_name ? [n.child_name] : [],
+            source: "note",
+          });
+        }
+      );
+
+      const items = Array.from(merged.values()).sort((a, b) => a.date.localeCompare(b.date));
+      setUpcoming(items);
+    };
+
       });
 
       items.sort((a, b) => a.date.localeCompare(b.date));
