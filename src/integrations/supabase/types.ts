@@ -717,6 +717,17 @@ export type Database = {
     }
     Functions: {
       get_family_user_ids: { Args: { _user_id: string }; Returns: string[] }
+      get_upcoming_parent_notes: {
+        Args: { _days?: number; _user_id: string }
+        Returns: {
+          child_name: string
+          created_at: string
+          event_date: string
+          id: string
+          raw_content: string
+          summary: string
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
