@@ -208,11 +208,7 @@ const Dashboard = () => {
       setUpcoming(items);
     };
 
-      });
 
-      items.sort((a, b) => a.date.localeCompare(b.date));
-      setUpcoming(items);
-    };
 
     buildItems();
   }, [user, children]);
