@@ -527,9 +527,9 @@ const Dashboard = () => {
                           <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
                             {item.source === "event" ? "School" : "Saved"}
                           </span>
-                          {item.source === "note" && item.noteId && (
+                          {item.source === "note" && item.noteIds && item.noteIds.length > 0 && (
                             <button
-                              onClick={() => deleteNote(item.noteId!)}
+                              onClick={() => deleteNote(item.noteIds!)}
                               className="text-muted-foreground hover:text-destructive transition-colors"
                               aria-label="Remove note"
                             >
