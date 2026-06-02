@@ -23,15 +23,21 @@ const Signup = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!authLoading && user) {
-      const pendingToken = localStorage.getItem("pending_invite_token");
-      if (pendingToken) {
-        navigate(`/invite/${pendingToken}`);
-      } else {
-        navigate("/onboarding");
-      }
+    if (authLoading || !user) return;
+    const pendingToken = localStorage.getItem("pending_invite_token");
+    if (pendingToken) {
+      navigate(`/invite/${pendingToken}`);
+      return;
     }
+    let cancelled = false;
+    resolvePostAuthRoute(user.id).then((route) => {
+      if (!cancelled) navigate(route);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [user, authLoading, navigate]);
+
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
