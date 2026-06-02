@@ -34,9 +34,10 @@ interface UpcomingItem {
   key: string;
   date: string; // YYYY-MM-DD
   title: string;
-  childName: string | null;
+  childNames: string[];
   source: "event" | "note";
 }
+
 
 interface RecurringItem {
   id: string;
