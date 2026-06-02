@@ -151,17 +151,22 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
-  const deleteNote = async (noteId: string) => {
-    const { data, error } = await supabase.rpc("delete_parent_note", { _note_id: noteId });
-    if (error || data === false) {
+  const deleteNote = async (noteIds: string[]) => {
+    const results = await Promise.all(
+      noteIds.map((id) => supabase.rpc("delete_parent_note", { _note_id: id }))
+    );
+    const failed = results.find((r) => r.error || r.data === false);
+    if (failed) {
       toast({
         title: "Couldn't remove that note",
-        description: error?.message ?? "Please try again.",
+        description: failed.error?.message ?? "Please try again.",
         variant: "destructive",
       });
       return;
     }
-    setUpcoming((prev) => prev.filter((i) => i.noteId !== noteId));
+    setUpcoming((prev) =>
+      prev.filter((i) => !i.noteIds || !i.noteIds.some((id) => noteIds.includes(id)))
+    );
     toast({ title: "Note removed" });
   };
 
