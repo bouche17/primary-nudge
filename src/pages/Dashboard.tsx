@@ -604,6 +604,7 @@ const Dashboard = () => {
                               checked={r.active}
                               onCheckedChange={(v) => toggleRecurring(r.id, v)}
                               aria-label={r.active ? "Pause reminder" : "Resume reminder"}
+                              className="data-[state=checked]:bg-[#FF6B35] data-[state=unchecked]:bg-muted-foreground/30"
                             />
                             <button
                               onClick={() => deleteRecurring(r.id)}
