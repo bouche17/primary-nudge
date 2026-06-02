@@ -462,11 +462,15 @@ const Onboarding = () => {
                 Monty will send you reminders about what's happening at school. You can manage your children and settings anytime.
               </p>
               <Button
-                onClick={() => navigate("/dashboard")}
+                onClick={() => {
+                  localStorage.setItem("monty_show_getting_started", "true");
+                  navigate("/dashboard");
+                }}
                 className="rounded-full font-cta font-bold px-8"
               >
                 Go to dashboard
               </Button>
+
             </motion.div>
           )}
         </AnimatePresence>
