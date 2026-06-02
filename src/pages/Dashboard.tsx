@@ -5,6 +5,14 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Sparkles,
   Plus,
@@ -16,6 +24,10 @@ import {
   Calendar,
   Bell,
   UserPlus,
+  Check,
+  X,
+  Pencil,
+  Sandwich,
 } from "lucide-react";
 import { useAdmin } from "@/hooks/use-admin";
 
@@ -36,8 +48,8 @@ interface UpcomingItem {
   title: string;
   childNames: string[];
   source: "event" | "note";
+  noteId?: string;
 }
-
 
 interface RecurringItem {
   id: string;
@@ -46,9 +58,24 @@ interface RecurringItem {
   emoji: string | null;
   day_of_week: string;
   reminder_time: string | null;
+  active: boolean;
+}
+
+interface LunchPlanRow {
+  child_id: string;
+  packed_lunch_days: string[];
 }
 
 const DAYS_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const DAY_SHORT: Record<string, string> = {
+  monday: "Mon",
+  tuesday: "Tue",
+  wednesday: "Wed",
+  thursday: "Thu",
+  friday: "Fri",
+  saturday: "Sat",
+  sunday: "Sun",
+};
 
 const formatDateHeading = (iso: string) => {
   const d = new Date(`${iso}T12:00:00`);
@@ -66,6 +93,32 @@ const formatDateHeading = (iso: string) => {
 
 const capitalise = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+// Monday of the current week at UTC noon (per project memory)
+const currentWeekStart = (): string => {
+  const now = new Date();
+  const utcNoon = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 12, 0, 0)
+  );
+  const dow = utcNoon.getUTCDay(); // 0 = Sun, 1 = Mon ...
+  const offset = (dow + 6) % 7; // days since Monday
+  utcNoon.setUTCDate(utcNoon.getUTCDate() - offset);
+  return utcNoon.toISOString().slice(0, 10);
+};
+
+const formatSyncedAt = (iso: string | null): string | null => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const diffMs = Date.now() - d.getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+};
+
 const Dashboard = () => {
   const { user, loading, signOut } = useAuth();
   const { isAdmin } = useAdmin();
@@ -75,6 +128,9 @@ const Dashboard = () => {
   const [children, setChildren] = useState<ChildWithSchool[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
   const [recurring, setRecurring] = useState<RecurringItem[]>([]);
+  const [lunchPlans, setLunchPlans] = useState<LunchPlanRow[]>([]);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [editingDay, setEditingDay] = useState<string | null>(null);
 
   const [showGettingStarted, setShowGettingStarted] = useState(() => {
     return localStorage.getItem(SHOW_GETTING_STARTED_FLAG) === "true";
@@ -95,14 +151,60 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
+  const deleteNote = async (noteId: string) => {
+    const { data, error } = await supabase.rpc("delete_parent_note", { _note_id: noteId });
+    if (error || data === false) {
+      toast({
+        title: "Couldn't remove that note",
+        description: error?.message ?? "Please try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setUpcoming((prev) => prev.filter((i) => i.noteId !== noteId));
+    toast({ title: "Note removed" });
+  };
+
+  const deleteRecurring = async (id: string) => {
+    const { error } = await supabase.from("child_reminders").delete().eq("id", id);
+    if (error) {
+      toast({ title: "Couldn't remove reminder", description: error.message, variant: "destructive" });
+      return;
+    }
+    setRecurring((prev) => prev.filter((r) => r.id !== id));
+    toast({ title: "Reminder removed" });
+  };
+
+  const toggleRecurring = async (id: string, next: boolean) => {
+    const previous = recurring;
+    setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, active: next } : r)));
+    const { error } = await supabase.from("child_reminders").update({ active: next }).eq("id", id);
+    if (error) {
+      setRecurring(previous);
+      toast({ title: "Couldn't update reminder", description: error.message, variant: "destructive" });
+    }
+  };
+
+  const updateRecurringDay = async (id: string, day: string) => {
+    const previous = recurring;
+    setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, day_of_week: day } : r)));
+    setEditingDay(null);
+    const { error } = await supabase
+      .from("child_reminders")
+      .update({ day_of_week: day })
+      .eq("id", id);
+    if (error) {
+      setRecurring(previous);
+      toast({ title: "Couldn't update day", description: error.message, variant: "destructive" });
+    }
+  };
+
   useEffect(() => {
     if (!loading && !user) navigate("/login");
   }, [user, loading, navigate]);
 
   useEffect(() => {
     if (!user) return;
-
-    // Children (with school)
     supabase
       .from("children")
       .select("id, first_name, year_group, school_id, schools(name, postcode)")
@@ -111,12 +213,14 @@ const Dashboard = () => {
       });
   }, [user]);
 
-  // Once we know the children, fetch upcoming events + recurring reminders
+  // Fetch dependent data once children are known
   useEffect(() => {
     if (!user) return;
     if (children.length === 0) {
       setUpcoming([]);
       setRecurring([]);
+      setLunchPlans([]);
+      setLastSyncedAt(null);
       return;
     }
 
@@ -130,24 +234,44 @@ const Dashboard = () => {
     const startIso = now.toISOString();
     const endIso = in7.toISOString();
 
-    // Recurring child reminders
+    // Recurring child reminders (active + paused)
     supabase
       .from("child_reminders")
       .select("id, child_id, title, emoji, day_of_week, reminder_time, active")
       .in("child_id", childIds)
-      .eq("active", true)
       .then(({ data }) => {
         if (data) setRecurring(data as RecurringItem[]);
       });
+
+    // Packed lunch plans for current week
+    const weekStart = currentWeekStart();
+    supabase
+      .from("weekly_lunch_plans")
+      .select("child_id, packed_lunch_days")
+      .in("child_id", childIds)
+      .eq("week_start", weekStart)
+      .then(({ data }) => {
+        if (data) setLunchPlans(data as LunchPlanRow[]);
+      });
+
+    // Last calendar sync for children's schools
+    if (schoolIds.length > 0) {
+      supabase
+        .from("school_calendar_feeds")
+        .select("last_synced_at")
+        .in("school_id", schoolIds)
+        .order("last_synced_at", { ascending: false, nullsFirst: false })
+        .limit(1)
+        .then(({ data }) => {
+          setLastSyncedAt(data?.[0]?.last_synced_at ?? null);
+        });
+    }
 
     // Upcoming events + parent notes — merged across children
     const buildItems = async () => {
       const merged = new Map<string, UpcomingItem>();
 
-      const addItem = (
-        dedupeKey: string,
-        item: Omit<UpcomingItem, "childNames"> & { childNames: string[] }
-      ) => {
+      const addItem = (dedupeKey: string, item: UpcomingItem) => {
         const existing = merged.get(dedupeKey);
         if (existing) {
           item.childNames.forEach((n) => {
@@ -173,7 +297,9 @@ const Dashboard = () => {
           const date = new Date(e.start_at).toISOString().slice(0, 10);
           const matchedChildren = children
             .filter((c) => c.school_id === e.school_id)
-            .filter((c) => !e.year_group || e.year_group === "all" || c.year_group === e.year_group)
+            .filter(
+              (c) => !e.year_group || e.year_group === "all" || c.year_group === e.year_group
+            )
             .map((c) => c.first_name);
           const dedupeKey = `event|${date}|${e.title.trim().toLowerCase()}`;
           addItem(dedupeKey, {
@@ -191,15 +317,22 @@ const Dashboard = () => {
         _days: 7,
       });
       notes?.forEach(
-        (n: { id: string; child_name: string | null; summary: string | null; event_date: string; raw_content: string | null }) => {
+        (n: {
+          id: string;
+          child_name: string | null;
+          summary: string | null;
+          event_date: string;
+          raw_content: string | null;
+        }) => {
           const title = n.summary || n.raw_content?.slice(0, 80) || "Reminder";
-          const dedupeKey = `note|${n.event_date}|${title.trim().toLowerCase()}`;
+          const dedupeKey = `note|${n.id}`;
           addItem(dedupeKey, {
-            key: `note-${n.event_date}-${title}`,
+            key: `note-${n.id}`,
             date: n.event_date,
             title,
             childNames: n.child_name ? [n.child_name] : [],
             source: "note",
+            noteId: n.id,
           });
         }
       );
@@ -207,8 +340,6 @@ const Dashboard = () => {
       const items = Array.from(merged.values()).sort((a, b) => a.date.localeCompare(b.date));
       setUpcoming(items);
     };
-
-
 
     buildItems();
   }, [user, children]);
@@ -236,6 +367,20 @@ const Dashboard = () => {
     });
   }, [children, recurring]);
 
+  const lunchByChild = useMemo(() => {
+    return children.map((child) => {
+      const plan = lunchPlans.find((p) => p.child_id === child.id);
+      return { child, days: plan?.packed_lunch_days ?? [] };
+    });
+  }, [children, lunchPlans]);
+
+  const formatNames = (names: string[]) => {
+    if (names.length === 0) return null;
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  };
+
   if (loading) return null;
 
   if (showGettingStarted) {
@@ -245,6 +390,8 @@ const Dashboard = () => {
       </div>
     );
   }
+
+  const syncedLabel = formatSyncedAt(lastSyncedAt);
 
   return (
     <div className="min-h-screen bg-background">
@@ -338,10 +485,17 @@ const Dashboard = () => {
 
         {/* Upcoming reminders */}
         <section>
-          <h2 className="text-lg font-bold text-foreground mb-3">Next 7 days</h2>
+          <div className="flex items-end justify-between mb-3 gap-3">
+            <h2 className="text-lg font-bold text-foreground">Next 7 days</h2>
+            {syncedLabel && (
+              <span className="text-xs text-muted-foreground">
+                School calendar synced {syncedLabel}
+              </span>
+            )}
+          </div>
           {upcomingByDate.length === 0 ? (
             <div className="bg-card rounded-2xl p-5 border border-border text-sm text-muted-foreground">
-              Nothing on the horizon — Monty will let you know as things come up.
+              Nothing coming up — forward a school letter or message to Monty on WhatsApp to add reminders.
             </div>
           ) : (
             <div className="space-y-4">
@@ -353,22 +507,28 @@ const Dashboard = () => {
                   <ul className="divide-y divide-border">
                     {items.map((item) => (
                       <li key={item.key} className="px-5 py-3 flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="font-medium text-foreground text-sm truncate">{item.title}</p>
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-foreground text-sm">{item.title}</p>
                           {item.childNames.length > 0 && (
                             <p className="text-xs text-muted-foreground mt-0.5">
-                              {item.childNames.length === 1
-                                ? item.childNames[0]
-                                : item.childNames.length === 2
-                                ? `${item.childNames[0]} and ${item.childNames[1]}`
-                                : `${item.childNames.slice(0, -1).join(", ")} and ${item.childNames[item.childNames.length - 1]}`}
+                              {formatNames(item.childNames)}
                             </p>
                           )}
-
                         </div>
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-primary shrink-0 mt-1">
-                          {item.source === "event" ? "School" : "Note"}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+                            {item.source === "event" ? "School" : "Saved"}
+                          </span>
+                          {item.source === "note" && item.noteId && (
+                            <button
+                              onClick={() => deleteNote(item.noteId!)}
+                              className="text-muted-foreground hover:text-destructive transition-colors"
+                              aria-label="Remove note"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>
@@ -395,20 +555,103 @@ const Dashboard = () => {
                     </div>
                     <ul className="divide-y divide-border">
                       {items.map((r) => (
-                        <li key={r.id} className="px-5 py-3 flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-3 min-w-0">
+                        <li
+                          key={r.id}
+                          className={`px-5 py-3 flex items-center justify-between gap-3 ${
+                            r.active ? "" : "opacity-60"
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
                             <span className="text-base">{r.emoji || "✅"}</span>
                             <p className="font-medium text-foreground text-sm truncate">{r.title}</p>
                           </div>
-                          <span className="text-xs text-muted-foreground shrink-0">
-                            {capitalise(r.day_of_week)}
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {editingDay === r.id ? (
+                              <Select
+                                value={r.day_of_week.toLowerCase()}
+                                onValueChange={(v) => updateRecurringDay(r.id, v)}
+                              >
+                                <SelectTrigger className="h-8 w-[120px] text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {DAYS_ORDER.map((d) => (
+                                    <SelectItem key={d} value={d}>
+                                      {capitalise(d)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <button
+                                onClick={() => setEditingDay(r.id)}
+                                className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
+                                aria-label="Edit day"
+                              >
+                                {capitalise(r.day_of_week)}
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                            )}
+                            <Switch
+                              checked={r.active}
+                              onCheckedChange={(v) => toggleRecurring(r.id, v)}
+                              aria-label={r.active ? "Pause reminder" : "Resume reminder"}
+                            />
+                            <button
+                              onClick={() => deleteRecurring(r.id)}
+                              className="text-muted-foreground hover:text-destructive transition-colors"
+                              aria-label="Remove reminder"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>
                   </div>
                 )
               )}
+            </div>
+          )}
+        </section>
+
+        {/* Packed lunch this week */}
+        <section>
+          <h2 className="text-lg font-bold text-foreground mb-3">Packed lunch this week</h2>
+          {lunchByChild.every((g) => g.days.length === 0) ? (
+            <div className="bg-card rounded-2xl p-5 border border-border text-sm text-muted-foreground flex items-start gap-3">
+              <Sandwich className="w-4 h-4 text-primary mt-0.5 shrink-0" />
+              <span>Message Monty on Sunday evening to set up this week's lunch plans.</span>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {lunchByChild.map(({ child, days }) => (
+                <div
+                  key={child.id}
+                  className="bg-card rounded-2xl border border-border px-5 py-4 flex items-center justify-between gap-3"
+                >
+                  <p className="font-heading font-bold text-foreground text-sm">{child.first_name}</p>
+                  <div className="flex flex-wrap gap-1.5 justify-end">
+                    {DAYS_ORDER.slice(0, 5).map((d) => {
+                      const on = days.map((x) => x.toLowerCase()).includes(d);
+                      return (
+                        <span
+                          key={d}
+                          className={`text-[11px] font-semibold px-2 py-1 rounded-full inline-flex items-center gap-1 ${
+                            on
+                              ? "bg-primary/10 text-primary"
+                              : "bg-muted text-muted-foreground"
+                          }`}
+                          title={on ? "Packed lunch" : "School lunch"}
+                        >
+                          {on ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+                          {DAY_SHORT[d]}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </section>
