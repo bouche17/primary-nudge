@@ -81,12 +81,13 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   console.log('Sending to:', to, 'templateSid:', templateSid);
 
   // Sanitise reminder text for Twilio ContentVariables:
-  // - Strip control characters (Twilio rejects raw newlines/tabs in {{1}})
-  // - Collapse runs of whitespace into single spaces
+  // - Strip control characters except newlines
+  // - Collapse horizontal whitespace (spaces/tabs) into single spaces
+  // - Preserve line breaks so each reminder item stays on its own line
   // - Trim and cap length (Twilio limit is 1024 chars per variable)
   const sanitisedText = text
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/[^\S\n\r]+/g, " ")
     .trim()
     .slice(0, 1024);
 
