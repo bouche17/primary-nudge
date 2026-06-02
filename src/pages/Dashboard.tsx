@@ -48,7 +48,7 @@ interface UpcomingItem {
   title: string;
   childNames: string[];
   source: "event" | "note";
-  noteId?: string;
+  noteIds?: string[];
 }
 
 interface RecurringItem {
@@ -151,17 +151,22 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
-  const deleteNote = async (noteId: string) => {
-    const { data, error } = await supabase.rpc("delete_parent_note", { _note_id: noteId });
-    if (error || data === false) {
+  const deleteNote = async (noteIds: string[]) => {
+    const results = await Promise.all(
+      noteIds.map((id) => supabase.rpc("delete_parent_note", { _note_id: id }))
+    );
+    const failed = results.find((r) => r.error || r.data === false);
+    if (failed) {
       toast({
         title: "Couldn't remove that note",
-        description: error?.message ?? "Please try again.",
+        description: failed.error?.message ?? "Please try again.",
         variant: "destructive",
       });
       return;
     }
-    setUpcoming((prev) => prev.filter((i) => i.noteId !== noteId));
+    setUpcoming((prev) =>
+      prev.filter((i) => !i.noteIds || !i.noteIds.some((id) => noteIds.includes(id)))
+    );
     toast({ title: "Note removed" });
   };
 
@@ -277,6 +282,9 @@ const Dashboard = () => {
           item.childNames.forEach((n) => {
             if (n && !existing.childNames.includes(n)) existing.childNames.push(n);
           });
+          if (item.noteIds) {
+            existing.noteIds = [...(existing.noteIds ?? []), ...item.noteIds];
+          }
         } else {
           merged.set(dedupeKey, item);
         }
@@ -325,14 +333,14 @@ const Dashboard = () => {
           raw_content: string | null;
         }) => {
           const title = n.summary || n.raw_content?.slice(0, 80) || "Reminder";
-          const dedupeKey = `note|${n.id}`;
+          const dedupeKey = `note|${n.event_date}|${title.trim().toLowerCase()}`;
           addItem(dedupeKey, {
             key: `note-${n.id}`,
             date: n.event_date,
             title,
             childNames: n.child_name ? [n.child_name] : [],
             source: "note",
-            noteId: n.id,
+            noteIds: [n.id],
           });
         }
       );
@@ -519,9 +527,9 @@ const Dashboard = () => {
                           <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">
                             {item.source === "event" ? "School" : "Saved"}
                           </span>
-                          {item.source === "note" && item.noteId && (
+                          {item.source === "note" && item.noteIds && item.noteIds.length > 0 && (
                             <button
-                              onClick={() => deleteNote(item.noteId!)}
+                              onClick={() => deleteNote(item.noteIds!)}
                               className="text-muted-foreground hover:text-destructive transition-colors"
                               aria-label="Remove note"
                             >
@@ -596,6 +604,7 @@ const Dashboard = () => {
                               checked={r.active}
                               onCheckedChange={(v) => toggleRecurring(r.id, v)}
                               aria-label={r.active ? "Pause reminder" : "Resume reminder"}
+                              className="data-[state=checked]:bg-[#FF6B35] data-[state=unchecked]:bg-muted-foreground/30"
                             />
                             <button
                               onClick={() => deleteRecurring(r.id)}
