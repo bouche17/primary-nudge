@@ -282,6 +282,9 @@ const Dashboard = () => {
           item.childNames.forEach((n) => {
             if (n && !existing.childNames.includes(n)) existing.childNames.push(n);
           });
+          if (item.noteIds) {
+            existing.noteIds = [...(existing.noteIds ?? []), ...item.noteIds];
+          }
         } else {
           merged.set(dedupeKey, item);
         }
