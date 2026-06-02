@@ -716,6 +716,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      delete_parent_note: { Args: { _note_id: string }; Returns: boolean }
       get_family_user_ids: { Args: { _user_id: string }; Returns: string[] }
       get_upcoming_parent_notes: {
         Args: { _days?: number; _user_id: string }
