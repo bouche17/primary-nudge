@@ -6,8 +6,7 @@ import { supabase } from "@/integrations/supabase/client";
  * go straight to /dashboard. Otherwise they enter /onboarding.
  */
 export async function resolvePostAuthRoute(userId: string): Promise<"/dashboard" | "/onboarding"> {
-  const [{ data: profile }, { data: links }, { data: children }] = await Promise.all([
-    supabase.from("profiles").select("phone_number").eq("user_id", userId).maybeSingle(),
+  const [{ data: links }, { data: children }] = await Promise.all([
     supabase
       .from("linked_accounts")
       .select("id")
@@ -17,8 +16,8 @@ export async function resolvePostAuthRoute(userId: string): Promise<"/dashboard"
     supabase.from("children").select("id").eq("parent_id", userId).limit(1),
   ]);
 
-  if (profile?.phone_number) return "/dashboard";
   if (links && links.length > 0) return "/dashboard";
   if (children && children.length > 0) return "/dashboard";
   return "/onboarding";
 }
+
