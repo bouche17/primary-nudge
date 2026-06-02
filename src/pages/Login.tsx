@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { useAuth } from "@/contexts/AuthContext";
+import { resolvePostAuthRoute } from "@/lib/postAuthRoute";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,14 +20,21 @@ const Login = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!authLoading && user) navigate("/onboarding");
+    if (authLoading || !user) return;
+    let cancelled = false;
+    resolvePostAuthRoute(user.id).then((route) => {
+      if (!cancelled) navigate(route);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [user, authLoading, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       toast({ title: "Login failed", description: error.message, variant: "destructive" });
@@ -34,8 +42,11 @@ const Login = () => {
       return;
     }
 
-    navigate("/onboarding");
+    const uid = data.user?.id;
+    const route = uid ? await resolvePostAuthRoute(uid) : "/onboarding";
+    navigate(route);
   };
+
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-6">
