@@ -144,30 +144,74 @@ async function logReminder(phone: string, type: string, refId: string, title: st
 // Builds ONE consolidated message per parent per period
 // rather than firing a separate message for each reminder
 
+function joinNames(names: string[]): string {
+  const unique = Array.from(new Set(names));
+  if (unique.length === 0) return "";
+  if (unique.length === 1) return unique[0];
+  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
+  return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
+}
+
+// True when the subject string represents multiple people (use plural verbs)
+function isPluralSubject(name: string): boolean {
+  const lower = name.toLowerCase().trim();
+  if (lower === "the children" || lower === "the kids") return true;
+  return / and /.test(lower) || /,/.test(lower);
+}
+
 function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "evening"): string {
   // The Twilio template already provides the greeting header and sign-off footer.
   // {{1}} should ONLY contain the reminder body lines — no preamble, no sign-off.
-  return items.map((item) => buildItemLine(item, period)).join("\n");
+  //
+  // Merge items that share the same title+type+emoji across multiple children
+  // so we say "Jude and Harry have Swimming" instead of two separate lines.
+  // Items with different titles stay on their own lines.
+  const groups = new Map<string, { item: ReminderItem; names: string[] }>();
+  const order: string[] = [];
+  for (const item of items) {
+    // Don't merge free-text notes — their summary already contains its own subject.
+    const key =
+      item.type === "note"
+        ? `note:${item.refId}`
+        : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
+    if (!groups.has(key)) {
+      groups.set(key, { item, names: [item.childName] });
+      order.push(key);
+    } else {
+      groups.get(key)!.names.push(item.childName);
+    }
+  }
+
+  return order
+    .map((key) => {
+      const { item, names } = groups.get(key)!;
+      const merged: ReminderItem = { ...item, childName: joinNames(names) };
+      return buildItemLine(merged, period);
+    })
+    .join("\n");
 }
 
 function buildItemLine(item: ReminderItem, period: "morning" | "evening"): string {
   const { childName, title, emoji, type } = item;
   const when = period === "evening" ? "tomorrow" : "today";
+  const plural = isPluralSubject(childName);
+  const hasHave = plural ? "have" : "has";
+  const needsNeed = plural ? "need" : "needs";
 
   if (type === "event") {
-    return `${emoji} ${childName} has *${title}* ${when}`;
+    return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
   }
 
   const actionMap: Record<string, string> = {
     "PE kit needed": `Don't forget ${childName}'s PE kit ${when}`,
-    "Packed lunch": `${childName} needs a packed lunch ${when}`,
-    "Reading books returned": `${childName}'s reading book needs to go in their bag ${when}`,
+    "Packed lunch": `${childName} ${needsNeed} a packed lunch ${when}`,
+    "Reading books returned": `${childName}'s reading book ${needsNeed} to go in their bag ${when}`,
     "Dinner money due": `Dinner money is due for ${childName} ${when}`,
-    "Forest School": `${childName} has Forest School ${when} — they'll need their outdoor kit`,
+    "Forest School": `${childName} ${hasHave} Forest School ${when} — they'll need their outdoor kit`,
     "Homework due": `${childName}'s homework is due ${when}`,
   };
 
-  const action = actionMap[title] || `${childName} has *${title}* ${when}`;
+  const action = actionMap[title] || `${childName} ${hasHave} *${title}* ${when}`;
   return `${emoji} ${action}`;
 }
 
