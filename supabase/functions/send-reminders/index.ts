@@ -650,7 +650,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // On Sunday evenings, run the packed lunch check-in instead of normal evening reminders
-    const isEvening = period === "evening";
+    const isEvening = true;
     const isSunday = true;
 
     if (isEvening && isSunday) {
