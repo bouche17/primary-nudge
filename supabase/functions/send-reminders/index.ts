@@ -5,12 +5,9 @@ const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPAB
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const TWILIO_MORNING_TEMPLATE_SID =
-  Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "HXc35dd5379ce57d50be8a7aeff9693f5f";
-const TWILIO_EVENING_TEMPLATE_SID =
-  Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
-const TWILIO_SUNDAY_TEMPLATE_SID =
-  Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
+const TWILIO_MORNING_TEMPLATE_SID = Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "HXc35dd5379ce57d50be8a7aeff9693f5f";
+const TWILIO_EVENING_TEMPLATE_SID = Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
+const TWILIO_SUNDAY_TEMPLATE_SID = Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -48,13 +45,7 @@ function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string):
   return eventGroups.includes(childGroup);
 }
 
-// ── WhatsApp sender ───────────────────────────────────────────────────────────
-
-async function sendWhatsApp(
-  to: string,
-  text: string,
-  period: "morning" | "evening" | "sunday"
-): Promise<boolean> {
+async function sendWhatsApp(to: string, text: string, period: "morning" | "evening" | "sunday"): Promise<boolean> {
   const sid = TWILIO_ACCOUNT_SID;
   const token = TWILIO_AUTH_TOKEN;
   const from = TWILIO_WHATSAPP_NUMBER;
@@ -63,7 +54,6 @@ async function sendWhatsApp(
   let contentVariables: string;
 
   if (period === "sunday") {
-    // sunday payload is JSON: { names, weekDates, body }
     const payload = JSON.parse(text) as { names: string; weekDates: string; body: string };
     templateSid = TWILIO_SUNDAY_TEMPLATE_SID;
     contentVariables = JSON.stringify({
@@ -111,8 +101,6 @@ async function sendWhatsApp(
   return res.ok;
 }
 
-// ── Dedup ─────────────────────────────────────────────────────────────────────
-
 async function alreadySent(phone: string, refId: string, period: string, today: string): Promise<boolean> {
   const { data } = await supabase
     .from("reminder_log")
@@ -135,8 +123,6 @@ async function logReminder(phone: string, type: string, refId: string, title: st
   });
 }
 
-// ── Message builders ──────────────────────────────────────────────────────────
-
 function joinNames(names: string[]): string {
   const unique = Array.from(new Set(names));
   if (unique.length === 0) return "";
@@ -155,10 +141,7 @@ function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "ev
   const groups = new Map<string, { item: ReminderItem; names: string[] }>();
   const order: string[] = [];
   for (const item of items) {
-    const key =
-      item.type === "note"
-        ? `note:${item.refId}`
-        : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
+    const key = item.type === "note" ? `note:${item.refId}` : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
     if (!groups.has(key)) {
       groups.set(key, { item, names: [item.childName] });
       order.push(key);
@@ -195,8 +178,6 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
   return actionMap[title] || `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
 }
 
-// ── Sunday week-ahead builder ─────────────────────────────────────────────────
-
 function getNextMonday(): Date {
   const now = new Date();
   const day = now.getDay();
@@ -221,7 +202,6 @@ function getDateForDay(monday: Date, dayOffset: number): string {
 
 async function sendSundayCheckins(): Promise<number> {
   const now = new Date();
-  const today = now.toISOString().split("T")[0];
   const nextMonday = getNextMonday();
   const weekStart = nextMonday.toISOString().split("T")[0];
   const weekDates = formatWeekDates(nextMonday);
@@ -238,7 +218,6 @@ async function sendSundayCheckins(): Promise<number> {
 
   if (!profiles || profiles.length === 0) return 0;
 
-  // Load linked accounts to group families
   const { data: linkedAccounts } = await supabase
     .from("linked_accounts")
     .select("primary_user_id, linked_user_id")
@@ -264,9 +243,6 @@ async function sendSundayCheckins(): Promise<number> {
     union(link.primary_user_id, link.linked_user_id);
   }
 
-  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
-
-  // Group phones by family
   const phonesByFamily = new Map<string, Set<string>>();
   for (const p of profiles) {
     const fam = find(p.user_id);
@@ -274,7 +250,6 @@ async function sendSundayCheckins(): Promise<number> {
     phonesByFamily.get(fam)!.add(p.phone_number!);
   }
 
-  // Group children by family
   const { data: allChildren } = await supabase
     .from("children")
     .select("id, first_name, year_group, school_id, parent_id");
@@ -290,9 +265,7 @@ async function sendSundayCheckins(): Promise<number> {
 
   for (const [familyId, familyPhones] of phonesByFamily) {
     const phones = Array.from(familyPhones);
-    const anchorPhone = phones[0];
 
-    // Skip if already sent this week
     const { data: existing } = await supabase
       .from("lunch_checkin_log")
       .select("id")
@@ -305,12 +278,10 @@ async function sendSundayCheckins(): Promise<number> {
     if (children.length === 0) continue;
 
     const schoolIds = [...new Set(children.map((c: any) => c.school_id).filter(Boolean))];
+    const childIds = children.map((c: any) => c.id);
 
-    // Build week-ahead summary grouped by day
     const remindersByDay: Record<string, string[]> = {};
 
-    // Child recurring reminders
-    const childIds = children.map((c: any) => c.id);
     const { data: childReminders } = await supabase
       .from("child_reminders")
       .select("child_id, title, emoji, day_of_week, children(first_name)")
@@ -323,7 +294,6 @@ async function sendSundayCheckins(): Promise<number> {
       remindersByDay[rem.day_of_week].push(`${rem.emoji} ${childName}'s ${rem.title}`);
     }
 
-    // School events this week
     const { data: events } =
       schoolIds.length > 0
         ? await supabase
@@ -341,14 +311,13 @@ async function sendSundayCheckins(): Promise<number> {
       if (dayIndex === -1) continue;
       const dayName = DAYS[dayIndex];
       const relevantChild = children.find((c: any) =>
-        isEventRelevantToChild(evt.year_group || "all", c.year_group || "")
+        isEventRelevantToChild(evt.year_group || "all", c.year_group || ""),
       );
       if (!relevantChild) continue;
       if (!remindersByDay[dayName]) remindersByDay[dayName] = [];
       remindersByDay[dayName].push(`📅 ${cleanEventTitle(evt.title)}`);
     }
 
-    // Parent notes this week
     const { data: notes } = await supabase
       .from("parent_notes")
       .select("summary, extracted_dates, child_name")
@@ -367,7 +336,6 @@ async function sendSundayCheckins(): Promise<number> {
       }
     }
 
-    // Build the {{3}} body
     const weeklyItems: string[] = [];
     for (let i = 0; i < 5; i++) {
       const dayName = DAYS[i];
@@ -378,9 +346,7 @@ async function sendSundayCheckins(): Promise<number> {
     }
 
     const bodyText =
-      weeklyItems.length > 0
-        ? weeklyItems.join("\n\n")
-        : "Nothing specific flagged — looks like a quiet week!";
+      weeklyItems.length > 0 ? weeklyItems.join("\n\n") : "Nothing specific flagged — looks like a quiet week!";
 
     const childNames = joinNames(children.map((c: any) => c.first_name));
 
@@ -406,8 +372,6 @@ async function sendSundayCheckins(): Promise<number> {
   return sentCount;
 }
 
-// ── Main send logic ───────────────────────────────────────────────────────────
-
 async function sendReminders(period: "morning" | "evening") {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
@@ -420,9 +384,7 @@ async function sendReminders(period: "morning" | "evening") {
   const targetStart = `${targetDateStr}T00:00:00Z`;
   const targetEnd = `${targetDateStr}T23:59:59Z`;
 
-  const { data: children } = await supabase
-    .from("children")
-    .select("id, first_name, school_id, parent_id, year_group");
+  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id, year_group");
 
   if (!children || children.length === 0) {
     console.log("No children registered yet");
@@ -505,13 +467,8 @@ async function sendReminders(period: "morning" | "evening") {
         .gte("start_at", targetStart)
         .lte("start_at", targetEnd);
 
-      const { data: exclusions } = await supabase
-        .from("event_exclusions")
-        .select("keyword")
-        .eq("child_id", child.id);
-      const exclusionKeywords = (exclusions || [])
-        .map((e: any) => (e.keyword || "").toLowerCase())
-        .filter(Boolean);
+      const { data: exclusions } = await supabase.from("event_exclusions").select("keyword").eq("child_id", child.id);
+      const exclusionKeywords = (exclusions || []).map((e: any) => (e.keyword || "").toLowerCase()).filter(Boolean);
 
       const eventTitlesForChild: string[] = [];
       for (const evt of events || []) {
@@ -543,11 +500,16 @@ async function sendReminders(period: "morning" | "evening") {
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
-        reminderItems.push({ childName: child.first_name, title: rem.title, emoji: rem.emoji || "✅", type: "reminder", refId });
+        reminderItems.push({
+          childName: child.first_name,
+          title: rem.title,
+          emoji: rem.emoji || "✅",
+          type: "reminder",
+          refId,
+        });
         refIdsToLog.push({ refId, title: rem.title, type: "child_reminder" });
       }
 
-      // Weekly packed lunch plan
       const targetDateObj = new Date(targetDateStr + "T12:00:00Z");
       const targetDayNum = targetDateObj.getUTCDay();
       const daysFromMonday = targetDayNum === 0 ? 6 : targetDayNum - 1;
@@ -565,7 +527,13 @@ async function sendReminders(period: "morning" | "evening") {
       if (lunchPlan && lunchPlan.packed_lunch_days?.includes(targetDay)) {
         const refId = `lunch_${child.id}_${targetDateStr}_${period}`;
         if (!(await alreadySent(anchorPhone, refId, period, today))) {
-          reminderItems.push({ childName: child.first_name, title: "Packed lunch", emoji: "🥪", type: "reminder", refId });
+          reminderItems.push({
+            childName: child.first_name,
+            title: "Packed lunch",
+            emoji: "🥪",
+            type: "reminder",
+            refId,
+          });
           refIdsToLog.push({ refId, title: "Packed lunch", type: "lunch_plan" });
         }
       }
@@ -583,7 +551,13 @@ async function sendReminders(period: "morning" | "evening") {
       for (const rem of schoolReminders || []) {
         const refId = `reminder_${rem.id}_${child.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
-        reminderItems.push({ childName: child.first_name, title: rem.title, emoji: rem.emoji || "✅", type: "reminder", refId });
+        reminderItems.push({
+          childName: child.first_name,
+          title: rem.title,
+          emoji: rem.emoji || "✅",
+          type: "reminder",
+          refId,
+        });
         refIdsToLog.push({ refId, title: rem.title, type: "weekly" });
       }
     }
@@ -605,7 +579,13 @@ async function sendReminders(period: "morning" | "evening") {
       const refId = `note_${note.id}_${targetDateStr}_${period}`;
       if (await alreadySent(anchorPhone, refId, period, today)) continue;
 
-      reminderItems.push({ childName: note.child_name || "the children", title: note.summary, emoji: "📝", type: "note", refId });
+      reminderItems.push({
+        childName: note.child_name || "the children",
+        title: note.summary,
+        emoji: "📝",
+        type: "note",
+        refId,
+      });
       refIdsToLog.push({ refId, title: note.summary, type: "note" });
     }
 
@@ -628,8 +608,6 @@ async function sendReminders(period: "morning" | "evening") {
   console.log(`[${period}] Sent ${sentCount} consolidated messages`);
 }
 
-// ── HTTP handler ──────────────────────────────────────────────────────────────
-
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -644,9 +622,9 @@ Deno.serve(async (req: Request) => {
       period = hour < 12 ? "morning" : "evening";
     }
 
-    // On Sunday evenings, run the packed lunch check-in instead of normal evening reminders
-    const isEvening = period === "evening";
-    const isSunday = new Date().getDay() === 0;
+    // TEST OVERRIDES — revert before next Sunday
+    const isEvening = true;
+    const isSunday = true;
 
     if (isEvening && isSunday) {
       const sent = await sendSundayCheckins();
