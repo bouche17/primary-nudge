@@ -1,23 +1,20 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-// ── Config ────────────────────────────────────────────────────────────────────
-
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const TWILIO_MORNING_TEMPLATE_SID =
-  Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "HXc35dd5379ce57d50be8a7aeff9693f5f";
-const TWILIO_EVENING_TEMPLATE_SID =
-  Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
+const TWILIO_MORNING_TEMPLATE_SID = Deno.env.get("TWILIO_MORNING_TEMPLATE_SID") || "HXc35dd5379ce57d50be8a7aeff9693f5f";
+const TWILIO_EVENING_TEMPLATE_SID = Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
+const TWILIO_SUNDAY_TEMPLATE_SID = Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 interface ReminderItem {
   childName: string;
@@ -27,23 +24,11 @@ interface ReminderItem {
   refId: string;
 }
 
-// ── Year group filter ─────────────────────────────────────────────────────────
-// Checks if a school event is relevant to a specific child based on the
-// event's year_group field (set during calendar sync).
-// year_group is "all" for whole-school events, or a comma-separated list
-// like "Year 3,Year 4" or "Reception".
-
-// Strip year group / key stage prefixes from event titles
-// Examples: "Y3,4,5 Swimming" → "Swimming", "Y5/6 Football" → "Football",
-// "KS1 Nativity" → "Nativity", "Year 3 Trip" → "Trip", "Reception Assembly" → "Assembly"
 function cleanEventTitle(title: string): string {
   if (!title) return title;
-  // Matches leading year/keystage tokens followed by separator(s)
-  // Y/Yr/Year + numbers (with , / & - and spaces), or KS1/KS2/EYFS/Reception/Nursery
   const pattern =
     /^\s*(?:(?:y(?:ea)?r?s?)\s*[\d]+(?:\s*[,/&\-]\s*\d+)*|ks\s*[1-4]|eyfs|reception|nursery)\b[\s:.\-–—]*/i;
   let cleaned = title;
-  // Strip up to 2 prefixes (e.g. "KS2 Y5/6 Trip")
   for (let i = 0; i < 2; i++) {
     const next = cleaned.replace(pattern, "");
     if (next === cleaned) break;
@@ -54,46 +39,48 @@ function cleanEventTitle(title: string): string {
 }
 
 function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string): boolean {
-  // "all" means whole school — always relevant
   if (!eventYearGroup || eventYearGroup === "all") return true;
-
-  // Split the event's year groups and check for a match
   const eventGroups = eventYearGroup.split(",").map((g) => g.trim().toLowerCase());
   const childGroup = childYearGroup.trim().toLowerCase();
-
   return eventGroups.includes(childGroup);
 }
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, text: string, period: "morning" | "evening"): Promise<boolean> {
+async function sendWhatsApp(to: string, text: string, period: "morning" | "evening" | "sunday"): Promise<boolean> {
   const sid = TWILIO_ACCOUNT_SID;
   const token = TWILIO_AUTH_TOKEN;
   const from = TWILIO_WHATSAPP_NUMBER;
 
-  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
+  let templateSid: string;
+  let contentVariables: string;
+
+  if (period === "sunday") {
+    // sunday payload is JSON: { names, weekDates, body }
+    const payload = JSON.parse(text) as { names: string; weekDates: string; body: string };
+    templateSid = TWILIO_SUNDAY_TEMPLATE_SID;
+    contentVariables = JSON.stringify({
+      "1": payload.names.slice(0, 200),
+      "2": payload.weekDates.slice(0, 100),
+      "3": payload.body.slice(0, 1024),
+    });
+  } else {
+    templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
+    const sanitisedText = text
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+      .replace(/[^\S\n\r]+/g, " ")
+      .trim()
+      .slice(0, 1024);
+    contentVariables = JSON.stringify({ "1": sanitisedText });
+  }
 
   if (!templateSid) {
-    console.error(`No template SID configured for period=${period} — refusing to send freeform.`);
+    console.error(`No template SID for period=${period}`);
     return false;
   }
 
-  console.log('Sending to:', to, 'templateSid:', templateSid);
-
-  // Sanitise reminder text for Twilio ContentVariables:
-  // - Strip control characters except newlines
-  // - Collapse horizontal whitespace (spaces/tabs) into single spaces
-  // - Preserve line breaks so each reminder item stays on its own line
-  // - Trim and cap length (Twilio limit is 1024 chars per variable)
-  const sanitisedText = text
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S\n\r]+/g, " ")
-    .trim()
-    .slice(0, 1024);
-
-  // JSON.stringify handles escaping of quotes, backslashes, and unicode correctly
-  const contentVariables = JSON.stringify({ "1": sanitisedText });
-  console.log('ContentVariables string:', contentVariables);
+  console.log("Sending to:", to, "templateSid:", templateSid);
+  console.log("ContentVariables:", contentVariables);
 
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
@@ -110,14 +97,14 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     body: params.toString(),
   });
 
-  console.log('Twilio response status:', res.status);
+  console.log("Twilio response status:", res.status);
   const responseBody = await res.text();
-  console.log('Twilio response body:', responseBody);
+  console.log("Twilio response body:", responseBody);
 
   return res.ok;
 }
 
-// ── Dedup check ───────────────────────────────────────────────────────────────
+// ── Dedup ─────────────────────────────────────────────────────────────────────
 
 async function alreadySent(phone: string, refId: string, period: string, today: string): Promise<boolean> {
   const { data } = await supabase
@@ -141,9 +128,7 @@ async function logReminder(phone: string, type: string, refId: string, title: st
   });
 }
 
-// ── Message builder ───────────────────────────────────────────────────────────
-// Builds ONE consolidated message per parent per period
-// rather than firing a separate message for each reminder
+// ── Message builders ──────────────────────────────────────────────────────────
 
 function joinNames(names: string[]): string {
   const unique = Array.from(new Set(names));
@@ -153,7 +138,6 @@ function joinNames(names: string[]): string {
   return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
 }
 
-// True when the subject string represents multiple people (use plural verbs)
 function isPluralSubject(name: string): boolean {
   const lower = name.toLowerCase().trim();
   if (lower === "the children" || lower === "the kids") return true;
@@ -161,20 +145,10 @@ function isPluralSubject(name: string): boolean {
 }
 
 function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "evening"): string {
-  // The Twilio template already provides the greeting header and sign-off footer.
-  // {{1}} should ONLY contain the reminder body lines — no preamble, no sign-off.
-  //
-  // Merge items that share the same title+type+emoji across multiple children
-  // so we say "Jude and Harry have Swimming" instead of two separate lines.
-  // Items with different titles stay on their own lines.
   const groups = new Map<string, { item: ReminderItem; names: string[] }>();
   const order: string[] = [];
   for (const item of items) {
-    // Don't merge free-text notes — their summary already contains its own subject.
-    const key =
-      item.type === "note"
-        ? `note:${item.refId}`
-        : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
+    const key = item.type === "note" ? `note:${item.refId}` : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
     if (!groups.has(key)) {
       groups.set(key, { item, names: [item.childName] });
       order.push(key);
@@ -182,12 +156,10 @@ function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "ev
       groups.get(key)!.names.push(item.childName);
     }
   }
-
   return order
     .map((key) => {
       const { item, names } = groups.get(key)!;
-      const merged: ReminderItem = { ...item, childName: joinNames(names) };
-      return buildItemLine(merged, period);
+      return buildItemLine({ ...item, childName: joinNames(names) }, period);
     })
     .join("\n");
 }
@@ -199,9 +171,7 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
   const hasHave = plural ? "have" : "has";
   const needsNeed = plural ? "need" : "needs";
 
-  if (type === "event") {
-    return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
-  }
+  if (type === "event") return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
 
   const actionMap: Record<string, string> = {
     "PE kit needed": `Don't forget ${childName}'s PE kit ${when}`,
@@ -212,54 +182,58 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
     "Homework due": `${childName}'s homework is due ${when}`,
   };
 
-  const action = actionMap[title] || `${childName} ${hasHave} *${title}* ${when}`;
-  return `${emoji} ${action}`;
+  return actionMap[title] || `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
 }
 
+// ── Sunday week-ahead builder ─────────────────────────────────────────────────
 
-// ── Main send logic ───────────────────────────────────────────────────────────
+function getNextMonday(): Date {
+  const now = new Date();
+  const day = now.getDay();
+  const daysUntilMonday = day === 0 ? 1 : 8 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + daysUntilMonday);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
 
-async function sendReminders(period: "morning" | "evening") {
+function formatWeekDates(monday: Date): string {
+  const friday = new Date(monday);
+  friday.setDate(monday.getDate() + 4);
+  return `${monday.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}–${friday.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+}
+
+function getDateForDay(monday: Date, dayOffset: number): string {
+  const d = new Date(monday);
+  d.setDate(monday.getDate() + dayOffset);
+  return d.toISOString().split("T")[0];
+}
+
+async function sendSundayCheckins(): Promise<number> {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
+  const nextMonday = getNextMonday();
+  const weekStart = nextMonday.toISOString().split("T")[0];
+  const weekDates = formatWeekDates(nextMonday);
 
-  // For evening, look at tomorrow; for morning, look at today
-  const targetDate = new Date(now);
-  if (period === "evening") targetDate.setDate(targetDate.getDate() + 1);
+  const friday = new Date(nextMonday);
+  friday.setDate(nextMonday.getDate() + 4);
+  const weekStartDate = `${weekStart}T00:00:00Z`;
+  const weekEndDate = `${friday.toISOString().split("T")[0]}T23:59:59Z`;
 
-  const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long" });
-  const targetDateStr = targetDate.toISOString().split("T")[0];
-  const targetStart = `${targetDateStr}T00:00:00Z`;
-  const targetEnd = `${targetDateStr}T23:59:59Z`;
-
-  // Load all children including year_group for event filtering
-  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id, year_group");
-
-  if (!children || children.length === 0) {
-    console.log("No children registered yet");
-    return;
-  }
-
-  // Load all parent phone numbers (we'll need linked partners too)
   const { data: profiles } = await supabase
     .from("profiles")
     .select("user_id, phone_number")
     .not("phone_number", "is", null);
 
-  if (!profiles || profiles.length === 0) {
-    console.log("No parent phone numbers found");
-    return;
-  }
+  if (!profiles || profiles.length === 0) return 0;
 
-  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
-
-  // Load all accepted linked accounts and build a union-find of family groups
+  // Load linked accounts to group families
   const { data: linkedAccounts } = await supabase
     .from("linked_accounts")
     .select("primary_user_id, linked_user_id")
     .eq("status", "accepted");
 
-  // familyOf[user_id] = canonical family-leader user_id
   const familyOf = new Map<string, string>();
   const find = (u: string): string => {
     const p = familyOf.get(u);
@@ -273,7 +247,204 @@ async function sendReminders(period: "morning" | "evening") {
     const rb = find(b);
     if (ra !== rb) familyOf.set(rb, ra);
   };
-  // Seed every known parent
+  for (const p of profiles) familyOf.set(p.user_id, p.user_id);
+  for (const link of linkedAccounts || []) {
+    if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+    if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+    union(link.primary_user_id, link.linked_user_id);
+  }
+
+  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
+
+  // Group phones by family
+  const phonesByFamily = new Map<string, Set<string>>();
+  for (const p of profiles) {
+    const fam = find(p.user_id);
+    if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+    phonesByFamily.get(fam)!.add(p.phone_number!);
+  }
+
+  // Group children by family
+  const { data: allChildren } = await supabase
+    .from("children")
+    .select("id, first_name, year_group, school_id, parent_id");
+
+  const childrenByFamily = new Map<string, typeof allChildren>();
+  for (const child of allChildren || []) {
+    const fam = find(child.parent_id);
+    if (!childrenByFamily.has(fam)) childrenByFamily.set(fam, []);
+    childrenByFamily.get(fam)!.push(child);
+  }
+
+  let sentCount = 0;
+
+  for (const [familyId, familyPhones] of phonesByFamily) {
+    const phones = Array.from(familyPhones);
+    const anchorPhone = phones[0];
+
+    // Skip if already sent this week
+    const { data: existing } = await supabase
+      .from("lunch_checkin_log")
+      .select("id")
+      .eq("parent_id", familyId)
+      .eq("week_start", weekStart)
+      .maybeSingle();
+    if (existing) continue;
+
+    const children = childrenByFamily.get(familyId) || [];
+    if (children.length === 0) continue;
+
+    const schoolIds = [...new Set(children.map((c: any) => c.school_id).filter(Boolean))];
+
+    // Build week-ahead summary grouped by day
+    const remindersByDay: Record<string, string[]> = {};
+
+    // Child recurring reminders
+    const childIds = children.map((c: any) => c.id);
+    const { data: childReminders } = await supabase
+      .from("child_reminders")
+      .select("child_id, title, emoji, day_of_week, children(first_name)")
+      .in("child_id", childIds)
+      .eq("active", true);
+
+    for (const rem of childReminders || []) {
+      const childName = (rem as any).children?.first_name || "Unknown";
+      if (!remindersByDay[rem.day_of_week]) remindersByDay[rem.day_of_week] = [];
+      remindersByDay[rem.day_of_week].push(`${rem.emoji} ${childName}'s ${rem.title}`);
+    }
+
+    // School events this week
+    const { data: events } =
+      schoolIds.length > 0
+        ? await supabase
+            .from("school_events")
+            .select("title, start_at, year_group")
+            .in("school_id", schoolIds)
+            .gte("start_at", weekStartDate)
+            .lte("start_at", weekEndDate)
+            .order("start_at", { ascending: true })
+        : { data: [] };
+
+    for (const evt of events || []) {
+      const evtDate = evt.start_at.split("T")[0];
+      const dayIndex = DAYS.findIndex((_, i) => getDateForDay(nextMonday, i) === evtDate);
+      if (dayIndex === -1) continue;
+      const dayName = DAYS[dayIndex];
+      const relevantChild = children.find((c: any) =>
+        isEventRelevantToChild(evt.year_group || "all", c.year_group || ""),
+      );
+      if (!relevantChild) continue;
+      if (!remindersByDay[dayName]) remindersByDay[dayName] = [];
+      remindersByDay[dayName].push(`📅 ${cleanEventTitle(evt.title)}`);
+    }
+
+    // Parent notes this week
+    const { data: notes } = await supabase
+      .from("parent_notes")
+      .select("summary, extracted_dates, child_name")
+      .in("phone_number", phones);
+
+    for (const note of notes || []) {
+      if (!note.extracted_dates) continue;
+      const dates = note.extracted_dates as Array<{ date: string }>;
+      for (let i = 0; i < 5; i++) {
+        const dayDate = getDateForDay(nextMonday, i);
+        if (!dates.some((d) => d.date === dayDate)) continue;
+        const dayName = DAYS[i];
+        if (!remindersByDay[dayName]) remindersByDay[dayName] = [];
+        const prefix = note.child_name ? `${note.child_name}: ` : "";
+        remindersByDay[dayName].push(`📝 ${prefix}${note.summary}`);
+      }
+    }
+
+    // Build the {{3}} body
+    const weeklyItems: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const dayName = DAYS[i];
+      const lines = remindersByDay[dayName];
+      if (lines && lines.length > 0) {
+        weeklyItems.push(`*${dayName}*\n${lines.map((l) => `  ${l}`).join("\n")}`);
+      }
+    }
+
+    const bodyText =
+      weeklyItems.length > 0 ? weeklyItems.join("\n\n") : "Nothing specific flagged — looks like a quiet week!";
+
+    const childNames = joinNames(children.map((c: any) => c.first_name));
+
+    const payload = JSON.stringify({
+      names: childNames,
+      weekDates,
+      body: bodyText,
+    });
+
+    for (const phone of phones) {
+      const ok = await sendWhatsApp(phone, payload, "sunday");
+      if (ok) {
+        await supabase.from("lunch_checkin_log").insert({
+          parent_id: familyId,
+          week_start: weekStart,
+        });
+        sentCount++;
+        console.log(`[sunday] Sent to ${phone}`);
+      }
+    }
+  }
+
+  return sentCount;
+}
+
+// ── Main send logic ───────────────────────────────────────────────────────────
+
+async function sendReminders(period: "morning" | "evening") {
+  const now = new Date();
+  const today = now.toISOString().split("T")[0];
+
+  const targetDate = new Date(now);
+  if (period === "evening") targetDate.setDate(targetDate.getDate() + 1);
+
+  const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long" });
+  const targetDateStr = targetDate.toISOString().split("T")[0];
+  const targetStart = `${targetDateStr}T00:00:00Z`;
+  const targetEnd = `${targetDateStr}T23:59:59Z`;
+
+  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id, year_group");
+
+  if (!children || children.length === 0) {
+    console.log("No children registered yet");
+    return;
+  }
+
+  const { data: profiles } = await supabase
+    .from("profiles")
+    .select("user_id, phone_number")
+    .not("phone_number", "is", null);
+
+  if (!profiles || profiles.length === 0) {
+    console.log("No parent phone numbers found");
+    return;
+  }
+
+  const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
+
+  const { data: linkedAccounts } = await supabase
+    .from("linked_accounts")
+    .select("primary_user_id, linked_user_id")
+    .eq("status", "accepted");
+
+  const familyOf = new Map<string, string>();
+  const find = (u: string): string => {
+    const p = familyOf.get(u);
+    if (!p || p === u) return u;
+    const root = find(p);
+    familyOf.set(u, root);
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) familyOf.set(rb, ra);
+  };
   for (const c of children) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
   for (const p of profiles) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
   for (const link of linkedAccounts || []) {
@@ -282,7 +453,6 @@ async function sendReminders(period: "morning" | "evening") {
     union(link.primary_user_id, link.linked_user_id);
   }
 
-  // Group children + phones by family
   const childrenByFamily = new Map<string, typeof children>();
   const phonesByFamily = new Map<string, Set<string>>();
 
@@ -292,7 +462,6 @@ async function sendReminders(period: "morning" | "evening") {
     childrenByFamily.get(fam)!.push(child);
   }
 
-  // Walk every user we've seen and bucket their phone into their family
   const allUsers = new Set<string>([...familyOf.keys()]);
   for (const userId of allUsers) {
     const phone = phoneByUser.get(userId);
@@ -304,21 +473,17 @@ async function sendReminders(period: "morning" | "evening") {
 
   let sentCount = 0;
 
-  // Process each FAMILY — one message per family, sent to every family phone
   for (const [familyId, familyChildren] of childrenByFamily) {
     const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
     if (familyPhones.length === 0) continue;
 
-    // Use first family phone as the dedup anchor (so retries don't re-send to anyone)
     const anchorPhone = familyPhones[0];
-
     const reminderItems: ReminderItem[] = [];
     const refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
 
     for (const child of familyChildren) {
       const schoolIds = [child.school_id].filter(Boolean);
 
-      // 1. School events for target date
       const { data: events } = await supabase
         .from("school_events")
         .select("id, title, year_group")
@@ -326,47 +491,25 @@ async function sendReminders(period: "morning" | "evening") {
         .gte("start_at", targetStart)
         .lte("start_at", targetEnd);
 
-      // Load this child's event exclusion keywords
-      const { data: exclusions } = await supabase
-        .from("event_exclusions")
-        .select("keyword")
-        .eq("child_id", child.id);
-      const exclusionKeywords = (exclusions || [])
-        .map((e: any) => (e.keyword || "").toLowerCase())
-        .filter(Boolean);
+      const { data: exclusions } = await supabase.from("event_exclusions").select("keyword").eq("child_id", child.id);
+      const exclusionKeywords = (exclusions || []).map((e: any) => (e.keyword || "").toLowerCase()).filter(Boolean);
 
       const eventTitlesForChild: string[] = [];
       for (const evt of events || []) {
         if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
-
         const titleLower = (evt.title || "").toLowerCase();
-        if (exclusionKeywords.some((kw) => titleLower.includes(kw))) {
-          console.log(
-            `Skipping event "${evt.title}" for ${child.first_name} — matches exclusion keyword.`
-          );
-          continue;
-        }
-
+        if (exclusionKeywords.some((kw) => titleLower.includes(kw))) continue;
 
         const refId = `event_${evt.id}_${child.id}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
         const cleanTitle = cleanEventTitle(evt.title);
         eventTitlesForChild.push(cleanTitle);
-        reminderItems.push({
-          childName: child.first_name,
-          title: cleanTitle,
-          emoji: "📅",
-          type: "event",
-          refId,
-        });
+        reminderItems.push({ childName: child.first_name, title: cleanTitle, emoji: "📅", type: "event", refId });
         refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
       }
 
-      const hasSwimmingEvent = eventTitlesForChild.some((t) =>
-        t.toLowerCase().includes("swimming")
-      );
+      const hasSwimmingEvent = eventTitlesForChild.some((t) => t.toLowerCase().includes("swimming"));
 
-      // 2. Child-specific reminders (any family parent's reminders for this child)
       const { data: childReminders } = await supabase
         .from("child_reminders")
         .select("id, title, emoji, reminder_time")
@@ -377,14 +520,7 @@ async function sendReminders(period: "morning" | "evening") {
       for (const rem of childReminders || []) {
         const shouldSend = rem.reminder_time === "both" || rem.reminder_time === period;
         if (!shouldSend) continue;
-
-        // Skip Swimming child_reminder if a school_event for Swimming already covers today
-        if (hasSwimmingEvent && rem.title.toLowerCase().includes("swimming")) {
-          console.log(
-            `Skipping child_reminder "${rem.title}" for ${child.first_name} — Swimming school_event already scheduled.`
-          );
-          continue;
-        }
+        if (hasSwimmingEvent && rem.title.toLowerCase().includes("swimming")) continue;
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
@@ -398,7 +534,7 @@ async function sendReminders(period: "morning" | "evening") {
         refIdsToLog.push({ refId, title: rem.title, type: "child_reminder" });
       }
 
-      // 2b. Weekly packed lunch plan
+      // Weekly packed lunch plan
       const targetDateObj = new Date(targetDateStr + "T12:00:00Z");
       const targetDayNum = targetDateObj.getUTCDay();
       const daysFromMonday = targetDayNum === 0 ? 6 : targetDayNum - 1;
@@ -427,7 +563,6 @@ async function sendReminders(period: "morning" | "evening") {
         }
       }
 
-      // 3. School-wide recurring reminders
       const schoolIdFilter =
         schoolIds.length > 0 ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null` : `school_id.is.null`;
 
@@ -452,7 +587,6 @@ async function sendReminders(period: "morning" | "evening") {
       }
     }
 
-    // 4. Parent notes — fetch ALL notes from ANY family phone, once per family
     const { data: notes } = await supabase
       .from("parent_notes")
       .select("id, summary, extracted_dates, child_name")
@@ -463,21 +597,15 @@ async function sendReminders(period: "morning" | "evening") {
       const dates = note.extracted_dates as Array<{ date: string }>;
       if (!dates.some((d) => d.date === targetDateStr)) continue;
 
-      // Defence in depth: skip notes where every extracted date is in the past
-      // (guards against Gemini extracting a stale year, e.g. "2025" instead of "2026")
       const todayStr = now.toISOString().split("T")[0];
       const hasFutureOrTodayDate = dates.some((d) => d.date && d.date >= todayStr);
-      if (!hasFutureOrTodayDate) {
-        console.log(`Skipping note ${note.id} — all extracted dates are in the past:`, dates);
-        continue;
-      }
+      if (!hasFutureOrTodayDate) continue;
 
       const refId = `note_${note.id}_${targetDateStr}_${period}`;
       if (await alreadySent(anchorPhone, refId, period, today)) continue;
 
-      const noteName = note.child_name || "the children";
       reminderItems.push({
-        childName: noteName,
+        childName: note.child_name || "the children",
         title: note.summary,
         emoji: "📝",
         type: "note",
@@ -486,10 +614,8 @@ async function sendReminders(period: "morning" | "evening") {
       refIdsToLog.push({ refId, title: note.summary, type: "note" });
     }
 
-    // Skip if nothing to send
     if (reminderItems.length === 0) continue;
 
-    // Build ONE consolidated message and send to every family phone
     const message = buildConsolidatedMessage(reminderItems, period);
 
     for (const phone of familyPhones) {
@@ -521,6 +647,17 @@ Deno.serve(async (req: Request) => {
     if (!period) {
       const hour = new Date().getUTCHours();
       period = hour < 12 ? "morning" : "evening";
+    }
+
+    // On Sunday evenings, run the packed lunch check-in instead of normal evening reminders
+    const isEvening = period === "evening";
+    const isSunday = new Date().getDay() === 0;
+
+    if (isEvening && isSunday) {
+      const sent = await sendSundayCheckins();
+      return new Response(JSON.stringify({ success: true, period: "sunday", sent }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     await sendReminders(period);
