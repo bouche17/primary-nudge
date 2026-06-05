@@ -69,7 +69,7 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   const sanitisedText = text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/\n/g, " \u2022 ")
+    .replace(/\n/g, "\u2028")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
     .replace(/[^\S]+/g, " ")
     .replace(/\\/g, "")
