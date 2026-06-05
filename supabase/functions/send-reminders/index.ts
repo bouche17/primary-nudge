@@ -69,10 +69,13 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   const sanitisedText = text
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
     .replace(/[^\S\n\r]+/g, " ")
+    .replace(/\\/g, "")
     .trim()
     .slice(0, 1024);
 
   const contentVariables = JSON.stringify({ "1": sanitisedText });
+
+  console.log("ContentVariables JSON valid:", (() => { try { JSON.parse(contentVariables); return true; } catch { return false; } })());
   console.log('ContentVariables string:', contentVariables);
 
   const params = new URLSearchParams();
