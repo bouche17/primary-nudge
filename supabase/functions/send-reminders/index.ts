@@ -70,6 +70,10 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
     .replace(/[^\S\n\r]+/g, " ")
     .replace(/\\/g, "")
+    .replace(/'/g, "'")
+    .replace(/'/g, "'")
+    .replace(/—/g, "-")
+    .replace(/–/g, "-")
     .trim()
     .slice(0, 1024);
 
