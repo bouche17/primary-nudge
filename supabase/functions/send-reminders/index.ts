@@ -75,6 +75,8 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
 
   const contentVariables = JSON.stringify({ "1": sanitisedText });
 
+  console.log("RAW sanitisedText:", JSON.stringify(sanitisedText));
+
   console.log("ContentVariables JSON valid:", (() => { try { JSON.parse(contentVariables); return true; } catch { return false; } })());
   console.log('ContentVariables string:', contentVariables);
 
