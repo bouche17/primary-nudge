@@ -33,113 +33,41 @@ const AcceptInvite = () => {
   }, [user, loading, token]);
 
   const acceptInvite = async () => {
-    if (!user || !token) {
-      console.log("[AcceptInvite] acceptInvite aborted — missing user or token", { userId: user?.id, token });
-      return;
-    }
+    if (!user || !token) return;
     setStatus("linking");
 
-    // Step 1: Look up the token
-    console.log("[AcceptInvite] Step 1: Looking up token in invite_tokens…", { token });
-    const { data: invite, error: lookupError } = await supabase
-      .from("invite_tokens")
-      .select("inviter_user_id, used_at, expires_at")
-      .eq("token", token)
-      .maybeSingle();
+    const { data, error } = await supabase.functions.invoke("redeem-invite", {
+      body: { token },
+    });
 
-    console.log("[AcceptInvite] Step 1 result:", { invite, lookupError });
-
-    if (!invite || lookupError) {
-      console.error("[AcceptInvite] Token lookup failed or not found");
+    if (error || !data) {
+      console.error("[AcceptInvite] redeem-invite failed:", error);
       localStorage.removeItem("pending_invite_token");
+      toast({ title: "Could not link accounts", variant: "destructive" });
       setStatus("invalid");
       return;
     }
 
-    if (invite.used_at) {
-      console.log("[AcceptInvite] Token already used at:", invite.used_at);
-      localStorage.removeItem("pending_invite_token");
-      toast({ title: "Invite already used", variant: "destructive" });
-      setStatus("invalid");
-      return;
-    }
-
-    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
-      console.log("[AcceptInvite] Token expired at:", invite.expires_at);
-      localStorage.removeItem("pending_invite_token");
-      toast({ title: "Invite link has expired", variant: "destructive" });
-      setStatus("invalid");
-      return;
-    }
-
-    if (invite.inviter_user_id === user.id) {
-      console.log("[AcceptInvite] User is the inviter — self-invite blocked");
-      localStorage.removeItem("pending_invite_token");
-      toast({ title: "You can't accept your own invite", variant: "destructive" });
-      setStatus("invalid");
-      return;
-    }
-
-    // Step 2: Check for existing link
-    console.log("[AcceptInvite] Step 2: Checking for existing linked_accounts row…");
-    const { data: existingLink } = await supabase
-      .from("linked_accounts")
-      .select("id")
-      .eq("primary_user_id", invite.inviter_user_id)
-      .eq("linked_user_id", user.id)
-      .maybeSingle();
-
-    if (existingLink) {
-      console.log("[AcceptInvite] Accounts already linked, skipping insert");
+    const statusValue = (data as { status?: string }).status;
+    if (statusValue === "linked") {
       localStorage.removeItem("pending_invite_token");
       setStatus("done");
-      toast({ title: "Accounts already linked", description: "You're already connected." });
+      toast({ title: "Accounts linked!", description: "You're now connected." });
       setTimeout(() => navigate("/dashboard"), 1500);
       return;
     }
 
-    // Step 3: Create linked account
-    console.log("[AcceptInvite] Step 3: Inserting into linked_accounts…", {
-      primary_user_id: invite.inviter_user_id,
-      linked_user_id: user.id,
-    });
-    const { data: linkData, error: linkError } = await supabase.from("linked_accounts").insert({
-      primary_user_id: invite.inviter_user_id,
-      linked_user_id: user.id,
-      status: "accepted",
-      accepted_at: new Date().toISOString(),
-    }).select();
-
-    console.log("[AcceptInvite] Step 3 result:", { linkData, linkError });
-
-    if (linkError) {
-      console.error("[AcceptInvite] linked_accounts insert FAILED:", linkError);
-      localStorage.removeItem("pending_invite_token");
-      toast({ title: "Error linking accounts", description: linkError.message, variant: "destructive" });
-      setStatus("invalid");
-      return;
-    }
-
-    // Step 3: Mark token as used
-    console.log("[AcceptInvite] Step 3: Marking token as used…");
-    const { data: updateData, error: updateError } = await supabase
-      .from("invite_tokens")
-      .update({ used_at: new Date().toISOString() })
-      .eq("token", token)
-      .select();
-
-    console.log("[AcceptInvite] Step 3 result:", { updateData, updateError });
-
-    if (updateError) {
-      console.error("[AcceptInvite] Failed to mark token as used:", updateError);
-    }
-
     localStorage.removeItem("pending_invite_token");
-    setStatus("done");
-    console.log("[AcceptInvite] ✅ Flow complete! Redirecting to dashboard in 1.5s");
-    toast({ title: "Accounts linked!", description: "You're now connected." });
-
-    setTimeout(() => navigate("/dashboard"), 1500);
+    if (statusValue === "used") {
+      toast({ title: "Invite already used", variant: "destructive" });
+    } else if (statusValue === "expired") {
+      toast({ title: "Invite link has expired", variant: "destructive" });
+    } else if (statusValue === "self") {
+      toast({ title: "You can't accept your own invite", variant: "destructive" });
+    } else {
+      toast({ title: "Invalid invite", variant: "destructive" });
+    }
+    setStatus("invalid");
   };
 
   return (
