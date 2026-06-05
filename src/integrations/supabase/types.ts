@@ -736,6 +736,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }
     Enums: {
       app_role: "admin" | "user"
