@@ -71,7 +71,7 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
-  params.append("ContentSid", TWILIO_EVENING_TEMPLATE_SID);
+  params.append("ContentSid", TWILIO_SCHOOL_NOTIFICATION_SID);
   params.append("ContentVariables", contentVariables);
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
