@@ -6,7 +6,7 @@ const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const TWILIO_EVENING_TEMPLATE_SID = Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
+const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX7b29b6d8809d72e83b03decb7590b281";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -71,7 +71,7 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
-  params.append("ContentSid", TWILIO_EVENING_TEMPLATE_SID);
+  params.append("ContentSid", TWILIO_SCHOOL_NOTIFICATION_SID);
   params.append("ContentVariables", contentVariables);
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
