@@ -55,7 +55,9 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const data = await response.json();
   const text = data.content[0].text.trim();
-  return JSON.parse(text);
+  const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+
+  return JSON.parse(clean);
 }
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
