@@ -627,6 +627,8 @@ async function generateReply(
   ];
 
   // First API call to Claude
+  const model1 = "claude-sonnet-4-20250514";
+  console.log("[Claude] Calling model:", model1);
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -635,7 +637,7 @@ async function generateReply(
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: model1,
       max_tokens: 500,
       system: systemPrompt,
       messages,
@@ -643,12 +645,15 @@ async function generateReply(
     }),
   });
 
+  const rawText1 = await response.text();
+  console.log("[Claude] Raw response text (first call):", rawText1);
+
   if (!response.ok) {
-    console.error("Claude API error:", await response.text());
+    console.error("Claude API error:", response.status, rawText1);
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
-  const data = await response.json();
+  const data = JSON.parse(rawText1);
 
   // Claude returns stop_reason "tool_use" when it wants to call a tool
   if (data.stop_reason === "tool_use") {
