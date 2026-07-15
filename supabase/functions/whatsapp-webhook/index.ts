@@ -955,6 +955,8 @@ If the image is unclear or unreadable, ask them to try again.`;
       } as any);
     }
 
+    const visionModel = "claude-sonnet-4-20250514";
+    console.log("[Claude] Calling model (vision):", visionModel);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -963,7 +965,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: visionModel,
         max_tokens: 500,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
@@ -971,12 +973,15 @@ If the image is unclear or unreadable, ask them to try again.`;
       }),
     });
 
+    const rawVisionText = await response.text();
+    console.log("[Claude] Raw response text (vision):", rawVisionText);
+
     if (!response.ok) {
-      console.error("Claude vision error:", await response.text());
+      console.error("Claude vision error:", response.status, rawVisionText);
       return "I had trouble reading that image. Could you try forwarding it again? 😊";
     }
 
-    const data = await response.json();
+    const data = JSON.parse(rawVisionText);
 
     // Handle tool use — save extracted dates
     if (data.stop_reason === "tool_use") {
