@@ -471,6 +471,25 @@ Deno.serve(async (req: Request) => {
       period = hour < 12 ? "morning" : "evening";
     }
 
+    // --- Holiday pause guard --------------------------------------------------
+    // Reminders are paused for the summer break and resume automatically on 2 Sep.
+    const RESUME_DATE = "2026-09-02"; // first day back; reminders fire from this date onward
+    // Today's date in UK local time as YYYY-MM-DD (en-CA gives ISO-style output,
+    // timeZone keeps it correct through BST/GMT so it flips on the right morning)
+    const todayUK = new Date().toLocaleDateString("en-CA", {
+      timeZone: "Europe/London",
+    });
+    if (todayUK < RESUME_DATE) {
+      console.log(
+        `Reminders paused for school holiday (today ${todayUK} < resume ${RESUME_DATE}) - skipping.`
+      );
+      return new Response(
+        JSON.stringify({ skipped: true, reason: "holiday_pause", today: todayUK, resume: RESUME_DATE }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    // --------------------------------------------------------------------------
+
     await sendReminders(period);
 
     return new Response(JSON.stringify({ success: true, period }), {
