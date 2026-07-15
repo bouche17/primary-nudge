@@ -676,6 +676,8 @@ async function generateReply(
     }
 
     // Second API call with tool results to get final conversational reply
+    const model2 = "claude-sonnet-4-20250514";
+    console.log("[Claude] Calling model (follow-up):", model2);
     const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -684,7 +686,7 @@ async function generateReply(
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: model2,
         max_tokens: 400,
         system: systemPrompt,
         messages: [
@@ -695,12 +697,15 @@ async function generateReply(
       }),
     });
 
+    const rawFollowUp = await followUpResponse.text();
+    console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
+
     if (!followUpResponse.ok) {
-      console.error("Claude follow-up error:", await followUpResponse.text());
+      console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
       return "Done! I've saved that for you 😊";
     }
 
-    const followUpData = await followUpResponse.json();
+    const followUpData = JSON.parse(rawFollowUp);
     const textBlock = followUpData.content?.find((b: any) => b.type === "text");
     return textBlock?.text?.trim() || "Done! I've saved that for you 😊";
   }
