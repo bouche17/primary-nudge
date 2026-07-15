@@ -1080,6 +1080,8 @@ If the image is unclear or unreadable, ask them to try again.`;
         : "";
 
       // Get final reply after saving
+      const visionFollowModel = "claude-sonnet-4-20250514";
+      console.log("[Claude] Calling model (vision follow-up):", visionFollowModel);
       const followUp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -1088,7 +1090,7 @@ If the image is unclear or unreadable, ask them to try again.`;
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: visionFollowModel,
           max_tokens: 400,
           system: systemPrompt + childHint,
           messages: [
@@ -1099,7 +1101,9 @@ If the image is unclear or unreadable, ask them to try again.`;
         }),
       });
 
-      const followUpData = await followUp.json();
+      const rawVisionFollowUp = await followUp.text();
+      console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
+      const followUpData = JSON.parse(rawVisionFollowUp);
       const textBlock = followUpData.content?.find((b: any) => b.type === "text");
       return textBlock?.text?.trim() || "Done! I've saved those dates for you 😊";
     }
