@@ -1112,8 +1112,12 @@ If the image is unclear or unreadable, ask them to try again.`;
     const textBlock = data.content?.find((b: any) => b.type === "text");
     return textBlock?.text?.trim() || "I couldn't find any dates in that image — could you try sending the text instead? 😊";
 
-  } catch (err) {
-    console.error("Image handling error:", err);
+  } catch (err: any) {
+    console.error("Image handling error:", {
+      message: err?.message,
+      stack: err?.stack,
+      errorString: JSON.stringify(err, Object.getOwnPropertyNames(err ?? {})),
+    });
     return "I had trouble reading that image. Could you try forwarding the text instead? 😊";
   }
 }
