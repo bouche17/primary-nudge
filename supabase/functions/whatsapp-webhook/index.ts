@@ -627,7 +627,7 @@ async function generateReply(
   ];
 
   // First API call to Claude
-  const model1 = "claude-sonnet-4-20250514";
+  const model1 = "claude-sonnet-4-6";
   console.log("[Claude] Calling model:", model1);
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -676,7 +676,7 @@ async function generateReply(
     }
 
     // Second API call with tool results to get final conversational reply
-    const model2 = "claude-sonnet-4-20250514";
+    const model2 = "claude-sonnet-4-6";
     console.log("[Claude] Calling model (follow-up):", model2);
     const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -955,7 +955,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       } as any);
     }
 
-    const visionModel = "claude-sonnet-4-20250514";
+    const visionModel = "claude-sonnet-4-6";
     console.log("[Claude] Calling model (vision):", visionModel);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -1080,7 +1080,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         : "";
 
       // Get final reply after saving
-      const visionFollowModel = "claude-sonnet-4-20250514";
+      const visionFollowModel = "claude-sonnet-4-6";
       console.log("[Claude] Calling model (vision follow-up):", visionFollowModel);
       const followUp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
