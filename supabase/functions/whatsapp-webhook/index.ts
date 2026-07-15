@@ -627,6 +627,8 @@ async function generateReply(
   ];
 
   // First API call to Claude
+  const model1 = "claude-sonnet-4-20250514";
+  console.log("[Claude] Calling model:", model1);
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -635,7 +637,7 @@ async function generateReply(
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: model1,
       max_tokens: 500,
       system: systemPrompt,
       messages,
@@ -643,12 +645,15 @@ async function generateReply(
     }),
   });
 
+  const rawText1 = await response.text();
+  console.log("[Claude] Raw response text (first call):", rawText1);
+
   if (!response.ok) {
-    console.error("Claude API error:", await response.text());
+    console.error("Claude API error:", response.status, rawText1);
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
-  const data = await response.json();
+  const data = JSON.parse(rawText1);
 
   // Claude returns stop_reason "tool_use" when it wants to call a tool
   if (data.stop_reason === "tool_use") {
@@ -671,6 +676,8 @@ async function generateReply(
     }
 
     // Second API call with tool results to get final conversational reply
+    const model2 = "claude-sonnet-4-20250514";
+    console.log("[Claude] Calling model (follow-up):", model2);
     const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -679,7 +686,7 @@ async function generateReply(
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: model2,
         max_tokens: 400,
         system: systemPrompt,
         messages: [
@@ -690,12 +697,15 @@ async function generateReply(
       }),
     });
 
+    const rawFollowUp = await followUpResponse.text();
+    console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
+
     if (!followUpResponse.ok) {
-      console.error("Claude follow-up error:", await followUpResponse.text());
+      console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
       return "Done! I've saved that for you 😊";
     }
 
-    const followUpData = await followUpResponse.json();
+    const followUpData = JSON.parse(rawFollowUp);
     const textBlock = followUpData.content?.find((b: any) => b.type === "text");
     return textBlock?.text?.trim() || "Done! I've saved that for you 😊";
   }
@@ -945,6 +955,8 @@ If the image is unclear or unreadable, ask them to try again.`;
       } as any);
     }
 
+    const visionModel = "claude-sonnet-4-20250514";
+    console.log("[Claude] Calling model (vision):", visionModel);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -953,7 +965,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: visionModel,
         max_tokens: 500,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
@@ -961,12 +973,15 @@ If the image is unclear or unreadable, ask them to try again.`;
       }),
     });
 
+    const rawVisionText = await response.text();
+    console.log("[Claude] Raw response text (vision):", rawVisionText);
+
     if (!response.ok) {
-      console.error("Claude vision error:", await response.text());
+      console.error("Claude vision error:", response.status, rawVisionText);
       return "I had trouble reading that image. Could you try forwarding it again? 😊";
     }
 
-    const data = await response.json();
+    const data = JSON.parse(rawVisionText);
 
     // Handle tool use — save extracted dates
     if (data.stop_reason === "tool_use") {
@@ -1065,6 +1080,8 @@ If the image is unclear or unreadable, ask them to try again.`;
         : "";
 
       // Get final reply after saving
+      const visionFollowModel = "claude-sonnet-4-20250514";
+      console.log("[Claude] Calling model (vision follow-up):", visionFollowModel);
       const followUp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -1073,7 +1090,7 @@ If the image is unclear or unreadable, ask them to try again.`;
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: visionFollowModel,
           max_tokens: 400,
           system: systemPrompt + childHint,
           messages: [
@@ -1084,7 +1101,9 @@ If the image is unclear or unreadable, ask them to try again.`;
         }),
       });
 
-      const followUpData = await followUp.json();
+      const rawVisionFollowUp = await followUp.text();
+      console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
+      const followUpData = JSON.parse(rawVisionFollowUp);
       const textBlock = followUpData.content?.find((b: any) => b.type === "text");
       return textBlock?.text?.trim() || "Done! I've saved those dates for you 😊";
     }
@@ -1093,8 +1112,12 @@ If the image is unclear or unreadable, ask them to try again.`;
     const textBlock = data.content?.find((b: any) => b.type === "text");
     return textBlock?.text?.trim() || "I couldn't find any dates in that image — could you try sending the text instead? 😊";
 
-  } catch (err) {
-    console.error("Image handling error:", err);
+  } catch (err: any) {
+    console.error("Image handling error:", {
+      message: err?.message,
+      stack: err?.stack,
+      errorString: JSON.stringify(err, Object.getOwnPropertyNames(err ?? {})),
+    });
     return "I had trouble reading that image. Could you try forwarding the text instead? 😊";
   }
 }
@@ -1313,8 +1336,12 @@ Deno.serve(async (req: Request) => {
       `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
       { headers: { ...corsHeaders, "Content-Type": "text/xml" } }
     );
-  } catch (error) {
-    console.error("Webhook error:", error);
+  } catch (error: any) {
+    console.error("Webhook error:", {
+      message: error?.message,
+      stack: error?.stack,
+      errorString: JSON.stringify(error, Object.getOwnPropertyNames(error ?? {})),
+    });
     return new Response(
       `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`,
       { status: 200, headers: { "Content-Type": "text/xml" } }
