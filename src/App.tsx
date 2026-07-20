@@ -19,6 +19,7 @@ import CalendarFeeds from "./pages/CalendarFeeds";
 import SchoolReminders from "./pages/SchoolReminders";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
+import OAuthConsent from "./pages/OAuthConsent";
 
 const queryClient = new QueryClient();
 
@@ -65,6 +66,7 @@ const App = () => (
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/invite/:token" element={<AcceptInvite />} />
               <Route path="/privacy" element={<Privacy />} />
+              <Route path="/.lovable/oauth/consent" element={<OAuthConsent />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </PendingInviteRedirector>
