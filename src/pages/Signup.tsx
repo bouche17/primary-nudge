@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { useAuth } from "@/contexts/AuthContext";
 import { resolvePostAuthRoute } from "@/lib/postAuthRoute";
+import { readSafeNext } from "@/lib/safeNext";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +27,11 @@ const Signup = () => {
 
   useEffect(() => {
     if (authLoading || !user) return;
+    const next = readSafeNext();
+    if (next) {
+      window.location.replace(next);
+      return;
+    }
     const pendingToken = localStorage.getItem("pending_invite_token");
     if (pendingToken) {
       navigate(`/invite/${pendingToken}`);
@@ -57,10 +63,14 @@ const Signup = () => {
       return;
     }
     setLoading(true);
+    const next = readSafeNext();
+    const emailRedirectTo = next
+      ? `${window.location.origin}/login?next=${encodeURIComponent(next)}`
+      : window.location.origin;
     const { data: signUpData, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { emailRedirectTo: window.location.origin },
+      options: { emailRedirectTo },
     });
 
     if (error) {
@@ -135,9 +145,11 @@ const Signup = () => {
             variant="outline"
             className="w-full rounded-full font-cta font-semibold"
             onClick={async () => {
-              const { error } = await lovable.auth.signInWithOAuth("google", {
-                redirect_uri: window.location.origin,
-              });
+              const next = readSafeNext();
+              const redirect_uri = next
+                ? `${window.location.origin}/login?next=${encodeURIComponent(next)}`
+                : window.location.origin;
+              const { error } = await lovable.auth.signInWithOAuth("google", { redirect_uri });
               if (error) {
                 toast({ title: "Google sign-in failed", description: String(error), variant: "destructive" });
               }

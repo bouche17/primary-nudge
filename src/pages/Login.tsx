@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { lovable } from "@/integrations/lovable/index";
 import { useAuth } from "@/contexts/AuthContext";
 import { resolvePostAuthRoute } from "@/lib/postAuthRoute";
+import { readSafeNext } from "@/lib/safeNext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -21,6 +22,11 @@ const Login = () => {
 
   useEffect(() => {
     if (authLoading || !user) return;
+    const next = readSafeNext();
+    if (next) {
+      window.location.replace(next);
+      return;
+    }
     let cancelled = false;
     resolvePostAuthRoute(user.id).then((route) => {
       if (!cancelled) navigate(route);
@@ -42,10 +48,17 @@ const Login = () => {
       return;
     }
 
+    const next = readSafeNext();
+    if (next) {
+      window.location.replace(next);
+      return;
+    }
     const uid = data.user?.id;
     const route = uid ? await resolvePostAuthRoute(uid) : "/onboarding";
     navigate(route);
   };
+
+
 
 
   return (
@@ -90,9 +103,11 @@ const Login = () => {
             variant="outline"
             className="w-full rounded-full font-cta font-semibold"
             onClick={async () => {
-              const { error } = await lovable.auth.signInWithOAuth("google", {
-                redirect_uri: window.location.origin,
-              });
+              const next = readSafeNext();
+              const redirect_uri = next
+                ? `${window.location.origin}/login?next=${encodeURIComponent(next)}`
+                : window.location.origin;
+              const { error } = await lovable.auth.signInWithOAuth("google", { redirect_uri });
               if (error) {
                 toast({ title: "Google sign-in failed", description: String(error), variant: "destructive" });
               }
