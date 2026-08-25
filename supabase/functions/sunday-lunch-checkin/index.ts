@@ -184,7 +184,7 @@ Deno.serve(async (req: Request) => {
         }
 
         if (dayLines.length > 0) {
-          weeklyItems.push(`*${dayName}*\n${dayLines.map((l) => `  ${l}`).join("\n")}`);
+          weeklyItems.push(`${dayName}: ${dayLines.join(", ")}`);
         }
       }
 
@@ -197,7 +197,7 @@ Deno.serve(async (req: Request) => {
             : childNames.join(", ");
 
       const summary =
-        weeklyItems.length > 0 ? weeklyItems.join("\n\n") : "Nothing specific flagged — looks like a quiet week!";
+        weeklyItems.length > 0 ? weeklyItems.join(" • ") : "Nothing specific flagged — looks like a quiet week!";
 
       const result = await sendWhatsApp(phone_number, names, weekDates, summary);
 
