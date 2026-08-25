@@ -160,7 +160,6 @@ Deno.serve(async (req: Request) => {
         remindersByDay[rem.day_of_week].push(line);
       }
 
-
       const { data: notes } = await supabase
         .from("parent_notes")
         .select("summary, extracted_dates, child_name")
