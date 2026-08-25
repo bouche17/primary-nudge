@@ -42,10 +42,10 @@ function sanitiseForTwilio(text: string): string {
     .slice(0, 1024);
 }
 
-async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<boolean> {
+async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
     console.error("No TWILIO_SUNDAY_TEMPLATE_SID configured — refusing to send freeform.");
-    return false;
+    return { ok: false, status_code: 0, body: "No TWILIO_SUNDAY_TEMPLATE_SID configured" };
   }
 
   const contentVariables = JSON.stringify({
@@ -72,7 +72,7 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
   const responseBody = await res.text();
   console.log("Twilio response status:", res.status, "body:", responseBody);
   if (!res.ok) console.error("Twilio error:", responseBody);
-  return res.ok;
+  return { ok: res.ok, status_code: res.status, body: responseBody };
 }
 
 // Returns the Monday of the week AFTER next (two weeks out from "now"), giving
@@ -122,6 +122,7 @@ Deno.serve(async (req: Request) => {
     }
 
     let sentCount = 0;
+    const failures: { phone_number: string; status_code: number; body: string }[] = [];
 
     for (const profile of profiles) {
       const { user_id, phone_number } = profile;
@@ -198,19 +199,25 @@ Deno.serve(async (req: Request) => {
       const summary =
         weeklyItems.length > 0 ? weeklyItems.join("\n\n") : "Nothing specific flagged — looks like a quiet week!";
 
-      const ok = await sendWhatsApp(phone_number, names, weekDates, summary);
+      const result = await sendWhatsApp(phone_number, names, weekDates, summary);
 
-      if (ok) {
+      if (result.ok) {
         await supabase.from("lunch_checkin_log").insert({
           parent_id: user_id,
           week_start: weekStart,
         });
         sentCount++;
         console.log(`Sent Sunday summary to ${phone_number} for week ${weekStart}`);
+      } else {
+        failures.push({
+          phone_number,
+          status_code: result.status_code,
+          body: result.body,
+        });
       }
     }
 
-    return new Response(JSON.stringify({ success: true, sent: sentCount, week_start: weekStart }), {
+    return new Response(JSON.stringify({ success: true, sent: sentCount, week_start: weekStart, failures }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
