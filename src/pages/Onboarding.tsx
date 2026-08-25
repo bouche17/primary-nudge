@@ -438,7 +438,7 @@ const Onboarding = () => {
                 </Button>
                 <Button
                   onClick={finishOnboarding}
-                  disabled={children.length === 0 || saving}
+                  disabled={saving || (children.length === 0 && (!currentChild.first_name?.trim() || !currentChild.year_group))}
                   className="w-full rounded-full font-cta font-bold"
                 >
                   {saving ? "Saving…" : "Finish setup"}
