@@ -208,10 +208,8 @@ async function sendReminders(period: "morning" | "evening") {
 
   const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long" });
   const targetDateStr = targetDate.toISOString().split("T")[0];
-  const targetStart = `${targetDateStr}T00:00:00Z`;
-  const targetEnd = `${targetDateStr}T23:59:59Z`;
 
-  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id, year_group");
+  const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id");
 
   if (!children || children.length === 0) {
     console.log("No children registered yet");
