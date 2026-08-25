@@ -64,9 +64,13 @@ const Signup = () => {
     }
     setLoading(true);
     const next = readSafeNext();
-    const emailRedirectTo = next
-      ? `${window.location.origin}/login?next=${encodeURIComponent(next)}`
-      : window.location.origin;
+    const pendingToken = localStorage.getItem("pending_invite_token");
+    const emailRedirectTo = pendingToken
+      ? `${window.location.origin}/invite/${pendingToken}`
+      : next
+        ? `${window.location.origin}/login?next=${encodeURIComponent(next)}`
+        : window.location.origin;
+
     const { data: signUpData, error } = await supabase.auth.signUp({
       email,
       password,
