@@ -24,15 +24,15 @@ const corsHeaders = {
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
-// Matches the sanitisation used in send-reminders: Twilio ContentVariables can't
-// contain raw newlines (use \u2028) and curly quotes/em-dashes break JSON.
+// Matches the sanitisation used in send-reminders: preserve real newlines so
+// WhatsApp renders line breaks, collapse other whitespace runs, and strip
+// control chars / curly quotes / em-dashes that break JSON.
 function sanitiseForTwilio(text: string): string {
   return text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/\n/g, "\u2028")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S\u2028]+/g, " ")
+    .replace(/[^\S\n]+/g, " ")
     .replace(/\\/g, "")
     .replace(/'/g, "'")
     .replace(/'/g, "'")
@@ -110,11 +110,6 @@ Deno.serve(async (req: Request) => {
     const weekStart = targetMonday.toISOString().split("T")[0];
     const weekDates = formatWeekDates(targetMonday);
 
-    const weekStartDate = `${weekStart}T00:00:00Z`;
-    const friday = new Date(targetMonday);
-    friday.setDate(targetMonday.getDate() + 4);
-    const weekEndDate = `${friday.toISOString().split("T")[0]}T23:59:59Z`;
-
     const { data: profiles } = await supabase
       .from("profiles")
       .select("user_id, phone_number")
@@ -148,7 +143,6 @@ Deno.serve(async (req: Request) => {
       if (!children || children.length === 0) continue;
 
       const childIds = children.map((c: any) => c.id);
-      const schoolIds = [...new Set(children.map((c: any) => c.school_id).filter(Boolean))];
 
       const weeklyItems: string[] = [];
 
@@ -166,17 +160,6 @@ Deno.serve(async (req: Request) => {
         remindersByDay[rem.day_of_week].push(line);
       }
 
-      const { data: events } =
-        schoolIds.length > 0
-          ? await supabase
-              .from("school_events")
-              .select("title, start_at")
-              .in("school_id", schoolIds)
-              .gte("start_at", weekStartDate)
-              .lte("start_at", weekEndDate)
-              .order("start_at", { ascending: true })
-          : { data: [] };
-
       const { data: notes } = await supabase
         .from("parent_notes")
         .select("summary, extracted_dates, child_name")
@@ -189,13 +172,6 @@ Deno.serve(async (req: Request) => {
 
         if (remindersByDay[dayName]) {
           dayLines.push(...remindersByDay[dayName]);
-        }
-
-        for (const evt of events || []) {
-          const evtDate = evt.start_at.split("T")[0];
-          if (evtDate === dayDate) {
-            dayLines.push(`📅 ${evt.title}`);
-          }
         }
 
         for (const note of notes || []) {
