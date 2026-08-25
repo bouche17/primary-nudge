@@ -110,11 +110,6 @@ Deno.serve(async (req: Request) => {
     const weekStart = targetMonday.toISOString().split("T")[0];
     const weekDates = formatWeekDates(targetMonday);
 
-    const weekStartDate = `${weekStart}T00:00:00Z`;
-    const friday = new Date(targetMonday);
-    friday.setDate(targetMonday.getDate() + 4);
-    const weekEndDate = `${friday.toISOString().split("T")[0]}T23:59:59Z`;
-
     const { data: profiles } = await supabase
       .from("profiles")
       .select("user_id, phone_number")
@@ -148,7 +143,6 @@ Deno.serve(async (req: Request) => {
       if (!children || children.length === 0) continue;
 
       const childIds = children.map((c: any) => c.id);
-      const schoolIds = [...new Set(children.map((c: any) => c.school_id).filter(Boolean))];
 
       const weeklyItems: string[] = [];
 
