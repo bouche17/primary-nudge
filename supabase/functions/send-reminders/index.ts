@@ -69,9 +69,8 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   const sanitisedText = text
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
-    .replace(/\n/g, "\u2028")
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S]+/g, " ")
+    .replace(/[^\S\n]+/g, " ")
     .replace(/\\/g, "")
     .replace(/'/g, "'")
     .replace(/'/g, "'")
@@ -289,45 +288,6 @@ async function sendReminders(period: "morning" | "evening") {
     for (const child of familyChildren) {
       const schoolIds = [child.school_id].filter(Boolean);
 
-      const { data: events } = await supabase
-        .from("school_events")
-        .select("id, title, year_group")
-        .eq("school_id", child.school_id)
-        .gte("start_at", targetStart)
-        .lte("start_at", targetEnd);
-
-      const { data: exclusions } = await supabase
-        .from("event_exclusions")
-        .select("keyword")
-        .eq("child_id", child.id);
-      const exclusionKeywords = (exclusions || [])
-        .map((e: any) => (e.keyword || "").toLowerCase())
-        .filter(Boolean);
-
-      const eventTitlesForChild: string[] = [];
-      for (const evt of events || []) {
-        if (!isEventRelevantToChild(evt.year_group || "all", child.year_group || "")) continue;
-        const titleLower = (evt.title || "").toLowerCase();
-        if (exclusionKeywords.some((kw) => titleLower.includes(kw))) continue;
-
-        const refId = `event_${evt.id}_${child.id}_${period}`;
-        if (await alreadySent(anchorPhone, refId, period, today)) continue;
-        const cleanTitle = cleanEventTitle(evt.title);
-        eventTitlesForChild.push(cleanTitle);
-        reminderItems.push({
-          childName: child.first_name,
-          title: cleanTitle,
-          emoji: "📅",
-          type: "event",
-          refId,
-        });
-        refIdsToLog.push({ refId, title: cleanTitle, type: "event" });
-      }
-
-      const hasSwimmingEvent = eventTitlesForChild.some((t) =>
-        t.toLowerCase().includes("swimming")
-      );
-
       const { data: childReminders } = await supabase
         .from("child_reminders")
         .select("id, title, emoji, reminder_time")
@@ -338,8 +298,6 @@ async function sendReminders(period: "morning" | "evening") {
       for (const rem of childReminders || []) {
         const shouldSend = rem.reminder_time === "both" || rem.reminder_time === period;
         if (!shouldSend) continue;
-
-        if (hasSwimmingEvent && rem.title.toLowerCase().includes("swimming")) continue;
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
