@@ -24,15 +24,13 @@ const corsHeaders = {
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
-// Matches the sanitisation used in send-reminders: preserve real newlines so
-// WhatsApp renders line breaks, collapse other whitespace runs, and strip
-// control chars / curly quotes / em-dashes that break JSON.
+// Twilio Content Variables reject literal newlines (error 21656), so any line
+// breaks coming from parent notes or reminder titles are collapsed to spaces.
+// Also strips control chars / curly quotes / em-dashes that break JSON.
 function sanitiseForTwilio(text: string): string {
   return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S\n]+/g, " ")
+    .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
     .replace(/\\/g, "")
     .replace(/'/g, "'")
     .replace(/'/g, "'")
@@ -41,6 +39,7 @@ function sanitiseForTwilio(text: string): string {
     .trim()
     .slice(0, 1024);
 }
+
 
 async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
