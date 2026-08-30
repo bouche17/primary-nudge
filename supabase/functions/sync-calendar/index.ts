@@ -69,7 +69,7 @@ const CLASS_NAME_MAP: Record<string, string | null> = {
   "custom4": "Year 4",
   "custom5": "Year 5",
   "custom6": "Year 6",
-  "customstaff": null, // skip staff events
+  "customstaff": "all", // whole-school events (Inset Day, closures, term dates)
   "multi_3_4": "Year 3,Year 4",
   "multi_5_6": "Year 5,Year 6",
   "multi_3_4_5": "Year 3,Year 4,Year 5",
