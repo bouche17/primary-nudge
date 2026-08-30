@@ -565,14 +565,27 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
-    // Work out the Monday of the upcoming week
-    const now = new Date();
-    const day = now.getDay();
-    const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
-    const monday = new Date(now);
-    monday.setDate(now.getDate() + daysUntilMonday);
-    monday.setHours(0, 0, 0, 0);
-    const weekStart = monday.toISOString().split("T")[0];
+    // Prefer an explicit week_start from the AI (must be a valid Monday), else
+    // fall back to the Monday of the upcoming week.
+    let weekStart: string | null = null;
+    const provided = typeof toolArgs.week_start === "string" ? toolArgs.week_start.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(provided)) {
+      const parsed = new Date(`${provided}T12:00:00Z`);
+      if (!isNaN(parsed.getTime()) && parsed.getUTCDay() === 1) {
+        weekStart = provided;
+      }
+    }
+
+    if (!weekStart) {
+      const now = new Date();
+      const day = now.getDay();
+      const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+      const monday = new Date(now);
+      monday.setDate(now.getDate() + daysUntilMonday);
+      monday.setHours(0, 0, 0, 0);
+      weekStart = monday.toISOString().split("T")[0];
+    }
+
 
     const { error } = await supabase
       .from("weekly_lunch_plans")
