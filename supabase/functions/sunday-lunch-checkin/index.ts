@@ -1,6 +1,6 @@
 // sunday-lunch-checkin/index.ts
 // Runs every Sunday evening (5pm UTC / 6pm BST)
-// Sends the "week after next" ahead summary + packed lunch check-in via the
+// Sends the upcoming week's ahead summary + packed lunch check-in via the
 // approved monty_sunday_evening Content Template (3 variables: names, week
 // dates, weekly summary — lunch question/examples are fixed template text).
 // Triggered by pg_cron: 0 17 * * 0
@@ -74,15 +74,14 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
   return { ok: res.ok, status_code: res.status, body: responseBody };
 }
 
-// Returns the Monday of the week AFTER next (two weeks out from "now"), giving
-// parents runway to plan packed lunches and submit Arbor meal choices ahead of
-// the deadline, rather than only previewing the immediate upcoming week.
-function getWeekAfterNextMonday(): Date {
+// Returns the Monday of the upcoming week (the Monday immediately following
+// the current date), so the Sunday evening check-in previews the week ahead.
+function getNextMonday(): Date {
   const now = new Date();
   const day = now.getDay();
   const daysUntilNextMonday = day === 0 ? 1 : 8 - day;
   const monday = new Date(now);
-  monday.setDate(now.getDate() + daysUntilNextMonday + 7);
+  monday.setDate(now.getDate() + daysUntilNextMonday);
   monday.setHours(0, 0, 0, 0);
   return monday;
 }
@@ -105,7 +104,7 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const targetMonday = getWeekAfterNextMonday();
+    const targetMonday = getNextMonday();
     const weekStart = targetMonday.toISOString().split("T")[0];
     const weekDates = formatWeekDates(targetMonday);
 
