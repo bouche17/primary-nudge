@@ -271,7 +271,10 @@ Example: Parent says "Jude has PE on Mondays" → save it → reply "Done! 👟 
 
 ## When a parent responds to the Sunday lunch check-in
 Use the save_weekly_lunch_plan tool for each child they mention. Save even if they say "school dinners all week" (just save an empty array for packed_lunch_days).
+IMPORTANT — which week: look back in the conversation history at Monty's own check-in message and find the date range it mentioned (e.g. "this week (7 Sept-11 Sept)"). Work out the Monday of that range and pass it as week_start in YYYY-MM-DD form. The check-in is usually about the week AFTER next, so never assume it means next week.
+If the parent is just telling you about packed lunches spontaneously (not replying to a check-in), omit week_start entirely so it defaults to the nearest upcoming week.
 Example: "Jude needs one Monday and Wednesday, Harry every day" → save Jude: [Monday, Wednesday], Harry: [Monday, Tuesday, Wednesday, Thursday, Friday]
+
 
 ## When a parent tells you about a school event or date
 Use the save_parent_note tool to save it so they get a reminder when it comes around.
@@ -372,8 +375,13 @@ const tools = [
           },
           description: "Which days this child needs a packed lunch. Empty array means school dinners all week.",
         },
+        week_start: {
+          type: "string",
+          description: "Optional ISO date (YYYY-MM-DD) of the MONDAY of the week this plan is for. Use this when the parent is replying to a Sunday check-in that named a specific date range — pass the Monday of that range. Omit for spontaneous messages so the nearest upcoming week is used.",
+        },
       },
       required: ["child_name", "packed_lunch_days"],
+
     },
   },
   {
@@ -565,14 +573,27 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
-    // Work out the Monday of the upcoming week
-    const now = new Date();
-    const day = now.getDay();
-    const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
-    const monday = new Date(now);
-    monday.setDate(now.getDate() + daysUntilMonday);
-    monday.setHours(0, 0, 0, 0);
-    const weekStart = monday.toISOString().split("T")[0];
+    // Prefer an explicit week_start from the AI (must be a valid Monday), else
+    // fall back to the Monday of the upcoming week.
+    let weekStart: string | null = null;
+    const provided = typeof toolArgs.week_start === "string" ? toolArgs.week_start.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(provided)) {
+      const parsed = new Date(`${provided}T12:00:00Z`);
+      if (!isNaN(parsed.getTime()) && parsed.getUTCDay() === 1) {
+        weekStart = provided;
+      }
+    }
+
+    if (!weekStart) {
+      const now = new Date();
+      const day = now.getDay();
+      const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
+      const monday = new Date(now);
+      monday.setDate(now.getDate() + daysUntilMonday);
+      monday.setHours(0, 0, 0, 0);
+      weekStart = monday.toISOString().split("T")[0];
+    }
+
 
     const { error } = await supabase
       .from("weekly_lunch_plans")
