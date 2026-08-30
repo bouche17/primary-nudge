@@ -302,6 +302,7 @@ Deno.serve(async (req: Request) => {
     }
 
     let totalSynced = 0;
+    const allDebug: DebugEvent[] = [];
 
     for (const feed of feeds) {
       try {
@@ -325,7 +326,9 @@ Deno.serve(async (req: Request) => {
             continue;
           }
           const html = await res.text();
-          events = parseFullCalendarHtml(html);
+          const parsed = parseFullCalendarHtml(html);
+          events = parsed.events;
+          allDebug.push(...parsed.debug);
         } else if (feed.feed_type === "scrape") {
           events = await scrapeAndExtract(feed.feed_url);
         } else {
@@ -383,7 +386,10 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ message: `Synced ${totalSynced} events from ${feeds.length} feeds` }),
+      JSON.stringify({
+        message: `Synced ${totalSynced} events from ${feeds.length} feeds`,
+        debug: allDebug,
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
