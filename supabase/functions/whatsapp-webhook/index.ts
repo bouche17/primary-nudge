@@ -372,8 +372,13 @@ const tools = [
           },
           description: "Which days this child needs a packed lunch. Empty array means school dinners all week.",
         },
+        week_start: {
+          type: "string",
+          description: "Optional ISO date (YYYY-MM-DD) of the MONDAY of the week this plan is for. Use this when the parent is replying to a Sunday check-in that named a specific date range — pass the Monday of that range. Omit for spontaneous messages so the nearest upcoming week is used.",
+        },
       },
       required: ["child_name", "packed_lunch_days"],
+
     },
   },
   {
