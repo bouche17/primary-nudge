@@ -104,7 +104,13 @@ interface FullCalEvent {
   yearGroup: string;
 }
 
-function parseFullCalendarHtml(html: string): FullCalEvent[] {
+interface DebugEvent {
+  title: string;
+  className: string;
+  mapped: string | "SKIPPED";
+}
+
+function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: DebugEvent[] } {
   // Find the NON-empty events array — the page has an empty one first, then the real data
   const matches = [...html.matchAll(/events\s*:\s*(\[[\s\S]*?\])\s*[,}]/g)];
   let arrStr = "";
@@ -116,7 +122,7 @@ function parseFullCalendarHtml(html: string): FullCalEvent[] {
   }
   if (!arrStr) {
     console.error("Could not find non-empty fullCalendar events array in HTML");
-    return [];
+    return { events: [], debug: [] };
   }
 
   let eventsRaw: any[];
@@ -124,16 +130,29 @@ function parseFullCalendarHtml(html: string): FullCalEvent[] {
     eventsRaw = JSON.parse(arrStr);
   } catch (e) {
     console.error("Failed to parse fullCalendar events JSON:", e);
-    return [];
+    return { events: [], debug: [] };
   }
 
   console.log(`Extracted ${eventsRaw.length} raw events from fullCalendar JS`);
 
   const results: FullCalEvent[] = [];
+  const debug: DebugEvent[] = [];
+  const keywordRegex = /inset|opens|closed|holiday|term/i;
+
   for (let i = 0; i < eventsRaw.length; i++) {
     const e = eventsRaw[i];
     const cls = e.className || "";
     const mapped = CLASS_NAME_MAP.hasOwnProperty(cls) ? CLASS_NAME_MAP[cls] : "all";
+
+    const title = e.title || "Untitled";
+    if (keywordRegex.test(title)) {
+      console.log(`[sync-calendar debug] title="${title}" className="${cls}" mapped=${mapped === null ? "SKIPPED" : mapped}`);
+      debug.push({
+        title,
+        className: cls,
+        mapped: mapped === null ? "SKIPPED" : mapped,
+      });
+    }
 
     // null means skip (staff events)
     if (mapped === null) continue;
@@ -142,7 +161,7 @@ function parseFullCalendarHtml(html: string): FullCalEvent[] {
 
     results.push({
       uid: `fullcal-${i}-${e.start || Date.now()}`,
-      title: e.title || "Untitled",
+      title,
       description: "",
       location: "",
       startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
@@ -153,7 +172,7 @@ function parseFullCalendarHtml(html: string): FullCalEvent[] {
   }
 
   console.log(`After filtering staff events: ${results.length} events`);
-  return results;
+  return { events: results, debug };
 }
 
 // ── HTML scraper + AI extraction ─────────────────────────────
@@ -283,6 +302,7 @@ Deno.serve(async (req: Request) => {
     }
 
     let totalSynced = 0;
+    const allDebug: DebugEvent[] = [];
 
     for (const feed of feeds) {
       try {
@@ -306,7 +326,9 @@ Deno.serve(async (req: Request) => {
             continue;
           }
           const html = await res.text();
-          events = parseFullCalendarHtml(html);
+          const parsed = parseFullCalendarHtml(html);
+          events = parsed.events;
+          allDebug.push(...parsed.debug);
         } else if (feed.feed_type === "scrape") {
           events = await scrapeAndExtract(feed.feed_url);
         } else {
@@ -364,7 +386,10 @@ Deno.serve(async (req: Request) => {
     }
 
     return new Response(
-      JSON.stringify({ message: `Synced ${totalSynced} events from ${feeds.length} feeds` }),
+      JSON.stringify({
+        message: `Synced ${totalSynced} events from ${feeds.length} feeds`,
+        debug: allDebug,
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
