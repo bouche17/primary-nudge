@@ -346,7 +346,8 @@ async function sendReminders(period: "morning" | "evening") {
         .select("id, title, emoji")
         .eq("active", true)
         .or(schoolIdFilter)
-        .eq("day_of_week", targetDay);
+        .or(`day_of_week.eq.${targetDay},due_date.eq.${targetDateStr}`);
+
 
       for (const rem of schoolReminders || []) {
         const refId = `reminder_${rem.id}_${child.id}_${targetDateStr}_${period}`;
