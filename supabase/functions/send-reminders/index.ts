@@ -105,6 +105,21 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   const responseBody = await res.text();
   console.log('Twilio response body:', responseBody);
 
+  if (!res.ok) {
+    try {
+      await supabase.from("message_send_failures").insert({
+        function_name: "send-reminders",
+        phone_number: to,
+        period,
+        status_code: res.status,
+        error_body: responseBody,
+        context: `Template SID: ${templateSid}`,
+      });
+    } catch (logError) {
+      console.error("Failed to log message send failure:", logError);
+    }
+  }
+
   return res.ok;
 }
 

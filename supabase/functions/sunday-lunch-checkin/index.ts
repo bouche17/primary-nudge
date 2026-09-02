@@ -72,7 +72,21 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
 
   const responseBody = await res.text();
   console.log("Twilio response status:", res.status, "body:", responseBody);
-  if (!res.ok) console.error("Twilio error:", responseBody);
+  if (!res.ok) {
+    console.error("Twilio error:", responseBody);
+    try {
+      await supabase.from("message_send_failures").insert({
+        function_name: "sunday-lunch-checkin",
+        phone_number: to,
+        period: null,
+        status_code: res.status,
+        error_body: responseBody,
+        context: `Template SID: ${TWILIO_SUNDAY_TEMPLATE_SID}; summary: ${summary.slice(0, 80)}`,
+      });
+    } catch (logError) {
+      console.error("Failed to log message send failure:", logError);
+    }
+  }
   return { ok: res.ok, status_code: res.status, body: responseBody };
 }
 

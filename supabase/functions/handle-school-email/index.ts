@@ -88,7 +88,22 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
     body: params.toString(),
   });
 
-  console.log("Twilio status:", res.status, await res.text());
+  const responseBody = await res.text();
+  console.log("Twilio status:", res.status, responseBody);
+  if (!res.ok) {
+    try {
+      await supabase.from("message_send_failures").insert({
+        function_name: "handle-school-email",
+        phone_number: to,
+        period: null,
+        status_code: res.status,
+        error_body: responseBody,
+        context: `Template SID: ${TWILIO_SCHOOL_NOTIFICATION_SID}`,
+      });
+    } catch (logError) {
+      console.error("Failed to log message send failure:", logError);
+    }
+  }
   return res.ok;
 }
 
