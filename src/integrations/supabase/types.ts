@@ -287,6 +287,39 @@ export type Database = {
         }
         Relationships: []
       }
+      message_send_failures: {
+        Row: {
+          context: string | null
+          created_at: string
+          error_body: string | null
+          function_name: string
+          id: string
+          period: string | null
+          phone_number: string | null
+          status_code: number | null
+        }
+        Insert: {
+          context?: string | null
+          created_at?: string
+          error_body?: string | null
+          function_name: string
+          id?: string
+          period?: string | null
+          phone_number?: string | null
+          status_code?: number | null
+        }
+        Update: {
+          context?: string | null
+          created_at?: string
+          error_body?: string | null
+          function_name?: string
+          id?: string
+          period?: string | null
+          phone_number?: string | null
+          status_code?: number | null
+        }
+        Relationships: []
+      }
       messages: {
         Row: {
           content: string
