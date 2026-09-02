@@ -69,10 +69,8 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   console.log('Sending to:', to, 'templateSid:', templateSid);
 
   const sanitisedText = text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S\n]+/g, " ")
+    .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
     .replace(/\\/g, "")
     .replace(/'/g, "'")
     .replace(/'/g, "'")
@@ -172,7 +170,7 @@ function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "ev
       const merged: ReminderItem = { ...item, childName: joinNames(names) };
       return buildItemLine(merged, period);
     })
-    .join("\n");
+    .join(" | ");
 }
 
 function buildItemLine(item: ReminderItem, period: "morning" | "evening"): string {
