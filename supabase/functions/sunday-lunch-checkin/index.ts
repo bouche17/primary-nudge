@@ -108,6 +108,16 @@ Deno.serve(async (req: Request) => {
     const weekStart = targetMonday.toISOString().split("T")[0];
     const weekDates = formatWeekDates(targetMonday);
 
+    const { data: allChildren } = await supabase
+      .from("children")
+      .select("id, first_name, year_group, school_id, parent_id");
+
+    if (!allChildren || allChildren.length === 0) {
+      return new Response(JSON.stringify({ message: "No children found" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const { data: profiles } = await supabase
       .from("profiles")
       .select("user_id, phone_number")
@@ -119,27 +129,72 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    const phoneByUser = new Map(profiles.map((p: any) => [p.user_id, p.phone_number as string]));
+
+    const { data: linkedAccounts } = await supabase
+      .from("linked_accounts")
+      .select("primary_user_id, linked_user_id")
+      .eq("status", "accepted");
+
+    // ── Union-find family grouping (same approach as send-reminders) ──────────
+    const familyOf = new Map<string, string>();
+    const find = (u: string): string => {
+      const p = familyOf.get(u);
+      if (!p || p === u) return u;
+      const root = find(p);
+      familyOf.set(u, root);
+      return root;
+    };
+    const union = (a: string, b: string) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) familyOf.set(rb, ra);
+    };
+    for (const c of allChildren) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
+    for (const p of profiles) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
+    for (const link of linkedAccounts || []) {
+      if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+      if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+      union(link.primary_user_id, link.linked_user_id);
+    }
+
+    const childrenByFamily = new Map<string, typeof allChildren>();
+    for (const child of allChildren) {
+      const fam = find(child.parent_id);
+      if (!childrenByFamily.has(fam)) childrenByFamily.set(fam, []);
+      childrenByFamily.get(fam)!.push(child);
+    }
+
+    const phonesByFamily = new Map<string, Set<string>>();
+    const membersByFamily = new Map<string, string[]>();
+    for (const userId of new Set<string>([...familyOf.keys()])) {
+      const fam = find(userId);
+      if (!membersByFamily.has(fam)) membersByFamily.set(fam, []);
+      membersByFamily.get(fam)!.push(userId);
+      const phone = phoneByUser.get(userId);
+      if (!phone) continue;
+      if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+      phonesByFamily.get(fam)!.add(phone);
+    }
+
     let sentCount = 0;
     const failures: { phone_number: string; status_code: number; body: string }[] = [];
 
-    for (const profile of profiles) {
-      const { user_id, phone_number } = profile;
+    for (const [familyId, children] of childrenByFamily) {
+      const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
+      if (familyPhones.length === 0) continue;
+
+      const familyMembers = membersByFamily.get(familyId) || [familyId];
+      const anchorUserId = familyId;
 
       const { data: existing } = await supabase
         .from("lunch_checkin_log")
         .select("id")
-        .eq("parent_id", user_id)
+        .in("parent_id", familyMembers)
         .eq("week_start", weekStart)
-        .maybeSingle();
+        .limit(1);
 
-      if (existing) continue;
-
-      const { data: children } = await supabase
-        .from("children")
-        .select("id, first_name, year_group, school_id")
-        .eq("parent_id", user_id);
-
-      if (!children || children.length === 0) continue;
+      if (existing && existing.length > 0) continue;
 
       const childIds = children.map((c: any) => c.id);
 
@@ -162,7 +217,7 @@ Deno.serve(async (req: Request) => {
       const { data: notes } = await supabase
         .from("parent_notes")
         .select("summary, extracted_dates, child_name")
-        .eq("phone_number", phone_number);
+        .in("phone_number", familyPhones);
 
       for (let i = 0; i < 5; i++) {
         const dayName = DAYS[i];
@@ -173,12 +228,16 @@ Deno.serve(async (req: Request) => {
           dayLines.push(...remindersByDay[dayName]);
         }
 
+        const seen = new Set<string>();
         for (const note of notes || []) {
           if (!note.extracted_dates) continue;
           const dates = note.extracted_dates as Array<{ date: string }>;
           if (!dates.some((d) => d.date === dayDate)) continue;
           const prefix = note.child_name ? `${note.child_name}: ` : "";
-          dayLines.push(`📝 ${prefix}${note.summary}`);
+          const line = `📝 ${prefix}${note.summary}`;
+          if (seen.has(line)) continue;
+          seen.add(line);
+          dayLines.push(line);
         }
 
         if (dayLines.length > 0) {
@@ -186,7 +245,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      const childNames = children.map((c: any) => c.first_name);
+      const childNames = Array.from(new Set(children.map((c: any) => c.first_name)));
       const names =
         childNames.length === 1
           ? childNames[0]
@@ -197,23 +256,31 @@ Deno.serve(async (req: Request) => {
       const summary =
         weeklyItems.length > 0 ? weeklyItems.join(" | ") : "Nothing specific flagged — looks like a quiet week!";
 
-      const result = await sendWhatsApp(phone_number, names, weekDates, summary);
+      let anySent = false;
+      for (const phone_number of familyPhones) {
+        const result = await sendWhatsApp(phone_number, names, weekDates, summary);
 
-      if (result.ok) {
+        if (result.ok) {
+          anySent = true;
+          sentCount++;
+          console.log(`Sent Sunday summary to ${phone_number} for week ${weekStart}`);
+        } else {
+          failures.push({
+            phone_number,
+            status_code: result.status_code,
+            body: result.body,
+          });
+        }
+      }
+
+      if (anySent) {
         await supabase.from("lunch_checkin_log").insert({
-          parent_id: user_id,
+          parent_id: anchorUserId,
           week_start: weekStart,
-        });
-        sentCount++;
-        console.log(`Sent Sunday summary to ${phone_number} for week ${weekStart}`);
-      } else {
-        failures.push({
-          phone_number,
-          status_code: result.status_code,
-          body: result.body,
         });
       }
     }
+
 
     return new Response(JSON.stringify({ success: true, sent: sentCount, week_start: weekStart, failures }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
