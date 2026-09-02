@@ -62,8 +62,8 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   const sanitisedText = text
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/[^\S\n]+/g, " ")
+    .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, 1024);
 
@@ -144,7 +144,7 @@ Deno.serve(async (req: Request) => {
     // Build the message
     let message = extracted.summary;
     if (extracted.actionRequired) {
-      message += "\n\nAction needed: " + extracted.actionRequired;
+      message += " — Action needed: " + extracted.actionRequired;
     }
 
     // Send to all relevant parents
