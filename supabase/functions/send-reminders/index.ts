@@ -23,7 +23,7 @@ interface ReminderItem {
   childName: string;
   title: string;
   emoji: string;
-  type: "reminder" | "event" | "note";
+  type: "reminder" | "event" | "note" | "announcement";
   refId: string;
 }
 
@@ -179,6 +179,10 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
   const plural = isPluralSubject(childName);
   const hasHave = plural ? "have" : "has";
   const needsNeed = plural ? "need" : "needs";
+
+  if (type === "announcement") {
+    return `${emoji} ${title}`;
+  }
 
   if (type === "event") {
     return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
@@ -356,7 +360,7 @@ async function sendReminders(period: "morning" | "evening") {
           childName: child.first_name,
           title: rem.title,
           emoji: rem.emoji || "✅",
-          type: "reminder",
+          type: "announcement",
           refId,
         });
         refIdsToLog.push({ refId, title: rem.title, type: "weekly" });
