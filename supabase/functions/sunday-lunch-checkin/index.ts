@@ -17,6 +17,8 @@ const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 const TWILIO_SUNDAY_TEMPLATE_SID =
   Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
 
+const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -104,6 +106,13 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
+    const url = new URL(req.url);
+    const testMode = url.searchParams.get("test") === "true";
+
+    if (testMode) {
+      console.log(`[sunday-lunch-checkin] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    }
+
     const targetMonday = getNextMonday();
     const weekStart = targetMonday.toISOString().split("T")[0];
     const weekDates = formatWeekDates(targetMonday);
@@ -183,6 +192,11 @@ Deno.serve(async (req: Request) => {
     for (const [familyId, children] of childrenByFamily) {
       const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
       if (familyPhones.length === 0) continue;
+
+      if (testMode && !familyPhones.includes(TEST_PHONE_NUMBER)) {
+        console.log(`[sunday-lunch-checkin] Test mode: skipping family ${familyId} — test number not in family phones`);
+        continue;
+      }
 
       const familyMembers = membersByFamily.get(familyId) || [familyId];
       const anchorUserId = familyId;
@@ -282,7 +296,7 @@ Deno.serve(async (req: Request) => {
     }
 
 
-    return new Response(JSON.stringify({ success: true, sent: sentCount, week_start: weekStart, failures }), {
+    return new Response(JSON.stringify({ success: true, sent: sentCount, week_start: weekStart, failures, test_mode: testMode }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

@@ -8,6 +8,8 @@ const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX63040a55daeb8ef0673b8a1a156ad9a9";
 
+const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -94,7 +96,12 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { from, subject, rawEmail } = await req.json();
+    const { from, subject, rawEmail, test } = await req.json();
+    const testMode = test === true;
+
+    if (testMode) {
+      console.log(`[handle-school-email] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    }
 
     console.log(`Received email from ${from}, subject: ${subject}`);
 
@@ -129,11 +136,17 @@ Deno.serve(async (req: Request) => {
     const parentIds = [...new Set(relevantChildren.map((c: any) => c.parent_id))];
 
     // Get phone numbers for these parents
-    const { data: profiles } = await supabase
+    let { data: profiles } = await supabase
       .from("profiles")
       .select("user_id, phone_number")
       .in("user_id", parentIds)
       .not("phone_number", "is", null);
+
+    if (testMode && profiles) {
+      const beforeCount = profiles.length;
+      profiles = profiles.filter((p: any) => p.phone_number === TEST_PHONE_NUMBER);
+      console.log(`[handle-school-email] Test mode: filtered ${beforeCount} profiles down to ${profiles.length} test recipient(s)`);
+    }
 
     if (!profiles || profiles.length === 0) {
       return new Response(JSON.stringify({ message: "No parent phone numbers found" }), {
@@ -157,7 +170,7 @@ Deno.serve(async (req: Request) => {
 
     console.log(`Sent to ${sentCount} parents for year groups: ${extracted.yearGroups.join(", ")}`);
 
-    return new Response(JSON.stringify({ success: true, sent: sentCount, extracted }), {
+    return new Response(JSON.stringify({ success: true, sent: sentCount, extracted, test_mode: testMode }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 
