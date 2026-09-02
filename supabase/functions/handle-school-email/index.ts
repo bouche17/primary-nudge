@@ -39,6 +39,8 @@ Return this exact JSON structure:
 }
 
 For yearGroups, use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
+
+Many school emails combine a universal requirement (applies to every child, no exceptions — phrases like "all children", "all pupils", "whether they...", or a deadline/action that doesn't exclude any year group) with year-specific extras (like optional clubs only open to certain years). When this happens, yearGroups should be set to ["all"] — since the universal requirement means every family needs to see the message, even if some content like a specific club doesn't apply to them. Only use specific year groups (not "all") when the ENTIRE email is restricted to those years with no whole-school component at all.
 Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
