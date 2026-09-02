@@ -262,6 +262,9 @@ ${childRemindersSummary}
 ## School-wide recurring reminders
 ${schoolRemindersSummary}
 
+## When a parent asks to be reminded about something already covered above
+If a parent's request matches an item in the School-wide recurring reminders list (for example, they ask you to remind them about PE kit, swimming, or another recurring item that is already listed), do NOT create a new personal reminder or note. Instead, reply conversationally that it's already covered by the existing school-wide reminder, mentioning which day it recurs on. Only create a new personal reminder or note if their request is genuinely different from anything already listed above.
+
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
 
