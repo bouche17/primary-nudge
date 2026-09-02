@@ -12,6 +12,8 @@ const TWILIO_MORNING_TEMPLATE_SID =
 const TWILIO_EVENING_TEMPLATE_SID =
   Deno.env.get("TWILIO_EVENING_TEMPLATE_SID") || "HX34dd3ddbd9353dc3eeb09bdce3f13d0a";
 
+const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -203,7 +205,7 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
 
 // ── Main send logic ───────────────────────────────────────────────────────────
 
-async function sendReminders(period: "morning" | "evening") {
+async function sendReminders(period: "morning" | "evening", testMode: boolean = false) {
   const now = new Date();
   const today = now.toISOString().split("T")[0];
 
@@ -281,6 +283,11 @@ async function sendReminders(period: "morning" | "evening") {
   for (const [familyId, familyChildren] of childrenByFamily) {
     const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
     if (familyPhones.length === 0) continue;
+
+    if (testMode && !familyPhones.includes(TEST_PHONE_NUMBER)) {
+      console.log(`[${period}] Test mode: skipping family ${familyId} — test number not in family phones`);
+      continue;
+    }
 
     const anchorPhone = familyPhones[0];
 
@@ -426,6 +433,11 @@ Deno.serve(async (req: Request) => {
   try {
     const url = new URL(req.url);
     let period = url.searchParams.get("period") as "evening" | "morning" | null;
+    const testMode = url.searchParams.get("test") === "true";
+
+    if (testMode) {
+      console.log(`[send-reminders] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    }
 
     if (!period) {
       const hour = new Date().getUTCHours();
@@ -445,15 +457,15 @@ Deno.serve(async (req: Request) => {
         `Reminders paused for school holiday (today ${todayUK} < resume ${RESUME_DATE}) - skipping.`
       );
       return new Response(
-        JSON.stringify({ skipped: true, reason: "holiday_pause", today: todayUK, resume: RESUME_DATE }),
+        JSON.stringify({ skipped: true, reason: "holiday_pause", today: todayUK, resume: RESUME_DATE, test_mode: testMode }),
         { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
     // --------------------------------------------------------------------------
 
-    await sendReminders(period);
+    await sendReminders(period, testMode);
 
-    return new Response(JSON.stringify({ success: true, period }), {
+    return new Response(JSON.stringify({ success: true, period, test_mode: testMode }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
