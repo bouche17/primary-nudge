@@ -184,6 +184,9 @@ Deno.serve(async (req: Request) => {
     if (extracted.actionRequired) {
       message += " — Action needed: " + extracted.actionRequired;
     }
+    if (extracted.links && extracted.links.length > 0) {
+      message += " " + extracted.links.join(" ");
+    }
 
     // Send to all relevant parents
     let sentCount = 0;
