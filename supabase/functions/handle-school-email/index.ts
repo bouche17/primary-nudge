@@ -20,6 +20,7 @@ async function extractEmailInfo(subject: string, body: string): Promise<{
   yearGroups: string[];
   dates: string[];
   actionRequired: string | null;
+  links: string[];
 }> {
   const prompt = `You are processing a school email from Dean Valley Community Primary School sent via Arbor.
 
