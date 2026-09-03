@@ -416,21 +416,21 @@ async function executeTool(
       return `Could not find child named ${toolArgs.child_name}`;
     }
 
-    // Check if reminder already exists for this child/day/title
+    // Check if reminder already exists for this child/title (day can change)
     const { data: existing } = await supabase
       .from("child_reminders")
       .select("id")
       .eq("child_id", child.id)
-      .eq("day_of_week", toolArgs.day_of_week)
       .eq("title", toolArgs.title)
       .maybeSingle();
 
     if (existing) {
-      // Update existing
+      // Update existing — including day_of_week in case it changed
       await supabase
         .from("child_reminders")
         .update({
           emoji: toolArgs.emoji,
+          day_of_week: toolArgs.day_of_week,
           reminder_time: toolArgs.reminder_time,
           active: true,
         })
