@@ -20,6 +20,7 @@ async function extractEmailInfo(subject: string, body: string): Promise<{
   yearGroups: string[];
   dates: string[];
   actionRequired: string | null;
+  links: string[];
 }> {
   const prompt = `You are processing a school email from Dean Valley Community Primary School sent via Arbor.
 
@@ -32,11 +33,18 @@ ${body}
 
 Return this exact JSON structure:
 {
-  "summary": "A concise one or two sentence summary of what this email is about",
+  "summary": "A concise summary of what this email is about",
   "yearGroups": ["list of year groups mentioned, e.g. Year 1, Year 2, or all if whole school"],
   "dates": ["list of dates mentioned in YYYY-MM-DD format"],
-  "actionRequired": "what parents need to do, or null if no action needed"
+  "actionRequired": "what parents need to do, or null if no action needed",
+  "links": ["every URL mentioned in the email body, preserved exactly as written"]
 }
+
+Distinguish two email types when writing the summary and actionRequired:
+(a) Deadline-driven / mandatory-action emails (e.g. payment deadlines, forms everyone must complete, final consent dates). Keep the summary tight and direct, and make actionRequired clear and compulsory-sounding.
+(b) Informational / awareness emails (e.g. club or tournament announcements, general updates, optional activities, no universal mandatory deadline). Write a fuller summary of up to 3-4 sentences that preserves actual details and any per-year-group nuance (e.g. different cohorts joining at different times, selection being performance-based). For this type, only set actionRequired if there is a specific, universal action every relevant parent must take. If the "action" is really an optional or self-selecting invitation (like volunteering for a role, signing up to a club only if interested), describe it inside the summary instead of actionRequired so it does not read as mandatory.
+
+Extract every URL mentioned in the email body (e.g. Google Forms, Microsoft Forms, payment portals, sign-up links) and preserve each link exactly as written, never summarised, shortened, or omitted. Put them in the links array.
 
 For yearGroups, use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
 
@@ -175,6 +183,9 @@ Deno.serve(async (req: Request) => {
     let message = extracted.summary;
     if (extracted.actionRequired) {
       message += " — Action needed: " + extracted.actionRequired;
+    }
+    if (extracted.links && extracted.links.length > 0) {
+      message += " " + extracted.links.join(" ");
     }
 
     // Send to all relevant parents
