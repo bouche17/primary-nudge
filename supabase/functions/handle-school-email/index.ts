@@ -220,6 +220,12 @@ Deno.serve(async (req: Request) => {
       console.log(`[handle-school-email] Test mode: filtered ${beforeCount} recipients down to ${phones.length} test recipient(s)`);
     }
 
+    if (catchUpPhone) {
+      const beforeCount = phones.length;
+      phones = phones.filter((p) => p === catchUpPhone);
+      console.log(`[handle-school-email] Catch-up mode: filtered ${beforeCount} recipients down to ${phones.length} recipient(s)`);
+    }
+
     if (phones.length === 0) {
       return new Response(JSON.stringify({ message: "No parent phone numbers found" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
