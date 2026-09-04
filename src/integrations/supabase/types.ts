@@ -769,6 +769,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      rollover_year_groups: { Args: never; Returns: undefined }
       test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }
     Enums: {
