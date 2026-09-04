@@ -121,11 +121,15 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { from, subject, rawEmail, test } = await req.json();
+    const { from, subject, rawEmail, test, only_phone } = await req.json();
     const testMode = test === true;
+    const catchUpPhone = typeof only_phone === "string" ? only_phone.trim() : null;
 
     if (testMode) {
       console.log(`[handle-school-email] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    }
+    if (catchUpPhone) {
+      console.log(`[handle-school-email] CATCH-UP MODE active — only ${catchUpPhone} will receive messages`);
     }
 
     console.log(`Received email from ${from}, subject: ${subject}`);
