@@ -157,23 +157,66 @@ Deno.serve(async (req: Request) => {
           )
         );
 
-    // Get unique parent IDs
+    // Get unique parent IDs of relevant children
     const parentIds = [...new Set(relevantChildren.map((c: any) => c.parent_id))];
 
-    // Get phone numbers for these parents
-    let { data: profiles } = await supabase
+    // Fetch all phone-bearing profiles and accepted links for family resolution
+    const { data: allProfiles } = await supabase
       .from("profiles")
       .select("user_id, phone_number")
-      .in("user_id", parentIds)
       .not("phone_number", "is", null);
 
-    if (testMode && profiles) {
-      const beforeCount = profiles.length;
-      profiles = profiles.filter((p: any) => p.phone_number === TEST_PHONE_NUMBER);
-      console.log(`[handle-school-email] Test mode: filtered ${beforeCount} profiles down to ${profiles.length} test recipient(s)`);
+    const { data: linkedAccounts } = await supabase
+      .from("linked_accounts")
+      .select("primary_user_id, linked_user_id")
+      .eq("status", "accepted");
+
+    // ── Union-find family grouping (same approach as send-reminders) ──────────
+    const familyOf = new Map<string, string>();
+    const find = (u: string): string => {
+      const p = familyOf.get(u);
+      if (!p || p === u) return u;
+      const root = find(p);
+      familyOf.set(u, root);
+      return root;
+    };
+    const union = (a: string, b: string) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) familyOf.set(rb, ra);
+    };
+    for (const c of children) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
+    for (const p of allProfiles || []) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
+    for (const link of linkedAccounts || []) {
+      if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+      if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+      union(link.primary_user_id, link.linked_user_id);
     }
 
-    if (!profiles || profiles.length === 0) {
+    const phonesByFamily = new Map<string, Set<string>>();
+    for (const p of allProfiles || []) {
+      if (!p.phone_number) continue;
+      const fam = find(p.user_id);
+      if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+      phonesByFamily.get(fam)!.add(p.phone_number as string);
+    }
+
+    // Collect every phone number across all matching families
+    const recipientPhones = new Set<string>();
+    for (const parentId of parentIds) {
+      const fam = find(parentId);
+      for (const phone of phonesByFamily.get(fam) || []) recipientPhones.add(phone);
+    }
+
+    let phones = Array.from(recipientPhones);
+
+    if (testMode) {
+      const beforeCount = phones.length;
+      phones = phones.filter((p) => p === TEST_PHONE_NUMBER);
+      console.log(`[handle-school-email] Test mode: filtered ${beforeCount} recipients down to ${phones.length} test recipient(s)`);
+    }
+
+    if (phones.length === 0) {
       return new Response(JSON.stringify({ message: "No parent phone numbers found" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -188,11 +231,10 @@ Deno.serve(async (req: Request) => {
       message += " " + extracted.links.join(" ");
     }
 
-    // Send to all relevant parents
+    // Send to all relevant parents (including linked partner accounts)
     let sentCount = 0;
-    for (const profile of profiles) {
-      if (!profile.phone_number) continue;
-      const ok = await sendWhatsApp(profile.phone_number, message);
+    for (const phone of phones) {
+      const ok = await sendWhatsApp(phone, message);
       if (ok) sentCount++;
     }
 
