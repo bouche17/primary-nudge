@@ -694,6 +694,7 @@ async function generateReply(
 
   if (!response.ok) {
     console.error("Claude API error:", response.status, rawText1);
+    await logClaudeFailure(phone, response.status, rawText1, "Claude API - initial reply");
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
@@ -746,6 +747,7 @@ async function generateReply(
 
     if (!followUpResponse.ok) {
       console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
+      await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
       return "Done! I've saved that for you 😊";
     }
 
@@ -1022,6 +1024,7 @@ If the image is unclear or unreadable, ask them to try again.`;
 
     if (!response.ok) {
       console.error("Claude vision error:", response.status, rawVisionText);
+      await logClaudeFailure(phone, response.status, rawVisionText, "Claude API - vision");
       return "I had trouble reading that image. Could you try forwarding it again? 😊";
     }
 
