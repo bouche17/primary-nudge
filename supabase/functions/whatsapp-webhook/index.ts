@@ -50,6 +50,26 @@ const corsHeaders = {
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
+async function logClaudeFailure(
+  phone: string,
+  statusCode: number,
+  errorBody: string,
+  context: string
+) {
+  try {
+    await supabase.from("message_send_failures").insert({
+      function_name: "whatsapp-webhook",
+      phone_number: phone,
+      period: null,
+      status_code: statusCode,
+      error_body: errorBody,
+      context,
+    });
+  } catch (logError) {
+    console.error("Failed to log Claude API failure:", logError);
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface Child {
