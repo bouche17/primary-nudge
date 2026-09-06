@@ -94,6 +94,11 @@ interface MontyContext {
     start_at: string;
     school_name: string;
   }>;
+  upcomingNotes: Array<{
+    summary: string;
+    child_name: string | null;
+    extracted_dates: string[];
+  }>;
   schoolReminders: Array<{
     title: string;
     emoji: string;
@@ -161,13 +166,13 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
 
   const { data: events } = schoolIds.length > 0
     ? await supabase
-        .from("school_events")
-        .select("title, start_at, school_id, schools(name)")
-        .in("school_id", schoolIds)
-        .gte("start_at", now.toISOString())
-        .lte("start_at", twoWeeksAhead.toISOString())
-        .order("start_at", { ascending: true })
-        .limit(20)
+      .from("school_events")
+      .select("title, start_at, school_id, schools(name)")
+      .in("school_id", schoolIds)
+      .gte("start_at", now.toISOString())
+      .lte("start_at", twoWeeksAhead.toISOString())
+      .order("start_at", { ascending: true })
+      .limit(20)
     : { data: [] };
 
   const upcomingEvents = (events || []).map((e: any) => ({
@@ -176,14 +181,40 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
     school_name: e.schools?.name || "",
   }));
 
+  // Load parent-saved notes with a date in the next 14 days
+  const { data: notesRaw } = await supabase
+    .from("parent_notes")
+    .select("summary, child_name, extracted_dates, created_at")
+    .eq("phone_number", phone)
+    .order("created_at", { ascending: true })
+    .limit(20);
+
+  const upcomingNotes = (notesRaw || [])
+    .filter((n: any) => {
+      const dates = Array.isArray(n.extracted_dates) ? n.extracted_dates : [];
+      return dates.some((d: any) => {
+        const dateStr = typeof d === "string" ? d : d?.date;
+        if (!dateStr) return false;
+        const dObj = new Date(dateStr);
+        return !isNaN(dObj.getTime()) && dObj >= now && dObj <= twoWeeksAhead;
+      });
+    })
+    .map((n: any) => ({
+      summary: n.summary,
+      child_name: n.child_name || null,
+      extracted_dates: (Array.isArray(n.extracted_dates) ? n.extracted_dates : [])
+        .map((d: any) => (typeof d === "string" ? d : d?.date))
+        .filter((d: any) => typeof d === "string"),
+    }));
+
   // Load school-wide recurring reminders
   const { data: schoolReminders } = schoolIds.length > 0
     ? await supabase
-        .from("school_reminders")
-        .select("title, emoji, day_of_week")
-        .eq("active", true)
-        .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
-        .not("day_of_week", "is", null)
+      .from("school_reminders")
+      .select("title, emoji, day_of_week")
+      .eq("active", true)
+      .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
+      .not("day_of_week", "is", null)
     : { data: [] };
 
   // Check onboarding state
@@ -201,6 +232,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
     children: enrichedChildren,
     childReminders,
     upcomingEvents,
+    upcomingNotes,
     schoolReminders: schoolReminders || [],
     isOnboarding,
     onboardingStatus,
@@ -233,9 +265,27 @@ function buildSystemPrompt(context: MontyContext): string {
 
   const schoolRemindersSummary = context.schoolReminders.length > 0
     ? context.schoolReminders
-        .map((r) => `• ${r.emoji} ${r.title} — every ${r.day_of_week}`)
-        .join("\n")
+      .map((r) => `• ${r.emoji} ${r.title} — every ${r.day_of_week}`)
+      .join("\n")
     : "None set.";
+
+  const upcomingNotesSummary = context.upcomingNotes.length > 0
+    ? context.upcomingNotes
+      .map((n) => {
+        const childPrefix = n.child_name ? `${n.child_name}: ` : "";
+        const dateStr = n.extracted_dates
+          .map((d) =>
+            new Date(d).toLocaleDateString("en-GB", {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })
+          )
+          .join(", ");
+        return `• ${childPrefix}${n.summary}${dateStr ? ` — ${dateStr}` : ""}`;
+      })
+      .join("\n")
+    : "No notes saved yet.";
 
   const onboardingInstructions = context.isOnboarding ? `
 ## IMPORTANT: This parent is currently being onboarded
@@ -287,6 +337,9 @@ If a parent's request matches an item in the School-wide recurring reminders lis
 
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
+
+## Things this parent has told you about (upcoming)
+${upcomingNotesSummary}
 
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
