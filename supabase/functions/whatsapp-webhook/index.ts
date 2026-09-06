@@ -265,9 +265,27 @@ function buildSystemPrompt(context: MontyContext): string {
 
   const schoolRemindersSummary = context.schoolReminders.length > 0
     ? context.schoolReminders
-        .map((r) => `• ${r.emoji} ${r.title} — every ${r.day_of_week}`)
-        .join("\n")
+      .map((r) => `• ${r.emoji} ${r.title} — every ${r.day_of_week}`)
+      .join("\n")
     : "None set.";
+
+  const upcomingNotesSummary = context.upcomingNotes.length > 0
+    ? context.upcomingNotes
+      .map((n) => {
+        const childPrefix = n.child_name ? `${n.child_name}: ` : "";
+        const dateStr = n.extracted_dates
+          .map((d) =>
+            new Date(d).toLocaleDateString("en-GB", {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })
+          )
+          .join(", ");
+        return `• ${childPrefix}${n.summary}${dateStr ? ` — ${dateStr}` : ""}`;
+      })
+      .join("\n")
+    : "No notes saved yet.";
 
   const onboardingInstructions = context.isOnboarding ? `
 ## IMPORTANT: This parent is currently being onboarded
