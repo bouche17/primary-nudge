@@ -94,6 +94,11 @@ interface MontyContext {
     start_at: string;
     school_name: string;
   }>;
+  upcomingNotes: Array<{
+    summary: string;
+    child_name: string | null;
+    extracted_dates: string[];
+  }>;
   schoolReminders: Array<{
     title: string;
     emoji: string;
