@@ -196,7 +196,7 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
       startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
       endAt: e.end ? new Date(e.end.replace(" ", "T") + "Z").toISOString() : null,
       allDay: !hasTime,
-      yearGroup: mapped,
+      yearGroup: finalYearGroup,
     });
   }
 
