@@ -93,6 +93,27 @@ const CLASS_NAME_MAP: Record<string, string | null> = {
   "multi_0_staff": null, // skip staff events
 };
 
+// Detect explicit year group mentions in an event title (e.g. "Y1 Forest School",
+// "Year 3 Trip", "Yr2 Assembly", "Reception Open Morning").
+// Returns a comma-separated year group list, or null if nothing identifiable.
+function detectYearGroupsFromTitle(title: string): string | null {
+  if (!title) return null;
+  const found: string[] = [];
+
+  if (/\b(reception|recept|yr\s*r|y\s*r)\b/i.test(title)) found.push("Reception");
+
+  for (let n = 1; n <= 6; n++) {
+    const patterns = [
+      new RegExp(`\\byear\\s*${n}\\b`, "i"),
+      new RegExp(`\\by${n}\\b`, "i"),
+      new RegExp(`\\byr\\s*${n}\\b`, "i"),
+    ];
+    if (patterns.some((p) => p.test(title))) found.push(`Year ${n}`);
+  }
+
+  return found.length > 0 ? found.join(",") : null;
+}
+
 interface FullCalEvent {
   uid: string;
   title: string;
