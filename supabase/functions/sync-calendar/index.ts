@@ -166,6 +166,14 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
     const mapped = CLASS_NAME_MAP.hasOwnProperty(cls) ? CLASS_NAME_MAP[cls] : "all";
 
     const title = e.title || "Untitled";
+
+    // Title-based year group takes priority over the className mapping
+    const titleYears = detectYearGroupsFromTitle(title);
+    const finalYearGroup = titleYears ?? mapped;
+    if (titleYears) {
+      console.log(`[sync-calendar] title year override: "${title}" className="${cls}" → ${titleYears}`);
+    }
+
     if (keywordRegex.test(title)) {
       console.log(`[sync-calendar debug] title="${title}" className="${cls}" mapped=${mapped === null ? "SKIPPED" : mapped}`);
       debug.push({
