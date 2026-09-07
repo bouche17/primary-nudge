@@ -93,6 +93,27 @@ const CLASS_NAME_MAP: Record<string, string | null> = {
   "multi_0_staff": null, // skip staff events
 };
 
+// Detect explicit year group mentions in an event title (e.g. "Y1 Forest School",
+// "Year 3 Trip", "Yr2 Assembly", "Reception Open Morning").
+// Returns a comma-separated year group list, or null if nothing identifiable.
+function detectYearGroupsFromTitle(title: string): string | null {
+  if (!title) return null;
+  const found: string[] = [];
+
+  if (/\b(reception|recept|yr\s*r|y\s*r)\b/i.test(title)) found.push("Reception");
+
+  for (let n = 1; n <= 6; n++) {
+    const patterns = [
+      new RegExp(`\\byear\\s*${n}\\b`, "i"),
+      new RegExp(`\\by${n}\\b`, "i"),
+      new RegExp(`\\byr\\s*${n}\\b`, "i"),
+    ];
+    if (patterns.some((p) => p.test(title))) found.push(`Year ${n}`);
+  }
+
+  return found.length > 0 ? found.join(",") : null;
+}
+
 interface FullCalEvent {
   uid: string;
   title: string;
@@ -145,6 +166,14 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
     const mapped = CLASS_NAME_MAP.hasOwnProperty(cls) ? CLASS_NAME_MAP[cls] : "all";
 
     const title = e.title || "Untitled";
+
+    // Title-based year group takes priority over the className mapping
+    const titleYears = detectYearGroupsFromTitle(title);
+    const finalYearGroup = titleYears ?? mapped;
+    if (titleYears) {
+      console.log(`[sync-calendar] title year override: "${title}" className="${cls}" → ${titleYears}`);
+    }
+
     if (keywordRegex.test(title)) {
       console.log(`[sync-calendar debug] title="${title}" className="${cls}" mapped=${mapped === null ? "SKIPPED" : mapped}`);
       debug.push({
@@ -167,7 +196,7 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
       startAt: e.start ? new Date(e.start.replace(" ", "T") + "Z").toISOString() : new Date().toISOString(),
       endAt: e.end ? new Date(e.end.replace(" ", "T") + "Z").toISOString() : null,
       allDay: !hasTime,
-      yearGroup: mapped,
+      yearGroup: finalYearGroup,
     });
   }
 
