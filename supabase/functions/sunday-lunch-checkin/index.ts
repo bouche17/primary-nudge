@@ -60,6 +60,10 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
   params.append("ContentSid", TWILIO_SUNDAY_TEMPLATE_SID);
   params.append("ContentVariables", contentVariables);
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=sunday-lunch-checkin`
+  );
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: "POST",
