@@ -6,7 +6,12 @@ const PUBLIC_BASE_URL = "https://heymonty.co.uk";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { UserPlus, Copy, Check } from "lucide-react";
+import { UserPlus, Copy, Check, CheckCircle2 } from "lucide-react";
+
+interface Partner {
+  user_id: string;
+  phone_number: string | null;
+}
 
 const InvitePartner = () => {
   const { user } = useAuth();
@@ -14,6 +19,8 @@ const InvitePartner = () => {
   const [inviteLink, setInviteLink] = useState("");
   const [generating, setGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [partners, setPartners] = useState<Partner[]>([]);
+  const [loadingPartners, setLoadingPartners] = useState(true);
 
   useEffect(() => {
     if (!user) return;
@@ -30,6 +37,21 @@ const InvitePartner = () => {
         if (data && data.expires_at && new Date(data.expires_at) > new Date()) {
           setInviteLink(`${PUBLIC_BASE_URL}/invite/${data.token}`);
         }
+      });
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    setLoadingPartners(true);
+    supabase
+      .rpc("get_partner_phones", { _user_id: user.id })
+      .then(({ data, error }) => {
+        if (error) {
+          console.error("[InvitePartner] failed to load partners:", error);
+        } else {
+          setPartners((data as Partner[]) || []);
+        }
+        setLoadingPartners(false);
       });
   }, [user]);
 
@@ -81,6 +103,22 @@ const InvitePartner = () => {
         </p>
       </div>
 
+      {partners.length > 0 && (
+        <div className="bg-primary/10 border border-primary/20 rounded-xl p-3 space-y-2">
+          <h4 className="font-heading font-semibold text-foreground text-xs">
+            {partners.length === 1 ? "Connected partner" : "Connected partners"}
+          </h4>
+          {partners.map((partner) => (
+            <div key={partner.user_id} className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />
+              <span className="text-sm text-foreground">
+                Connected with {partner.phone_number ?? "a partner"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {inviteLink ? (
         <div className="space-y-2">
           <div className="flex gap-2">
@@ -109,7 +147,7 @@ const InvitePartner = () => {
           variant="outline"
           size="sm"
           onClick={handleGenerate}
-          disabled={generating}
+          disabled={generating || loadingPartners}
           className="rounded-full font-cta font-semibold"
         >
           <UserPlus className="w-4 h-4 mr-2" />
