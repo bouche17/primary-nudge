@@ -86,6 +86,10 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
   params.append("ContentSid", TWILIO_SCHOOL_NOTIFICATION_SID);
   params.append("ContentVariables", contentVariables);
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=handle-school-email`
+  );
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: "POST",
