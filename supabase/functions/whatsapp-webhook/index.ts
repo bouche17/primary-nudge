@@ -971,6 +971,10 @@ async function sendWhatsApp(to: string, body: string): Promise<boolean> {
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
   params.append("Body", body);
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=whatsapp-webhook`
+  );
 
   const res = await fetch(
     `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,

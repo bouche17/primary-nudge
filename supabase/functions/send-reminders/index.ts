@@ -91,6 +91,10 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
   params.append("From", `whatsapp:${from}`);
   params.append("ContentSid", templateSid);
   params.append("ContentVariables", contentVariables);
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=send-reminders`
+  );
 
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST",
