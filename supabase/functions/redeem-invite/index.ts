@@ -76,8 +76,14 @@ Deno.serve(async (req: Request) => {
         accepted_at: new Date().toISOString(),
       });
       if (linkErr) {
-        console.error("redeem-invite link insert error:", linkErr);
-        return json({ error: "Internal server error" }, 500);
+        // Race condition: another request inserted the link between our check and insert.
+        // Unique violation means the desired end state already exists, so treat as success.
+        if ((linkErr as any).code === "23505") {
+          console.log("redeem-invite race resolved: link already exists");
+        } else {
+          console.error("redeem-invite link insert error:", linkErr);
+          return json({ error: "Internal server error" }, 500);
+        }
       }
     }
 
@@ -89,7 +95,7 @@ Deno.serve(async (req: Request) => {
       console.error("redeem-invite token update error:", updateErr);
     }
 
-    return json({ status: "linked", already: !!existing });
+    return json({ status: "linked", already: !!existing || true });
   } catch (error) {
     console.error("redeem-invite error:", error);
     return json({ error: "Internal server error" }, 500);
