@@ -61,6 +61,8 @@ Deno.serve(async (req: Request) => {
       return json({ status: "self" }, 400);
     }
 
+    let alreadyLinked = false;
+
     const { data: existing } = await admin
       .from("linked_accounts")
       .select("id")
@@ -68,7 +70,9 @@ Deno.serve(async (req: Request) => {
       .eq("linked_user_id", userId)
       .maybeSingle();
 
-    if (!existing) {
+    if (existing) {
+      alreadyLinked = true;
+    } else {
       const { error: linkErr } = await admin.from("linked_accounts").insert({
         primary_user_id: invite.inviter_user_id,
         linked_user_id: userId,
@@ -79,6 +83,7 @@ Deno.serve(async (req: Request) => {
         // Race condition: another request inserted the link between our check and insert.
         // Unique violation means the desired end state already exists, so treat as success.
         if ((linkErr as any).code === "23505") {
+          alreadyLinked = true;
           console.log("redeem-invite race resolved: link already exists");
         } else {
           console.error("redeem-invite link insert error:", linkErr);
@@ -95,7 +100,7 @@ Deno.serve(async (req: Request) => {
       console.error("redeem-invite token update error:", updateErr);
     }
 
-    return json({ status: "linked", already: !!existing || true });
+    return json({ status: "linked", already: alreadyLinked });
   } catch (error) {
     console.error("redeem-invite error:", error);
     return json({ error: "Internal server error" }, 500);
