@@ -775,6 +775,17 @@ async function executeTool(
     }
 
     const days = toolArgs.packed_lunch_days;
+    try {
+      const lunchSummary =
+        days.length === 0 ? "school dinners all week" : `packed lunch on ${days.join(", ")}`;
+      await notifyLinkedPartners(
+        phone,
+        `🔔 Just so you know — your partner set ${toolArgs.child_name}'s lunch for the week: ${lunchSummary}`
+      );
+    } catch (err) {
+      console.error("Partner notification failed:", err);
+    }
+
     if (days.length === 0) {
       return `Saved: ${toolArgs.child_name} has school dinners all week`;
     }
