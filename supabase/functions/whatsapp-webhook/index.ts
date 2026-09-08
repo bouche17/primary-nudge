@@ -567,6 +567,14 @@ async function executeTool(
           active: true,
         })
         .eq("id", existing.id);
+      try {
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
+      }
       return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     } else {
       // Insert new
@@ -583,6 +591,14 @@ async function executeTool(
       if (error) {
         console.error("Error saving reminder:", error);
         return `Error saving reminder: ${error.message}`;
+      }
+      try {
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
       }
       return `Saved reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     }
