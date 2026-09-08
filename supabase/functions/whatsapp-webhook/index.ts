@@ -711,6 +711,20 @@ async function executeTool(
       return `ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
 
+    // Notify linked partners only about genuinely new saves (not dedup hits)
+    if (savedFor.length > 0) {
+      try {
+        const datePart = noteDate ? ` on ${formatNoteDate(noteDate)}` : "";
+        const childPart = noteChild ? ` for ${noteChild}` : "";
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${newSummary}${datePart}${childPart}`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
+      }
+    }
+
     const names = savedFor.filter((n) => n !== "general");
     return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}`;
   }
