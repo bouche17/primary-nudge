@@ -186,7 +186,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
     .from("parent_notes")
     .select("summary, child_name, extracted_dates, created_at")
     .eq("phone_number", phone)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(20);
 
   const upcomingNotes = (notesRaw || [])
