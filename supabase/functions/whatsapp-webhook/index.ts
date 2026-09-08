@@ -354,6 +354,7 @@ Example: "Jude needs one Monday and Wednesday, Harry every day" → save Jude: [
 
 ## When a parent tells you about a school event or date
 Use the save_parent_note tool to save it so they get a reminder when it comes around.
+- If the parent's message itself names a specific child (e.g. "Lucy's piano lesson"), pass that child_name directly to save_parent_note even if no year group is mentioned — a child's name mentioned directly is just as strong a signal as year-group detection.
 
 ## When a parent forwards a message or pastes text from a WhatsApp group or school email
 This is one of the most useful things you can do. The parent may say "just got this in the school group:" or "school emailed this:" or simply paste a chunk of text.
@@ -473,6 +474,65 @@ const tools = [
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
+async function getLinkedPartnerPhones(currentPhone: string): Promise<string[]> {
+  const { data: myProfile } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("phone_number", currentPhone)
+    .maybeSingle();
+
+  if (!myProfile?.user_id) return [];
+  const myUserId = myProfile.user_id;
+
+  const { data: links } = await supabase
+    .from("linked_accounts")
+    .select("primary_user_id, linked_user_id")
+    .eq("status", "accepted")
+    .or(`primary_user_id.eq.${myUserId},linked_user_id.eq.${myUserId}`);
+
+  if (!links || links.length === 0) return [];
+
+  const otherUserIds = links.map((l: any) =>
+    l.primary_user_id === myUserId ? l.linked_user_id : l.primary_user_id
+  );
+
+  const { data: partnerProfiles } = await supabase
+    .from("profiles")
+    .select("phone_number")
+    .in("user_id", otherUserIds)
+    .not("phone_number", "is", null);
+
+  return (partnerProfiles || [])
+    .map((p: any) => p.phone_number as string)
+    .filter((pn: string) => pn && pn !== currentPhone);
+}
+
+async function notifyLinkedPartners(currentPhone: string, message: string): Promise<void> {
+  const partners = await getLinkedPartnerPhones(currentPhone);
+  for (const partnerPhone of partners) {
+    try {
+      await sendWhatsApp(partnerPhone, message);
+    } catch (err) {
+      console.error(`Partner notification to ${partnerPhone} failed:`, err);
+    }
+  }
+}
+
+function formatNoteDate(dateStr: string): string {
+  try {
+    const d = new Date(`${dateStr}T12:00:00Z`);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: "UTC",
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
@@ -508,6 +568,14 @@ async function executeTool(
           active: true,
         })
         .eq("id", existing.id);
+      try {
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
+      }
       return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     } else {
       // Insert new
@@ -524,6 +592,14 @@ async function executeTool(
       if (error) {
         console.error("Error saving reminder:", error);
         return `Error saving reminder: ${error.message}`;
+      }
+      try {
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
       }
       return `Saved reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
     }
@@ -636,6 +712,20 @@ async function executeTool(
       return `ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
 
+    // Notify linked partners only about genuinely new saves (not dedup hits)
+    if (savedFor.length > 0) {
+      try {
+        const datePart = noteDate ? ` on ${formatNoteDate(noteDate)}` : "";
+        const childPart = noteChild ? ` for ${noteChild}` : "";
+        await notifyLinkedPartners(
+          phone,
+          `🔔 Just so you know — your partner told me: ${newSummary}${datePart}${childPart}`
+        );
+      } catch (err) {
+        console.error("Partner notification failed:", err);
+      }
+    }
+
     const names = savedFor.filter((n) => n !== "general");
     return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}`;
   }
@@ -686,6 +776,17 @@ async function executeTool(
     }
 
     const days = toolArgs.packed_lunch_days;
+    try {
+      const lunchSummary =
+        days.length === 0 ? "school dinners all week" : `packed lunch on ${days.join(", ")}`;
+      await notifyLinkedPartners(
+        phone,
+        `🔔 Just so you know — your partner set ${toolArgs.child_name}'s lunch for the week: ${lunchSummary}`
+      );
+    } catch (err) {
+      console.error("Partner notification failed:", err);
+    }
+
     if (days.length === 0) {
       return `Saved: ${toolArgs.child_name} has school dinners all week`;
     }
