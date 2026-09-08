@@ -473,6 +473,65 @@ const tools = [
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
+async function getLinkedPartnerPhones(currentPhone: string): Promise<string[]> {
+  const { data: myProfile } = await supabase
+    .from("profiles")
+    .select("user_id")
+    .eq("phone_number", currentPhone)
+    .maybeSingle();
+
+  if (!myProfile?.user_id) return [];
+  const myUserId = myProfile.user_id;
+
+  const { data: links } = await supabase
+    .from("linked_accounts")
+    .select("primary_user_id, linked_user_id")
+    .eq("status", "accepted")
+    .or(`primary_user_id.eq.${myUserId},linked_user_id.eq.${myUserId}`);
+
+  if (!links || links.length === 0) return [];
+
+  const otherUserIds = links.map((l: any) =>
+    l.primary_user_id === myUserId ? l.linked_user_id : l.primary_user_id
+  );
+
+  const { data: partnerProfiles } = await supabase
+    .from("profiles")
+    .select("phone_number")
+    .in("user_id", otherUserIds)
+    .not("phone_number", "is", null);
+
+  return (partnerProfiles || [])
+    .map((p: any) => p.phone_number as string)
+    .filter((pn: string) => pn && pn !== currentPhone);
+}
+
+async function notifyLinkedPartners(currentPhone: string, message: string): Promise<void> {
+  const partners = await getLinkedPartnerPhones(currentPhone);
+  for (const partnerPhone of partners) {
+    try {
+      await sendWhatsApp(partnerPhone, message);
+    } catch (err) {
+      console.error(`Partner notification to ${partnerPhone} failed:`, err);
+    }
+  }
+}
+
+function formatNoteDate(dateStr: string): string {
+  try {
+    const d = new Date(`${dateStr}T12:00:00Z`);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      timeZone: "UTC",
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
