@@ -126,11 +126,24 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
 
   const parentId = profile.user_id;
 
-  // Load children + schools
+  // Resolve the full family: the caller plus anyone linked via accepted linked_accounts
+  const { data: linkedRows } = await supabase
+    .from("linked_accounts")
+    .select("primary_user_id, linked_user_id")
+    .eq("status", "accepted")
+    .or(`primary_user_id.eq.${parentId},linked_user_id.eq.${parentId}`);
+
+  const familyUserIds = new Set<string>([parentId]);
+  for (const row of linkedRows || []) {
+    familyUserIds.add(row.primary_user_id);
+    familyUserIds.add(row.linked_user_id);
+  }
+
+  // Load children + schools across the whole family
   const { data: children } = await supabase
     .from("children")
     .select("id, first_name, year_group, school_id, schools(name)")
-    .eq("parent_id", parentId);
+    .in("parent_id", Array.from(familyUserIds));
 
   const enrichedChildren: Child[] = (children || []).map((c: any) => ({
     id: c.id,
@@ -1112,7 +1125,6 @@ If the event or message mentions a specific year group, automatically attribute 
 - Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
 - Match "Year 2", "Y2" etc. to the child in Year 2
 - If an event is for multiple year groups (e.g. "Year 1 and Year 2"), check ALL year groups against the parent's children — if ANY of the parent's children are in those year groups, attribute it to them
-- In this parent's case: if the event mentions Year 2, save it for Harry. If it mentions Year 5, save it for Jude. If it mentions both Year 2 and Year 5, save it for both.
 - Never save a note without a child_name if you can identify which child it belongs to
 - Never ask the parent which child — figure it out from the year group information above
 - If no year group is mentioned, or the year group doesn't match any of the parent's children, save as a general note without child_name
