@@ -351,6 +351,8 @@ If a parent's request matches an item in the School-wide recurring reminders lis
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
 
+IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.
+
 ## Things this parent has told you about (upcoming)
 ${upcomingNotesSummary}
 
