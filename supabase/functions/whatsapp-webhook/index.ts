@@ -421,7 +421,7 @@ const tools = [
         reminder_time: {
           type: "string",
           enum: ["morning", "evening", "both"],
-          description: "When to send the reminder. Use 'both' for things like PE kit (remind evening before AND morning of). Use 'morning' for most things.",
+          description: "When to send the reminder. Default to 'both' (evening before AND morning of) for anything that involves bringing, packing, or preparing an item — kit, equipment, books, forms, money, etc. — so the parent gets advance notice to prepare it the night before. Only use 'morning'-only for pure same-day FYI reminders that don't require any advance preparation, or if the parent explicitly asks for a morning-only reminder. When in doubt, prefer 'both'.",
         },
       },
       required: ["child_name", "title", "emoji", "day_of_week", "reminder_time"],
