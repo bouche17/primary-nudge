@@ -845,10 +845,10 @@ async function executeTool(
     try {
       const lunchSummary =
         days.length === 0 ? "school dinners all week" : `packed lunch on ${days.join(", ")}`;
-      await notifyLinkedPartners(
-        phone,
-        `🔔 Just so you know — your partner set ${toolArgs.child_name}'s lunch for the week: ${lunchSummary}`
-      );
+      await notifyLinkedPartners(phone, {
+        type: "lunch",
+        data: { child: toolArgs.child_name, daysSummary: lunchSummary },
+      });
     } catch (err) {
       console.error("Partner notification failed:", err);
     }
