@@ -43,6 +43,10 @@ const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 
+const TWILIO_PARTNER_REMINDER_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_REMINDER_TEMPLATE_SID");
+const TWILIO_PARTNER_NOTE_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_NOTE_TEMPLATE_SID");
+const TWILIO_PARTNER_LUNCH_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_LUNCH_TEMPLATE_SID");
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
