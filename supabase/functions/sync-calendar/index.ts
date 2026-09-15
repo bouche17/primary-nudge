@@ -98,20 +98,56 @@ const CLASS_NAME_MAP: Record<string, string | null> = {
 // Returns a comma-separated year group list, or null if nothing identifiable.
 function detectYearGroupsFromTitle(title: string): string | null {
   if (!title) return null;
-  const found: string[] = [];
+  const found = new Set<number>();
+  let hasReception = false;
 
-  if (/\b(reception|recept|yr\s*r|y\s*r)\b/i.test(title)) found.push("Reception");
+  if (/\b(reception|recept|yr\s*r|y\s*r)\b/i.test(title)) hasReception = true;
 
+  // Range patterns: "Y1-Y6", "Year 2-4", "Yr3-6" -> expand inclusive
+  let remaining = title;
+  const rangeRegex = /\b(?:year|yr|y)\s*(\d)\s*-\s*(?:year|yr|y)?\s*(\d)\b/gi;
+  let rangeMatch;
+  const consumedRanges: Array<[number, number]> = [];
+  while ((rangeMatch = rangeRegex.exec(title)) !== null) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    if (start >= 1 && start <= 6 && end >= 1 && end <= 6) {
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      for (let n = lo; n <= hi; n++) found.add(n);
+      consumedRanges.push([rangeMatch.index, rangeMatch.index + rangeMatch[0].length]);
+    }
+  }
+  for (const [start, end] of consumedRanges.slice().reverse()) {
+    remaining = remaining.slice(0, start) + " ".repeat(end - start) + remaining.slice(end);
+  }
+
+  // List patterns with shared prefix: "Y3/4/5", "Year 5/6", "Y1,2,3"
+  const listRegex = /\b(?:year|yr|y)\s*(\d(?:\s*[\/,]\s*\d)+)\b/gi;
+  let listMatch;
+  while ((listMatch = listRegex.exec(remaining)) !== null) {
+    const nums = listMatch[1].split(/[\/,]/).map((s) => parseInt(s.trim(), 10));
+    for (const n of nums) {
+      if (n >= 1 && n <= 6) found.add(n);
+    }
+  }
+  remaining = remaining.replace(listRegex, " ");
+
+  // Single mentions: "Year 3", "Y2", "Yr4"
   for (let n = 1; n <= 6; n++) {
     const patterns = [
       new RegExp(`\\byear\\s*${n}\\b`, "i"),
       new RegExp(`\\by${n}\\b`, "i"),
       new RegExp(`\\byr\\s*${n}\\b`, "i"),
     ];
-    if (patterns.some((p) => p.test(title))) found.push(`Year ${n}`);
+    if (patterns.some((p) => p.test(remaining))) found.add(n);
   }
 
-  return found.length > 0 ? found.join(",") : null;
+  const result: string[] = [];
+  if (hasReception) result.push("Reception");
+  result.push(...Array.from(found).sort((a, b) => a - b).map((n) => `Year ${n}`));
+
+  return result.length > 0 ? result.join(",") : null;
 }
 
 interface FullCalEvent {
