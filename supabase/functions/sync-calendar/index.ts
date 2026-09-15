@@ -409,6 +409,12 @@ Deno.serve(async (req: Request) => {
 
         console.log(`Parsed ${events.length} events from feed ${feed.id}`);
 
+        // Only keep today/future events — the feed often includes a multi-year archive
+        const today = new Date();
+        today.setUTCHours(0, 0, 0, 0);
+        events = events.filter((e) => new Date(e.startAt) >= today);
+        console.log(`Filtered to ${events.length} upcoming events from feed ${feed.id}`);
+
         // Delete existing events for this feed and re-insert
         await supabase
           .from("school_events")
