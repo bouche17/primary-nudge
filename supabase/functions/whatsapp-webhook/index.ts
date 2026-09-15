@@ -526,11 +526,52 @@ async function getLinkedPartnerPhones(currentPhone: string): Promise<string[]> {
     .filter((pn: string) => pn && pn !== currentPhone);
 }
 
-async function notifyLinkedPartners(currentPhone: string, message: string): Promise<void> {
+type PartnerNotification =
+  | { type: "reminder"; data: { child: string; title: string; day: string } }
+  | { type: "note"; data: { summary: string; date: string } }
+  | { type: "lunch"; data: { child: string; daysSummary: string } };
+
+async function notifyLinkedPartners(
+  currentPhone: string,
+  notification: PartnerNotification
+): Promise<void> {
   const partners = await getLinkedPartnerPhones(currentPhone);
+  if (partners.length === 0) return;
+
+  let contentSid: string | undefined;
+  let variables: Record<string, string> = {};
+
+  if (notification.type === "reminder") {
+    contentSid = TWILIO_PARTNER_REMINDER_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.child,
+      "2": notification.data.title,
+      "3": notification.data.day,
+    };
+  } else if (notification.type === "note") {
+    contentSid = TWILIO_PARTNER_NOTE_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.summary,
+      "2": formatNoteDate(notification.data.date),
+    };
+  } else if (notification.type === "lunch") {
+    contentSid = TWILIO_PARTNER_LUNCH_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.child,
+      "2": notification.data.daysSummary,
+    };
+  }
+
+  if (!contentSid) {
+    console.log(
+      `Partner ${notification.type} template SID not configured yet; skipping partner notifications.`
+    );
+    return;
+  }
+
   for (const partnerPhone of partners) {
     try {
-      await sendWhatsApp(partnerPhone, message);
+      await sendWhatsAppTemplate(partnerPhone, contentSid, variables);
     } catch (err) {
       console.error(`Partner notification to ${partnerPhone} failed:`, err);
     }
