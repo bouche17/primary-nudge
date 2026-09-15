@@ -781,14 +781,12 @@ async function executeTool(
     }
 
     // Notify linked partners only about genuinely new saves (not dedup hits)
-    if (savedFor.length > 0) {
+    if (savedFor.length > 0 && noteDate) {
       try {
-        const datePart = noteDate ? ` on ${formatNoteDate(noteDate)}` : "";
-        const childPart = noteChild ? ` for ${noteChild}` : "";
-        await notifyLinkedPartners(
-          phone,
-          `🔔 Just so you know — your partner told me: ${newSummary}${datePart}${childPart}`
-        );
+        await notifyLinkedPartners(phone, {
+          type: "note",
+          data: { summary: newSummary, date: noteDate },
+        });
       } catch (err) {
         console.error("Partner notification failed:", err);
       }
