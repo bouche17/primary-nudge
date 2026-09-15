@@ -43,6 +43,10 @@ const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
 const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 
+const TWILIO_PARTNER_REMINDER_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_REMINDER_TEMPLATE_SID");
+const TWILIO_PARTNER_NOTE_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_NOTE_TEMPLATE_SID");
+const TWILIO_PARTNER_LUNCH_TEMPLATE_SID = Deno.env.get("TWILIO_PARTNER_LUNCH_TEMPLATE_SID");
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -522,11 +526,52 @@ async function getLinkedPartnerPhones(currentPhone: string): Promise<string[]> {
     .filter((pn: string) => pn && pn !== currentPhone);
 }
 
-async function notifyLinkedPartners(currentPhone: string, message: string): Promise<void> {
+type PartnerNotification =
+  | { type: "reminder"; data: { child: string; title: string; day: string } }
+  | { type: "note"; data: { summary: string; date: string } }
+  | { type: "lunch"; data: { child: string; daysSummary: string } };
+
+async function notifyLinkedPartners(
+  currentPhone: string,
+  notification: PartnerNotification
+): Promise<void> {
   const partners = await getLinkedPartnerPhones(currentPhone);
+  if (partners.length === 0) return;
+
+  let contentSid: string | undefined;
+  let variables: Record<string, string> = {};
+
+  if (notification.type === "reminder") {
+    contentSid = TWILIO_PARTNER_REMINDER_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.child,
+      "2": notification.data.title,
+      "3": notification.data.day,
+    };
+  } else if (notification.type === "note") {
+    contentSid = TWILIO_PARTNER_NOTE_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.summary,
+      "2": formatNoteDate(notification.data.date),
+    };
+  } else if (notification.type === "lunch") {
+    contentSid = TWILIO_PARTNER_LUNCH_TEMPLATE_SID;
+    variables = {
+      "1": notification.data.child,
+      "2": notification.data.daysSummary,
+    };
+  }
+
+  if (!contentSid) {
+    console.log(
+      `Partner ${notification.type} template SID not configured yet; skipping partner notifications.`
+    );
+    return;
+  }
+
   for (const partnerPhone of partners) {
     try {
-      await sendWhatsApp(partnerPhone, message);
+      await sendWhatsAppTemplate(partnerPhone, contentSid, variables);
     } catch (err) {
       console.error(`Partner notification to ${partnerPhone} failed:`, err);
     }
@@ -584,10 +629,14 @@ async function executeTool(
         })
         .eq("id", existing.id);
       try {
-        await notifyLinkedPartners(
-          phone,
-          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
-        );
+        await notifyLinkedPartners(phone, {
+          type: "reminder",
+          data: {
+            child: toolArgs.child_name,
+            title: toolArgs.title,
+            day: toolArgs.day_of_week,
+          },
+        });
       } catch (err) {
         console.error("Partner notification failed:", err);
       }
@@ -609,10 +658,14 @@ async function executeTool(
         return `Error saving reminder: ${error.message}`;
       }
       try {
-        await notifyLinkedPartners(
-          phone,
-          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
-        );
+        await notifyLinkedPartners(phone, {
+          type: "reminder",
+          data: {
+            child: toolArgs.child_name,
+            title: toolArgs.title,
+            day: toolArgs.day_of_week,
+          },
+        });
       } catch (err) {
         console.error("Partner notification failed:", err);
       }
@@ -728,14 +781,12 @@ async function executeTool(
     }
 
     // Notify linked partners only about genuinely new saves (not dedup hits)
-    if (savedFor.length > 0) {
+    if (savedFor.length > 0 && noteDate) {
       try {
-        const datePart = noteDate ? ` on ${formatNoteDate(noteDate)}` : "";
-        const childPart = noteChild ? ` for ${noteChild}` : "";
-        await notifyLinkedPartners(
-          phone,
-          `🔔 Just so you know — your partner told me: ${newSummary}${datePart}${childPart}`
-        );
+        await notifyLinkedPartners(phone, {
+          type: "note",
+          data: { summary: newSummary, date: noteDate },
+        });
       } catch (err) {
         console.error("Partner notification failed:", err);
       }
@@ -794,10 +845,10 @@ async function executeTool(
     try {
       const lunchSummary =
         days.length === 0 ? "school dinners all week" : `packed lunch on ${days.join(", ")}`;
-      await notifyLinkedPartners(
-        phone,
-        `🔔 Just so you know — your partner set ${toolArgs.child_name}'s lunch for the week: ${lunchSummary}`
-      );
+      await notifyLinkedPartners(phone, {
+        type: "lunch",
+        data: { child: toolArgs.child_name, daysSummary: lunchSummary },
+      });
     } catch (err) {
       console.error("Partner notification failed:", err);
     }
@@ -1004,6 +1055,37 @@ async function sendWhatsApp(to: string, body: string): Promise<boolean> {
   );
 
   if (!res.ok) console.error("Twilio send error:", await res.text());
+  return res.ok;
+}
+
+async function sendWhatsAppTemplate(
+  to: string,
+  contentSid: string,
+  variables: Record<string, string>
+): Promise<boolean> {
+  const params = new URLSearchParams();
+  params.append("To", `whatsapp:${to}`);
+  params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
+  params.append("ContentSid", contentSid);
+  params.append("ContentVariables", JSON.stringify(variables));
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=whatsapp-webhook-partner`
+  );
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    }
+  );
+
+  if (!res.ok) console.error("Twilio template send error:", await res.text());
   return res.ok;
 }
 
