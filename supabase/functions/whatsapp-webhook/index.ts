@@ -629,10 +629,14 @@ async function executeTool(
         })
         .eq("id", existing.id);
       try {
-        await notifyLinkedPartners(
-          phone,
-          `🔔 Just so you know — your partner told me: ${toolArgs.child_name}'s ${toolArgs.title} every ${toolArgs.day_of_week} 👍`
-        );
+        await notifyLinkedPartners(phone, {
+          type: "reminder",
+          data: {
+            child: toolArgs.child_name,
+            title: toolArgs.title,
+            day: toolArgs.day_of_week,
+          },
+        });
       } catch (err) {
         console.error("Partner notification failed:", err);
       }
