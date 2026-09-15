@@ -1058,6 +1058,37 @@ async function sendWhatsApp(to: string, body: string): Promise<boolean> {
   return res.ok;
 }
 
+async function sendWhatsAppTemplate(
+  to: string,
+  contentSid: string,
+  variables: Record<string, string>
+): Promise<boolean> {
+  const params = new URLSearchParams();
+  params.append("To", `whatsapp:${to}`);
+  params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
+  params.append("ContentSid", contentSid);
+  params.append("ContentVariables", JSON.stringify(variables));
+  params.append(
+    "StatusCallback",
+    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=whatsapp-webhook-partner`
+  );
+
+  const res = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    }
+  );
+
+  if (!res.ok) console.error("Twilio template send error:", await res.text());
+  return res.ok;
+}
+
 // ── Onboarding initiator ──────────────────────────────────────────────────────
 // This is called when a parent first signs up via the web app
 // It sends them a welcome WhatsApp and kicks off onboarding
