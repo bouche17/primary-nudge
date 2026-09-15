@@ -16,11 +16,14 @@ const corsHeaders = {
 };
 
 async function extractEmailInfo(subject: string, body: string): Promise<{
-  summary: string;
-  yearGroups: string[];
-  dates: string[];
-  actionRequired: string | null;
+  tldr: string;
+  what: string;
+  who: string;
+  when: string;
+  cost: string | null;
+  action: string | null;
   links: string[];
+  yearGroups: string[];
 }> {
   const prompt = `You are processing a school email from Dean Valley Community Primary School sent via Arbor.
 
@@ -33,20 +36,35 @@ ${body}
 
 Return this exact JSON structure:
 {
-  "summary": "A concise summary of what this email is about",
-  "yearGroups": ["list of year groups mentioned, e.g. Year 1, Year 2, or all if whole school"],
-  "dates": ["list of dates mentioned in YYYY-MM-DD format"],
-  "actionRequired": "what parents need to do, or null if no action needed",
-  "links": ["every URL mentioned in the email body, preserved exactly as written"]
+  "tldr": "ONE punchy sentence capturing the single most important takeaway — genuinely short, like a headline, NOT a paragraph",
+  "what": "short label for the type of event/announcement, e.g. 'Community Cup football tournament'",
+  "who": "which year groups this affects, in plain readable form, e.g. 'Year 2, Year 3/4, Year 6' or 'All children' for whole-school",
+  "when": "the relevant date/term/deadline in readable form, e.g. '2026/27 Terms 1 & 2' or 'by Friday 11th September'",
+  "cost": "any cost mentioned, in readable form, e.g. '£25/team (~£2.50-£3.50/child)' — null if no cost is mentioned anywhere in the email",
+  "action": "the specific thing a parent needs to do, or null if nothing actionable",
+  "links": ["every URL mentioned in the email body, preserved exactly as written"],
+  "yearGroups": ["Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school]
 }
 
-Distinguish two email types when writing the summary and actionRequired:
-(a) Deadline-driven / mandatory-action emails (e.g. payment deadlines, forms everyone must complete, final consent dates). Keep the summary tight and direct, and make actionRequired clear and compulsory-sounding.
-(b) Informational / awareness emails (e.g. club or tournament announcements, general updates, optional activities, no universal mandatory deadline). Write a fuller summary of up to 3-4 sentences that preserves actual details and any per-year-group nuance (e.g. different cohorts joining at different times, selection being performance-based). For this type, only set actionRequired if there is a specific, universal action every relevant parent must take. If the "action" is really an optional or self-selecting invitation (like volunteering for a role, signing up to a club only if interested), describe it inside the summary instead of actionRequired so it does not read as mandatory.
+Guidelines for each field:
 
-Extract every URL mentioned in the email body (e.g. Google Forms, Microsoft Forms, payment portals, sign-up links) and preserve each link exactly as written, never summarised, shortened, or omitted. Put them in the links array.
+tldr: Lead with the point. One short headline-style sentence a parent can scan in a second. Never a paragraph.
 
-For yearGroups, use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
+what: A short, readable label for what this email is about.
+
+who: Plain readable form derived from the same year-group detection used for yearGroups below. Use "All children" when yearGroups is ["all"].
+
+when: The relevant date, term, or deadline in readable form. If the email genuinely has no date/term/deadline, use null.
+
+cost: Only if a cost is explicitly mentioned anywhere in the email. Keep any per-unit detail (e.g. per team, per child). Never invent or estimate costs.
+
+action: Distinguish two email types:
+(a) Deadline-driven / mandatory-action emails (e.g. payment deadlines, forms everyone must complete, final consent dates). Make action clear and compulsory-sounding.
+(b) Informational / awareness emails (e.g. club or tournament announcements, general updates, optional activities). Only set action if there is a specific, universal action every relevant parent must take. If the "action" is really an optional or self-selecting invitation (like volunteering for a role, signing up to a club only if interested), leave action as null — the invitation is already captured in tldr/what. Never null out action for mandatory deadlines.
+
+links: Extract every URL mentioned in the email body (e.g. Google Forms, Microsoft Forms, payment portals, sign-up links) and preserve each link exactly as written, never summarised, shortened, or omitted.
+
+yearGroups: For distribution logic only — use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
 
 Many school emails combine a universal requirement (applies to every child, no exceptions — phrases like "all children", "all pupils", "whether they...", or a deadline/action that doesn't exclude any year group) with year-specific extras (like optional clubs only open to certain years). When this happens, yearGroups should be set to ["all"] — since the universal requirement means every family needs to see the message, even if some content like a specific club doesn't apply to them. Only use specific year groups (not "all") when the ENTIRE email is restricted to those years with no whole-school component at all.
 Today's date is ${new Date().toISOString().split("T")[0]}.`;
@@ -69,7 +87,14 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
   const text = data.content[0].text.trim();
   const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
 
-  return JSON.parse(clean);
+  const parsed = JSON.parse(clean);
+  // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
+  for (const key of ["cost", "action", "when"] as const) {
+    if (parsed[key] !== null && (typeof parsed[key] !== "string" || parsed[key].trim() === "")) {
+      parsed[key] = null;
+    }
+  }
+  return parsed;
 }
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
@@ -236,10 +261,13 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Build the message
-    let message = extracted.summary;
-    if (extracted.actionRequired) {
-      message += " — Action needed: " + extracted.actionRequired;
+    // Build the message — scannable " | "-separated fields (WhatsApp template vars can't contain real line breaks)
+    let message = `📋 TL;DR: ${extracted.tldr} | What: ${extracted.what} | Who: ${extracted.who} | When: ${extracted.when}`;
+    if (extracted.cost) {
+      message += ` | Cost: ${extracted.cost}`;
+    }
+    if (extracted.action) {
+      message += ` | Action: ${extracted.action}`;
     }
     if (extracted.links && extracted.links.length > 0) {
       message += " " + extracted.links.join(" ");
