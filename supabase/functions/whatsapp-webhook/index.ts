@@ -401,7 +401,7 @@ UK time: ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-
 const tools = [
   {
     name: "save_child_reminder",
-    description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child.",
+    description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child. If the parent describes something as 'every other [day]' or 'fortnightly', set recurrence_interval to 2 and use one specific confirmed occurrence date as anchor_date — ask the parent for the next actual date if they haven't given one; never guess.",
     input_schema: {
       type: "object",
       properties: {
@@ -634,6 +634,8 @@ async function executeTool(
           emoji: toolArgs.emoji,
           day_of_week: toolArgs.day_of_week,
           reminder_time: toolArgs.reminder_time,
+          recurrence_interval: toolArgs.recurrence_interval ?? 1,
+          anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
           active: true,
         })
         .eq("id", existing.id);
@@ -659,6 +661,8 @@ async function executeTool(
         emoji: toolArgs.emoji,
         day_of_week: toolArgs.day_of_week,
         reminder_time: toolArgs.reminder_time,
+        recurrence_interval: toolArgs.recurrence_interval ?? 1,
+        anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
         active: true,
       });
 
