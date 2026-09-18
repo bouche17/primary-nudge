@@ -47,36 +47,42 @@ export type Database = {
       child_reminders: {
         Row: {
           active: boolean | null
+          anchor_date: string | null
           child_id: string
           created_at: string | null
           day_of_week: string
           emoji: string | null
           id: string
           parent_id: string
+          recurrence_interval: number
           reminder_time: string | null
           title: string
           updated_at: string | null
         }
         Insert: {
           active?: boolean | null
+          anchor_date?: string | null
           child_id: string
           created_at?: string | null
           day_of_week: string
           emoji?: string | null
           id?: string
           parent_id: string
+          recurrence_interval?: number
           reminder_time?: string | null
           title: string
           updated_at?: string | null
         }
         Update: {
           active?: boolean | null
+          anchor_date?: string | null
           child_id?: string
           created_at?: string | null
           day_of_week?: string
           emoji?: string | null
           id?: string
           parent_id?: string
+          recurrence_interval?: number
           reminder_time?: string | null
           title?: string
           updated_at?: string | null
@@ -286,6 +292,79 @@ export type Database = {
           week_start?: string
         }
         Relationships: []
+      }
+      meal_menu: {
+        Row: {
+          category: string
+          created_at: string
+          day_of_week: string
+          id: string
+          item: string
+          menu_name: string
+          school_id: string | null
+          week_number: number
+        }
+        Insert: {
+          category: string
+          created_at?: string
+          day_of_week: string
+          id?: string
+          item: string
+          menu_name: string
+          school_id?: string | null
+          week_number: number
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          day_of_week?: string
+          id?: string
+          item?: string
+          menu_name?: string
+          school_id?: string | null
+          week_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meal_menu_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      meal_menu_cycle: {
+        Row: {
+          anchor_monday: string
+          anchor_week_number: number
+          id: string
+          menu_name: string
+          school_id: string | null
+        }
+        Insert: {
+          anchor_monday: string
+          anchor_week_number: number
+          id?: string
+          menu_name: string
+          school_id?: string | null
+        }
+        Update: {
+          anchor_monday?: string
+          anchor_week_number?: number
+          id?: string
+          menu_name?: string
+          school_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meal_menu_cycle_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       message_send_failures: {
         Row: {

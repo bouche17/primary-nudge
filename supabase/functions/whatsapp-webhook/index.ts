@@ -401,7 +401,7 @@ UK time: ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-
 const tools = [
   {
     name: "save_child_reminder",
-    description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child.",
+    description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child. If the parent describes something as 'every other [day]' or 'fortnightly', set recurrence_interval to 2 and use one specific confirmed occurrence date as anchor_date — ask the parent for the next actual date if they haven't given one; never guess.",
     input_schema: {
       type: "object",
       properties: {
@@ -426,6 +426,15 @@ const tools = [
           type: "string",
           enum: ["morning", "evening", "both"],
           description: "When to send the reminder. Default to 'both' (evening before AND morning of) for anything that involves bringing, packing, or preparing an item — kit, equipment, books, forms, money, etc. — so the parent gets advance notice to prepare it the night before. Only use 'morning'-only for pure same-day FYI reminders that don't require any advance preparation, or if the parent explicitly asks for a morning-only reminder. When in doubt, prefer 'both'.",
+        },
+        recurrence_interval: {
+          type: "integer",
+          enum: [1, 2],
+          description: "How often the reminder repeats: 1 = every week (the default), 2 = every other week (fortnightly). If a parent describes something as 'every other [day]', 'alternate weeks', or 'fortnightly', set this to 2.",
+        },
+        anchor_date: {
+          type: "string",
+          description: "ISO date (YYYY-MM-DD) of one specific confirmed occurrence, required when recurrence_interval is 2 — used to calculate which weeks are 'on'. Infer it from what the parent said if they gave a real date (e.g. 'next one is 2nd October'); never guess. If the parent hasn't stated an actual occurrence date, ask them for the next one before saving. Omit for weekly reminders.",
         },
       },
       required: ["child_name", "title", "emoji", "day_of_week", "reminder_time"],
@@ -625,6 +634,8 @@ async function executeTool(
           emoji: toolArgs.emoji,
           day_of_week: toolArgs.day_of_week,
           reminder_time: toolArgs.reminder_time,
+          recurrence_interval: toolArgs.recurrence_interval ?? 1,
+          anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
           active: true,
         })
         .eq("id", existing.id);
@@ -650,6 +661,8 @@ async function executeTool(
         emoji: toolArgs.emoji,
         day_of_week: toolArgs.day_of_week,
         reminder_time: toolArgs.reminder_time,
+        recurrence_interval: toolArgs.recurrence_interval ?? 1,
+        anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
         active: true,
       });
 
