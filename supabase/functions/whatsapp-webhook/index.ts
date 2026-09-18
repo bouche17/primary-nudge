@@ -427,6 +427,15 @@ const tools = [
           enum: ["morning", "evening", "both"],
           description: "When to send the reminder. Default to 'both' (evening before AND morning of) for anything that involves bringing, packing, or preparing an item — kit, equipment, books, forms, money, etc. — so the parent gets advance notice to prepare it the night before. Only use 'morning'-only for pure same-day FYI reminders that don't require any advance preparation, or if the parent explicitly asks for a morning-only reminder. When in doubt, prefer 'both'.",
         },
+        recurrence_interval: {
+          type: "integer",
+          enum: [1, 2],
+          description: "How often the reminder repeats: 1 = every week (the default), 2 = every other week (fortnightly). If a parent describes something as 'every other [day]', 'alternate weeks', or 'fortnightly', set this to 2.",
+        },
+        anchor_date: {
+          type: "string",
+          description: "ISO date (YYYY-MM-DD) of one specific confirmed occurrence, required when recurrence_interval is 2 — used to calculate which weeks are 'on'. Infer it from what the parent said if they gave a real date (e.g. 'next one is 2nd October'); never guess. If the parent hasn't stated an actual occurrence date, ask them for the next one before saving. Omit for weekly reminders.",
+        },
       },
       required: ["child_name", "title", "emoji", "day_of_week", "reminder_time"],
     },
