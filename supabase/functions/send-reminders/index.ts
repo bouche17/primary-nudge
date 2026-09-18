@@ -316,7 +316,7 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
 
       const { data: childReminders } = await supabase
         .from("child_reminders")
-        .select("id, title, emoji, reminder_time")
+        .select("id, title, emoji, reminder_time, recurrence_interval, anchor_date")
         .eq("child_id", child.id)
         .eq("active", true)
         .eq("day_of_week", targetDay);
@@ -324,6 +324,17 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
       for (const rem of childReminders || []) {
         const shouldSend = rem.reminder_time === "both" || rem.reminder_time === period;
         if (!shouldSend) continue;
+
+        // Fortnightly (or other interval) recurrence: only fire when the target
+        // date aligns with anchor_date's cycle parity.
+        const interval = rem.recurrence_interval ?? 1;
+        if (interval > 1 && rem.anchor_date) {
+          const anchorMs = new Date(rem.anchor_date + "T12:00:00Z").getTime();
+          const targetMs = new Date(targetDateStr + "T12:00:00Z").getTime();
+          const weeksDiff = Math.round((targetMs - anchorMs) / (7 * 24 * 60 * 60 * 1000));
+          const parity = (((weeksDiff % interval) + interval) % interval);
+          if (parity !== 0) continue;
+        }
 
         const refId = `childreminder_${rem.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
