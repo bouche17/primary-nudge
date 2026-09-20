@@ -20,3 +20,6 @@ verify_jwt = false
 
 [functions.twilio-status-callback]
 verify_jwt = false
+
+[functions.delete-account]
+verify_jwt = true

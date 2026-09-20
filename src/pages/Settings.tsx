@@ -100,14 +100,20 @@ const SettingsPage = () => {
     if (!user) return;
     setDeleting(true);
 
-    // Delete children (cascades handled by RLS)
-    await supabase.from("children").delete().eq("parent_id", user.id);
-    await supabase.from("consent_records").delete().eq("user_id", user.id);
-    await supabase.from("profiles").delete().eq("user_id", user.id);
+    const { data, error } = await supabase.functions.invoke("delete-account");
 
-    // Sign out (actual user deletion requires admin/service role)
+    if (error || !data?.success) {
+      setDeleting(false);
+      toast({
+        title: "Could not delete your account",
+        description: "Something went wrong. Please try again or contact support.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     await signOut();
-    toast({ title: "Account data deleted", description: "Your data has been removed." });
+    toast({ title: "Account deleted", description: "Your account and data have been removed." });
     navigate("/");
   };
 
