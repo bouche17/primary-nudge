@@ -362,6 +362,12 @@ ${upcomingNotesSummary}
 
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
+
+## HARD RULE — fortnightly / every-other reminders
+- If a parent describes a reminder as "fortnightly", "every other [day]", "alternate weeks" or similar, you MUST call save_child_reminder with recurrence_interval=2 AND a real anchor_date (YYYY-MM-DD) that the parent has actually given or clearly stated (e.g. "the next one is 2nd October").
+- If the parent has NOT given a specific confirmed date, do NOT call save_child_reminder at all yet. Ask them first: "When's the next one?" — then save once they answer.
+- NEVER save a fortnightly reminder as weekly (recurrence_interval=1) as a stopgap. NEVER guess the anchor date.
+- NEVER put frequency words like "fortnightly", "every other week", "every other Friday" or "alternate" in the title. The title describes WHAT the reminder is for (e.g. "Swimming kit"); frequency is captured only by recurrence_interval and anchor_date.
 Example: Parent says "Jude has PE on Mondays" → save it → reply "Done! 👟 I'll remind you about Jude's PE kit every Sunday evening and Monday morning."
 
 ## When a parent responds to the Sunday lunch check-in
@@ -616,6 +622,20 @@ async function executeTool(
 
     if (!child) {
       return `Could not find child named ${toolArgs.child_name}`;
+    }
+
+    // Server-side guard: never save a fortnightly reminder without a real anchor,
+    // and never let frequency be encoded in the title.
+    const freqPattern = /\b(fortnight(ly)?|every\s+other|alternate\s+(weeks?|\w+days?)|bi-?weekly)\b/i;
+    if (toolArgs.recurrence_interval === 2 && !(typeof toolArgs.anchor_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(toolArgs.anchor_date))) {
+      return "NOT SAVED: fortnightly reminders need a specific confirmed next date (anchor_date). Ask the parent when the next one is, then save with recurrence_interval=2 and that date.";
+    }
+    if (typeof toolArgs.title === "string" && freqPattern.test(toolArgs.title)) {
+      if (toolArgs.recurrence_interval === 2 && toolArgs.anchor_date) {
+        toolArgs.title = toolArgs.title.replace(/\s*\(?\s*(fortnight(ly)?|every\s+other\s+\w+|alternate\s+\w+|bi-?weekly)\s*\)?\s*/gi, " ").trim();
+      } else {
+        return "NOT SAVED: the title mentions a fortnightly/every-other frequency but recurrence_interval is not 2 with a real anchor_date. Ask the parent for the next specific date, then save with recurrence_interval=2, that anchor_date, and a title describing only what it's for.";
+      }
     }
 
     // Check if reminder already exists for this child/title (day can change)
