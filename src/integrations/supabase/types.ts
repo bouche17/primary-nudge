@@ -690,6 +690,38 @@ export type Database = {
           },
         ]
       }
+      school_holidays: {
+        Row: {
+          end_date: string
+          id: string
+          label: string
+          school_id: string | null
+          start_date: string
+        }
+        Insert: {
+          end_date: string
+          id?: string
+          label: string
+          school_id?: string | null
+          start_date: string
+        }
+        Update: {
+          end_date?: string
+          id?: string
+          label?: string
+          school_id?: string | null
+          start_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_holidays_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       school_reminders: {
         Row: {
           active: boolean | null
