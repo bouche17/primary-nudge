@@ -298,6 +298,19 @@ Deno.serve(async (req: Request) => {
         const dayDate = getDateForDay(targetMonday, i);
         const dayLines: string[] = [];
 
+        // If the whole day is a holiday for the family's school(s), omit the
+        // day from the preview entirely.
+        if (familySchoolIds.length > 0) {
+          let allHoliday = true;
+          for (const sid of familySchoolIds) {
+            if (!(await isSchoolHoliday(sid, dayDate))) {
+              allHoliday = false;
+              break;
+            }
+          }
+          if (allHoliday) continue;
+        }
+
         if (remindersByDay[dayName]) {
           dayLines.push(...remindersByDay[dayName]);
         }
