@@ -358,7 +358,6 @@ Deno.serve(async (req: Request) => {
         }
 
         if (planByChild.size > 0) {
-          const firstNameById = new Map<string, string>(children.map((c: any) => [c.id, c.first_name]));
           const SHORT_DAYS: Record<string, string> = {
             Monday: "Mon",
             Tuesday: "Tue",
