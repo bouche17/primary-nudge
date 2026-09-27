@@ -64,7 +64,7 @@ what: A short, readable label for what this email is about.
 
 who: Plain readable form derived from the same year-group detection used for yearGroups below. Use "All children" when yearGroups is ["all"].
 
-when: The relevant date, term, or deadline in readable form. If the email genuinely has no date/term/deadline, use null.
+when: The relevant date, term, or deadline in readable form. If the email genuinely has no date/term/deadline, use null. If a field has no genuine value in the email, return JSON null for it — never the string "null", "N/A", "Not stated", "none", "unknown" or similar placeholder text.
 
 cost: Only if a cost is explicitly mentioned anywhere in the email. Keep any per-unit detail (e.g. per team, per child). Never invent or estimate costs.
 
