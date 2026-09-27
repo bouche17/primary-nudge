@@ -376,8 +376,10 @@ Example: Parent says "Jude has PE on Mondays" → save it → reply "Done! 👟 
 ## When a parent responds to the Sunday lunch check-in
 Use the save_weekly_lunch_plan tool for each child they mention. Save even if they say "school dinners all week" (just save an empty array for packed_lunch_days).
 IMPORTANT — which week: look back in the conversation history at Monty's own check-in message and find the date range it mentioned (e.g. "this week (7 Sept-11 Sept)"). Work out the Monday of that range and pass it as week_start in YYYY-MM-DD form. The check-in is about the upcoming week, so use the date range Monty named rather than guessing.
-If the parent is just telling you about packed lunches spontaneously (not replying to a check-in), omit week_start entirely so it defaults to the nearest upcoming week.
 Example: "Jude needs one Monday and Wednesday, Harry every day" → save Jude: [Monday, Wednesday], Harry: [Monday, Tuesday, Wednesday, Thursday, Friday]
+
+## Packed lunches and school dinners (HARD RULE)
+Any message about packed lunches or school dinners for specific days (e.g. "Harry needs a packed lunch Friday", "Jude's on school dinners tomorrow") MUST use save_weekly_lunch_plan, never save_parent_note. Always work out and pass week_start (the Monday of the week those days fall in, using today's date). Use mode 'replace' only when the parent is giving the full week (e.g. answering the Sunday check-in). Use mode 'add' when they mention extra packed lunch days, and mode 'remove' when they switch a day back to school dinners.
 
 
 ## When a parent tells you about a school event or date
@@ -491,7 +493,12 @@ const tools = [
         },
         week_start: {
           type: "string",
-          description: "Optional ISO date (YYYY-MM-DD) of the MONDAY of the week this plan is for. Use this when the parent is replying to a Sunday check-in that named a specific date range — pass the Monday of that range. Omit for spontaneous messages so the nearest upcoming week is used.",
+          description: "ISO date (YYYY-MM-DD) of the MONDAY of the week these days fall in. Always work this out from today's date (or the Sunday check-in's date range) and pass it.",
+        },
+        mode: {
+          type: "string",
+          enum: ["replace", "add", "remove"],
+          description: "'replace' (default) = these are the full week's packed lunch days (e.g. answering the Sunday check-in). 'add' = add these extra packed lunch days to the existing plan. 'remove' = switch these days back to school dinners.",
         },
       },
       required: ["child_name", "packed_lunch_days"],
@@ -842,7 +849,7 @@ async function executeTool(
     }
 
     // Prefer an explicit week_start from the AI (must be a valid Monday), else
-    // fall back to the Monday of the upcoming week.
+    // fall back: Sat/Sun (UK) → next Monday; Mon–Fri → this week's Monday.
     let weekStart: string | null = null;
     const provided = typeof toolArgs.week_start === "string" ? toolArgs.week_start.trim() : "";
     if (/^\d{4}-\d{2}-\d{2}$/.test(provided)) {
@@ -853,15 +860,46 @@ async function executeTool(
     }
 
     if (!weekStart) {
-      const now = new Date();
-      const day = now.getDay();
-      const daysUntilMonday = day === 0 ? 1 : day === 1 ? 0 : 8 - day;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + daysUntilMonday);
-      monday.setHours(0, 0, 0, 0);
-      weekStart = monday.toISOString().split("T")[0];
+      const ukDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit",
+      }).format(new Date());
+      const ukNoon = new Date(`${ukDateStr}T12:00:00Z`);
+      const dow = ukNoon.getUTCDay(); // 0=Sun
+      const offset = dow === 6 ? 2 : dow === 0 ? 1 : 1 - dow;
+      ukNoon.setUTCDate(ukNoon.getUTCDate() + offset);
+      weekStart = ukNoon.toISOString().split("T")[0];
     }
 
+    const DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const normDays = (arr: unknown): string[] =>
+      Array.isArray(arr)
+        ? arr
+            .map((d) => String(d).trim())
+            .map((d) => DAY_ORDER.find((o) => o.toLowerCase() === d.toLowerCase()))
+            .filter((d): d is string => !!d)
+        : [];
+    const mode = ["replace", "add", "remove"].includes(toolArgs.mode) ? toolArgs.mode : "replace";
+    const given = normDays(toolArgs.packed_lunch_days);
+
+    let resultSet: Set<string>;
+    if (mode === "replace") {
+      resultSet = new Set(given);
+    } else {
+      const { data: existing, error: fetchErr } = await supabase
+        .from("weekly_lunch_plans")
+        .select("packed_lunch_days")
+        .eq("child_id", child.id)
+        .eq("week_start", weekStart)
+        .maybeSingle();
+      if (fetchErr) {
+        console.error("Error fetching existing lunch plan:", fetchErr);
+        return `Error saving lunch plan: ${fetchErr.message}`;
+      }
+      resultSet = new Set(normDays(existing?.packed_lunch_days));
+      if (mode === "add") given.forEach((d) => resultSet.add(d));
+      else given.forEach((d) => resultSet.delete(d));
+    }
+    const days = DAY_ORDER.filter((d) => resultSet.has(d));
 
     const { error } = await supabase
       .from("weekly_lunch_plans")
@@ -869,7 +907,7 @@ async function executeTool(
         child_id: child.id,
         parent_id: context.parentId,
         week_start: weekStart,
-        packed_lunch_days: toolArgs.packed_lunch_days,
+        packed_lunch_days: days,
       }, { onConflict: "child_id,week_start" });
 
     if (error) {
@@ -877,7 +915,10 @@ async function executeTool(
       return `Error saving lunch plan: ${error.message}`;
     }
 
-    const days = toolArgs.packed_lunch_days;
+    const weekLabel = new Date(`${weekStart}T12:00:00Z`).toLocaleDateString("en-GB", {
+      day: "numeric", month: "short", timeZone: "UTC",
+    });
+
     try {
       const lunchSummary =
         days.length === 0 ? "school dinners all week" : `packed lunch on ${days.join(", ")}`;
@@ -890,9 +931,9 @@ async function executeTool(
     }
 
     if (days.length === 0) {
-      return `Saved: ${toolArgs.child_name} has school dinners all week`;
+      return `Saved: ${toolArgs.child_name} now has school dinners all week for week of ${weekLabel}`;
     }
-    return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")} (reminders go out the evening before and the morning of each day)`;
+    return `Saved: ${toolArgs.child_name} now needs packed lunch on ${days.join(", ")} for week of ${weekLabel} (reminders go out the evening before and the morning of each day)`;
   }
 
   if (toolName === "complete_onboarding") {
