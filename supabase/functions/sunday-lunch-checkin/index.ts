@@ -340,7 +340,7 @@ Deno.serve(async (req: Request) => {
             ? `${childNames[0]} and ${childNames[1]}`
             : childNames.join(", ");
 
-      const summary =
+      let summary =
         weeklyItems.length > 0 ? weeklyItems.join(" | ") : "Nothing specific flagged — looks like a quiet week!";
 
       // Append what's already saved in weekly_lunch_plans for this week, so
@@ -358,7 +358,6 @@ Deno.serve(async (req: Request) => {
         }
 
         if (planByChild.size > 0) {
-          const firstNameById = new Map<string, string>(children.map((c: any) => [c.id, c.first_name]));
           const SHORT_DAYS: Record<string, string> = {
             Monday: "Mon",
             Tuesday: "Tue",
