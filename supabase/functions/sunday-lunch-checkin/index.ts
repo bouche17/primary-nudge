@@ -340,7 +340,7 @@ Deno.serve(async (req: Request) => {
             ? `${childNames[0]} and ${childNames[1]}`
             : childNames.join(", ");
 
-      const summary =
+      let summary =
         weeklyItems.length > 0 ? weeklyItems.join(" | ") : "Nothing specific flagged — looks like a quiet week!";
 
       // Append what's already saved in weekly_lunch_plans for this week, so
