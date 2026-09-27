@@ -343,6 +343,56 @@ Deno.serve(async (req: Request) => {
       const summary =
         weeklyItems.length > 0 ? weeklyItems.join(" | ") : "Nothing specific flagged — looks like a quiet week!";
 
+      // Append what's already saved in weekly_lunch_plans for this week, so
+      // parents know they only need to reply if plans have changed.
+      if (childIds.length > 0) {
+        const { data: existingPlans } = await supabase
+          .from("weekly_lunch_plans")
+          .select("child_id, packed_lunch_days")
+          .in("child_id", childIds)
+          .eq("week_start", weekStart);
+
+        const planByChild = new Map<string, string[]>();
+        for (const plan of existingPlans || []) {
+          planByChild.set((plan as any).child_id, (plan as any).packed_lunch_days || []);
+        }
+
+        if (planByChild.size > 0) {
+          const firstNameById = new Map<string, string>(children.map((c: any) => [c.id, c.first_name]));
+          const SHORT_DAYS: Record<string, string> = {
+            Monday: "Mon",
+            Tuesday: "Tue",
+            Wednesday: "Wed",
+            Thursday: "Thu",
+            Friday: "Fri",
+          };
+          const planParts: string[] = [];
+          const stillNeed: string[] = [];
+          for (const child of children) {
+            const days = planByChild.get(child.id);
+            if (!days) {
+              stillNeed.push(child.first_name);
+              continue;
+            }
+            const shortDays = DAYS.map((d) => SHORT_DAYS[d]).filter((short) =>
+              days.some((d: string) => SHORT_DAYS[d] === short)
+            );
+            planParts.push(
+              shortDays.length > 0
+                ? `${child.first_name} - packed lunch ${shortDays.join(", ")}`
+                : `${child.first_name} - school dinners all week`
+            );
+          }
+          if (planParts.length > 0) {
+            let savedLine = `✅ Already saved: ${planParts.join("; ")}.`;
+            savedLine += stillNeed.length > 0
+              ? ` Still need: ${stillNeed.join(", ")}.`
+              : " Only reply if anything's changed.";
+            summary += ` | ${savedLine}`;
+          }
+        }
+      }
+
       let anySent = false;
       for (const phone_number of familyPhones) {
         const result = await sendWhatsApp(phone_number, names, weekDates, summary);
