@@ -251,14 +251,37 @@ Deno.serve(async (req: Request) => {
 
       const weeklyItems: string[] = [];
 
+      const childSchoolById = new Map<string, string | null>(
+        children.map((c: any) => [c.id, c.school_id ?? null])
+      );
+      const familySchoolIds = Array.from(new Set(children.map((c: any) => c.school_id ?? null)));
+
       const { data: childReminders } = await supabase
         .from("child_reminders")
-        .select("child_id, title, emoji, day_of_week, children(first_name)")
+        .select("child_id, title, emoji, day_of_week, recurrence_interval, anchor_date, children(first_name)")
         .in("child_id", childIds)
         .eq("active", true);
 
       const remindersByDay: Record<string, string[]> = {};
       for (const rem of childReminders || []) {
+        const dayIndex = DAYS.indexOf(rem.day_of_week);
+        if (dayIndex === -1) continue;
+        const dayDate = getDateForDay(targetMonday, dayIndex);
+
+        // Fortnightly (or other interval) recurrence: only preview when the
+        // date aligns with anchor_date's cycle parity (same as send-reminders).
+        const interval = rem.recurrence_interval ?? 1;
+        if (interval > 1 && rem.anchor_date) {
+          const anchorMs = new Date(rem.anchor_date + "T12:00:00Z").getTime();
+          const targetMs = new Date(dayDate + "T12:00:00Z").getTime();
+          const weeksDiff = Math.round((targetMs - anchorMs) / (7 * 24 * 60 * 60 * 1000));
+          const parity = (((weeksDiff % interval) + interval) % interval);
+          if (parity !== 0) continue;
+        }
+
+        // Holiday suppression — same check as send-reminders.
+        if (await isSchoolHoliday(childSchoolById.get(rem.child_id) ?? null, dayDate)) continue;
+
         const childName = (rem as any).children?.first_name || "Unknown";
         const line = `${rem.emoji} ${childName}'s ${rem.title}`;
         if (!remindersByDay[rem.day_of_week]) remindersByDay[rem.day_of_week] = [];
