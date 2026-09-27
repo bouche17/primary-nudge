@@ -223,6 +223,18 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
     return `${emoji} ${title}`;
   }
 
+  // Notes are already complete sentences (from parent_notes.summary) — never wrap them in the generic template
+  if (type === "note") {
+    const cleanSummary = title.replace(/\.+\s*$/, "");
+    const mentionsChild =
+      childName === "the children" ||
+      new RegExp(`\\b${childName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(cleanSummary);
+    if (mentionsChild) {
+      return `${emoji} ${cleanSummary} ${when}`;
+    }
+    return `${emoji} ${childName}: ${cleanSummary} ${when}`;
+  }
+
   if (type === "event") {
     return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
   }
