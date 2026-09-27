@@ -42,6 +42,25 @@ function sanitiseForTwilio(text: string): string {
     .slice(0, 1024);
 }
 
+// ── Holiday check (ported from send-reminders) ────────────────────────────────
+
+const holidayCache = new Map<string, boolean>();
+async function isSchoolHoliday(schoolId: string | null, dateStr: string): Promise<boolean> {
+  const key = `${schoolId ?? "null"}_${dateStr}`;
+  if (holidayCache.has(key)) return holidayCache.get(key)!;
+  const filter = schoolId ? `school_id.eq.${schoolId},school_id.is.null` : `school_id.is.null`;
+  const { data, error } = await supabase
+    .from("school_holidays")
+    .select("id")
+    .or(filter)
+    .lte("start_date", dateStr)
+    .gte("end_date", dateStr)
+    .limit(1);
+  if (error) console.error("school_holidays lookup failed:", error);
+  const result = (data?.length ?? 0) > 0;
+  holidayCache.set(key, result);
+  return result;
+}
 
 async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
@@ -232,14 +251,37 @@ Deno.serve(async (req: Request) => {
 
       const weeklyItems: string[] = [];
 
+      const childSchoolById = new Map<string, string | null>(
+        children.map((c: any) => [c.id, c.school_id ?? null])
+      );
+      const familySchoolIds = Array.from(new Set(children.map((c: any) => c.school_id ?? null)));
+
       const { data: childReminders } = await supabase
         .from("child_reminders")
-        .select("child_id, title, emoji, day_of_week, children(first_name)")
+        .select("child_id, title, emoji, day_of_week, recurrence_interval, anchor_date, children(first_name)")
         .in("child_id", childIds)
         .eq("active", true);
 
       const remindersByDay: Record<string, string[]> = {};
       for (const rem of childReminders || []) {
+        const dayIndex = DAYS.indexOf(rem.day_of_week);
+        if (dayIndex === -1) continue;
+        const dayDate = getDateForDay(targetMonday, dayIndex);
+
+        // Fortnightly (or other interval) recurrence: only preview when the
+        // date aligns with anchor_date's cycle parity (same as send-reminders).
+        const interval = rem.recurrence_interval ?? 1;
+        if (interval > 1 && rem.anchor_date) {
+          const anchorMs = new Date(rem.anchor_date + "T12:00:00Z").getTime();
+          const targetMs = new Date(dayDate + "T12:00:00Z").getTime();
+          const weeksDiff = Math.round((targetMs - anchorMs) / (7 * 24 * 60 * 60 * 1000));
+          const parity = (((weeksDiff % interval) + interval) % interval);
+          if (parity !== 0) continue;
+        }
+
+        // Holiday suppression — same check as send-reminders.
+        if (await isSchoolHoliday(childSchoolById.get(rem.child_id) ?? null, dayDate)) continue;
+
         const childName = (rem as any).children?.first_name || "Unknown";
         const line = `${rem.emoji} ${childName}'s ${rem.title}`;
         if (!remindersByDay[rem.day_of_week]) remindersByDay[rem.day_of_week] = [];
@@ -255,6 +297,19 @@ Deno.serve(async (req: Request) => {
         const dayName = DAYS[i];
         const dayDate = getDateForDay(targetMonday, i);
         const dayLines: string[] = [];
+
+        // If the whole day is a holiday for the family's school(s), omit the
+        // day from the preview entirely.
+        if (familySchoolIds.length > 0) {
+          let allHoliday = true;
+          for (const sid of familySchoolIds) {
+            if (!(await isSchoolHoliday(sid, dayDate))) {
+              allHoliday = false;
+              break;
+            }
+          }
+          if (allHoliday) continue;
+        }
 
         if (remindersByDay[dayName]) {
           dayLines.push(...remindersByDay[dayName]);
