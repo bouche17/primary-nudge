@@ -62,7 +62,7 @@ action: Distinguish two email types:
 (a) Deadline-driven / mandatory-action emails (e.g. payment deadlines, forms everyone must complete, final consent dates). Make action clear and compulsory-sounding.
 (b) Informational / awareness emails (e.g. club or tournament announcements, general updates, optional activities). Only set action if there is a specific, universal action every relevant parent must take. If the "action" is really an optional or self-selecting invitation (like volunteering for a role, signing up to a club only if interested), leave action as null — the invitation is already captured in tldr/what. Never null out action for mandatory deadlines.
 
-links: Extract every URL mentioned in the email body (e.g. Google Forms, Microsoft Forms, payment portals, sign-up links) and preserve each link exactly as written, never summarised, shortened, or omitted.
+links: Extract ONLY the URLs a parent actually needs to click to take an action or view specific content — e.g. a form to complete, a booking or payment portal, a specific document, or a specific event page. EXCLUDE: mailto: links, tel: links, the school's general homepage or website root (e.g. a bare https://www.deanvalley.cheshire.sch.uk with no specific path), social media links, and anything from email signatures or footers. If no qualifying links exist, return an empty array. Preserve each qualifying link exactly as written, never summarised, shortened, or omitted.
 
 yearGroups: For distribution logic only — use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
 
@@ -270,7 +270,22 @@ Deno.serve(async (req: Request) => {
       message += ` | Action: ${extracted.action}`;
     }
     if (extracted.links && extracted.links.length > 0) {
-      message += " " + extracted.links.join(" ");
+      // Defensively filter links: drop mailto/tel, drop anything already present in the message text (e.g. an email address already shown in Action), and dedupe.
+      const messageSoFar = message.toLowerCase();
+      const seen = new Set<string>();
+      const usefulLinks = extracted.links.filter((link: string) => {
+        const trimmed = (link || "").trim();
+        if (!trimmed) return false;
+        if (/^(mailto:|tel:)/i.test(trimmed)) return false;
+        const bare = trimmed.replace(/^[a-zA-Z]+:\/\//, "").toLowerCase();
+        if (messageSoFar.includes(trimmed.toLowerCase()) || messageSoFar.includes(bare)) return false;
+        if (seen.has(trimmed.toLowerCase())) return false;
+        seen.add(trimmed.toLowerCase());
+        return true;
+      });
+      if (usefulLinks.length > 0) {
+        message += " " + usefulLinks.join(" ");
+      }
     }
 
     // Send to all relevant parents (including linked partner accounts)
