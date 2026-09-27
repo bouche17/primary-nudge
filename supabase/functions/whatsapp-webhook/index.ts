@@ -363,6 +363,9 @@ ${upcomingNotesSummary}
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
 
+## Reminder timing — always describe it accurately
+When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
+
 ## HARD RULE — fortnightly / every-other reminders
 - If a parent describes a reminder as "fortnightly", "every other [day]", "alternate weeks" or similar, you MUST call save_child_reminder with recurrence_interval=2 AND a real anchor_date (YYYY-MM-DD) that the parent has actually given or clearly stated (e.g. "the next one is 2nd October").
 - If the parent has NOT given a specific confirmed date, do NOT call save_child_reminder at all yet. Ask them first: "When's the next one?" — then save once they answer.
@@ -826,7 +829,7 @@ async function executeTool(
     }
 
     const names = savedFor.filter((n) => n !== "general");
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}`;
+    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`;
   }
 
   if (toolName === "save_weekly_lunch_plan") {
@@ -889,7 +892,7 @@ async function executeTool(
     if (days.length === 0) {
       return `Saved: ${toolArgs.child_name} has school dinners all week`;
     }
-    return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")}`;
+    return `Saved: ${toolArgs.child_name} needs packed lunch on ${days.join(", ")} (reminders go out the evening before and the morning of each day)`;
   }
 
   if (toolName === "complete_onboarding") {
