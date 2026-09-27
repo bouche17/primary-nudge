@@ -10,6 +10,16 @@ const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_
 
 const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
 
+// Treat missing/placeholder values as absent: null, undefined, blank, or common filler strings like "null", "N/A", "Not stated"
+const hasValue = (v: any): boolean => {
+  if (v === null || v === undefined) return false;
+  if (typeof v !== "string") return false;
+  const s = v.trim().toLowerCase();
+  if (!s) return false;
+  if (["null", "undefined", "n/a", "na", "none", "not stated", "not specified", "unknown", "tbc", "-"].includes(s)) return false;
+  return true;
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -262,11 +272,21 @@ Deno.serve(async (req: Request) => {
     }
 
     // Build the message — scannable " | "-separated fields (WhatsApp template vars can't contain real line breaks)
-    let message = `📋 TL;DR: ${extracted.tldr} | What: ${extracted.what} | Who: ${extracted.who} | When: ${extracted.when}`;
-    if (extracted.cost) {
+    // TL;DR is mandatory; every other field is only appended when it has a real value (never "null", "N/A", etc.)
+    let message = `📋 TL;DR: ${extracted.tldr}`;
+    if (hasValue(extracted.what)) {
+      message += ` | What: ${extracted.what}`;
+    }
+    if (hasValue(extracted.who)) {
+      message += ` | Who: ${extracted.who}`;
+    }
+    if (hasValue(extracted.when)) {
+      message += ` | When: ${extracted.when}`;
+    }
+    if (hasValue(extracted.cost)) {
       message += ` | Cost: ${extracted.cost}`;
     }
-    if (extracted.action) {
+    if (hasValue(extracted.action)) {
       message += ` | Action: ${extracted.action}`;
     }
     if (extracted.links && extracted.links.length > 0) {
