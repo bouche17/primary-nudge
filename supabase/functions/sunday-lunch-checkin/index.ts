@@ -42,6 +42,25 @@ function sanitiseForTwilio(text: string): string {
     .slice(0, 1024);
 }
 
+// ── Holiday check (ported from send-reminders) ────────────────────────────────
+
+const holidayCache = new Map<string, boolean>();
+async function isSchoolHoliday(schoolId: string | null, dateStr: string): Promise<boolean> {
+  const key = `${schoolId ?? "null"}_${dateStr}`;
+  if (holidayCache.has(key)) return holidayCache.get(key)!;
+  const filter = schoolId ? `school_id.eq.${schoolId},school_id.is.null` : `school_id.is.null`;
+  const { data, error } = await supabase
+    .from("school_holidays")
+    .select("id")
+    .or(filter)
+    .lte("start_date", dateStr)
+    .gte("end_date", dateStr)
+    .limit(1);
+  if (error) console.error("school_holidays lookup failed:", error);
+  const result = (data?.length ?? 0) > 0;
+  holidayCache.set(key, result);
+  return result;
+}
 
 async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
