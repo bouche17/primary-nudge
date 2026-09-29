@@ -103,6 +103,8 @@ interface MontyContext {
     child_name: string | null;
     extracted_dates: string[];
   }>;
+  lunchPlans: Array<{ child_name: string; week_start: string; packed_lunch_days: string[] }>;
+  lunchWeeks: string[];
   schoolReminders: Array<{
     title: string;
     emoji: string;
@@ -244,12 +246,36 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
   const onboardingStatus = onboardingState?.status || "complete";
   const isOnboarding = onboardingStatus === "new" || onboardingStatus === "collecting";
 
+  // Saved packed lunch plans for this and next UK week
+  const ukTodayIso = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukNoon = new Date(ukTodayIso + "T12:00:00Z");
+  const dow = ukNoon.getUTCDay();
+  const thisMon = new Date(ukNoon);
+  thisMon.setUTCDate(ukNoon.getUTCDate() - (dow === 0 ? 6 : dow - 1));
+  const nextMon = new Date(thisMon);
+  nextMon.setUTCDate(thisMon.getUTCDate() + 7);
+  const lunchWeeks = [thisMon.toISOString().split("T")[0], nextMon.toISOString().split("T")[0]];
+  const { data: lunchRaw } = childIds.length > 0
+    ? await supabase
+        .from("weekly_lunch_plans")
+        .select("child_id, week_start, packed_lunch_days")
+        .in("child_id", childIds)
+        .in("week_start", lunchWeeks)
+    : { data: [] };
+  const lunchPlans = (lunchRaw || []).map((p: any) => ({
+    child_name: enrichedChildren.find((c) => c.id === p.child_id)?.first_name || "",
+    week_start: p.week_start,
+    packed_lunch_days: (p.packed_lunch_days || []) as string[],
+  }));
+
   return {
     parentId,
     children: enrichedChildren,
     childReminders,
     upcomingEvents,
     upcomingNotes,
+    lunchPlans,
+    lunchWeeks,
     schoolReminders: schoolReminders || [],
     isOnboarding,
     onboardingStatus,
@@ -322,7 +348,48 @@ When you've collected the basics for all children, thank them warmly and tell th
 Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 ` : "";
 
+  // ── Authoritative UK date anchors ──
+  const nowDate = new Date();
+  const ukTime = nowDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
+  const ukIso = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukLong = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" });
+  const todayIsoUK = ukIso(nowDate);
+  const noonOf = (iso: string, addDays: number) => {
+    const d = new Date(iso + "T12:00:00Z");
+    d.setUTCDate(d.getUTCDate() + addDays);
+    return d;
+  };
+  const tomorrowD = noonOf(todayIsoUK, 1);
+  const next7 = Array.from({ length: 7 }, (_, i) => {
+    const d = noonOf(todayIsoUK, i + 1);
+    return `- ${d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })} → ${d.toISOString().split("T")[0]}`;
+  }).join("\n");
+
+  const shortDay: Record<string, string> = { Monday: "Mon", Tuesday: "Tue", Wednesday: "Wed", Thursday: "Thu", Friday: "Fri" };
+  const dayOrder = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const lunchLines: string[] = [];
+  for (const wk of context.lunchWeeks) {
+    const wkLabel = new Date(wk + "T12:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+    for (const c of context.children) {
+      const plan = context.lunchPlans.find((p) => p.child_name === c.first_name && p.week_start === wk);
+      let desc: string;
+      if (!plan) desc = "nothing saved";
+      else if (!plan.packed_lunch_days || plan.packed_lunch_days.length === 0) desc = "school dinners all week";
+      else desc = "packed lunch " + dayOrder.filter((d) => plan.packed_lunch_days.includes(d)).map((d) => shortDay[d]).join(", ");
+      lunchLines.push(`• ${c.first_name} — week of ${wkLabel}: ${desc}`);
+    }
+  }
+  const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
+
   return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK primary school parents stay on top of their children's school life via WhatsApp.
+
+## Right now (authoritative — trust this over anything in the chat history)
+- Current UK time: ${ukTime}
+- Today: ${ukLong(nowDate)} (${todayIsoUK})
+- Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
+- Next 7 days:
+${next7}
+Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.
 
 ## Your personality
 - Warm and encouraging, like a knowledgeable friend — never corporate, never stiff
@@ -365,6 +432,12 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
+Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Use the current UK time above: if it's after 6pm and the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
+
+## Packed lunches already saved
+${lunchPlansSummary}
+
+Only say a packed lunch is "already saved" if it appears in this section for that exact date. If a parent tells you a child needs a packed lunch on a day, always call save_weekly_lunch_plan with mode 'add' (it's safe even if already saved) and confirm the specific day and date back.
 
 ## HARD RULE — fortnightly / every-other reminders
 - If a parent describes a reminder as "fortnightly", "every other [day]", "alternate weeks" or similar, you MUST call save_child_reminder with recurrence_interval=2 AND a real anchor_date (YYYY-MM-DD) that the parent has actually given or clearly stated (e.g. "the next one is 2nd October").
@@ -400,10 +473,7 @@ Example: Parent forwards "Year 1 and Year 2 — Earth Day litter pick Wednesday 
 → Harry is in Year 2 → save note with child_name="Harry"
 → Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm."
 
-${onboardingInstructions}
-
-Today is ${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}.
-UK time: ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" })}.`;
+${onboardingInstructions}`;
 }
 
 // ── AI tools (actions Monty can take) ────────────────────────────────────────
