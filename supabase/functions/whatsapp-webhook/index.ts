@@ -381,7 +381,7 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
   }
   const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
 
-  return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK primary school parents stay on top of their children's school life via WhatsApp.
+  return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
 
 ## Right now (authoritative — trust this over anything in the chat history)
 - Current UK time: ${ukTime}
