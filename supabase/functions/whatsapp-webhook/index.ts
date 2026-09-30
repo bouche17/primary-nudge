@@ -739,6 +739,41 @@ async function logDedupDecision(d: {
   }
 }
 const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
+const SUCCESS_CLAIM = /\b(saved|added|set up|sorted|noted|booked|done|updated|got (that|it|them) down|i'?ll remind)\b/i;
+const isSuccessResult = (r: string) => /^(Saved|Updated|ALREADY_SAVED)/.test(r.trim());
+const isFailResult = (r: string) => /NOT SAVED|Error|Could not find|POSSIBLE_DUPLICATE/i.test(r);
+
+/** Reply built only from what the tools actually did — never claims unconfirmed success. */
+function buildHonestReply(results: string[]): string {
+  const lines: string[] = [];
+  for (const r of results) {
+    const t = r.trim();
+    if (/^(Saved|Updated)/.test(t)) {
+      lines.push(t.replace(/^Saved note: /, "Saved: ").replace(/^(Saved|Updated) reminder for /, "$1: ").split(" (reminders")[0]);
+    } else if (t.startsWith("ALREADY_SAVED:")) {
+      const [, what, date, who] = t.split(":");
+      lines.push(`Already saved: ${who ? who + " — " : ""}${what}${date ? " on " + date : ""}`);
+    }
+  }
+  const failed = results.some(isFailResult);
+  if (lines.length === 0) {
+    return "Sorry — that didn't save. Could you send it to me again? 🙏";
+  }
+  return lines.join("\n") + (failed ? "\n\nSome of it didn't save though — could you send the rest again? 🙏" : " ✅");
+}
+
+async function enforceHonestReply(reply: string, results: string[], phone: string, path: string): Promise<string> {
+  if (!reply) return buildHonestReply(results);
+  const anySuccess = results.some(isSuccessResult);
+  if (!anySuccess && SUCCESS_CLAIM.test(reply) && !/didn'?t save|not saved|couldn'?t save/i.test(reply)) {
+    await logDedupDecision({
+      phone, childName: null, tool: `reply_guard_${path}`, newItem: results.join(" || ").slice(0, 300),
+      decision: "unverified_success_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 300) },
+    });
+    return buildHonestReply(results);
+  }
+  return reply;
+}
 
 async function executeTool(
   toolName: string,
@@ -1227,15 +1262,17 @@ async function generateReply(
     const rawFollowUp = await followUpResponse.text();
     console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
 
+    const resultTexts = toolResults.map((t: any) => String(t.content ?? ""));
     if (!followUpResponse.ok) {
       console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
       await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
-      return "Done! I've saved that for you 😊";
+      return buildHonestReply(resultTexts);
     }
 
-    const followUpData = JSON.parse(rawFollowUp);
-    const textBlock = followUpData.content?.find((b: any) => b.type === "text");
-    return textBlock?.text?.trim() || "Done! I've saved that for you 😊";
+    let followUpData: any = null;
+    try { followUpData = JSON.parse(rawFollowUp); } catch { /* fall through */ }
+    const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
+    return await enforceHonestReply(textBlock?.text?.trim() || "", resultTexts, phone, "text");
   }
 
   // No tool use — just return the text response
@@ -1666,9 +1703,15 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       const rawVisionFollowUp = await followUp.text();
       console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
-      const followUpData = JSON.parse(rawVisionFollowUp);
-      const textBlock = followUpData.content?.find((b: any) => b.type === "text");
-      return textBlock?.text?.trim() || "Done! I've saved those dates for you 😊";
+      const visionResults = toolResults.map((t: any) => String(t.content ?? ""));
+      if (!followUp.ok) {
+        await logClaudeFailure(phone, followUp.status, rawVisionFollowUp, "Claude API - vision follow-up");
+        return buildHonestReply(visionResults);
+      }
+      let followUpData: any = null;
+      try { followUpData = JSON.parse(rawVisionFollowUp); } catch { /* fall through */ }
+      const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
+      return await enforceHonestReply(textBlock?.text?.trim() || "", visionResults, phone, "vision");
     }
 
     // No tool use — Claude couldn't find anything or image was unreadable
