@@ -479,7 +479,29 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
       if (!dates.some((d) => d.date === targetDateStr)) continue;
 
       const todayStr = today;
-...
+      const hasFutureOrTodayDate = dates.some((d) => d.date && d.date >= todayStr);
+      if (!hasFutureOrTodayDate) {
+        console.log(`Skipping note ${note.id} — all extracted dates are in the past:`, dates);
+        continue;
+      }
+
+      const refId = `note_${note.id}_${targetDateStr}_${period}`;
+      if (await alreadySent(anchorPhone, refId, period, today)) continue;
+
+      reminderItems.push({
+        childName: note.child_name || "the children",
+        title: note.summary,
+        emoji: "📝",
+        type: "note",
+        refId,
+      });
+      refIdsToLog.push({ refId, title: note.summary, type: "note" });
+    }
+
+    if (reminderItems.length === 0) continue;
+
+    const message = buildConsolidatedMessage(reminderItems, period);
+
     for (const phone of familyPhones) {
       if (testMode && phone !== TEST_PHONE_NUMBER) continue;
       if (!(await claimSlot(phone, targetDateStr, period))) {
