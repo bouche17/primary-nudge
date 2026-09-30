@@ -416,8 +416,12 @@ ${childRemindersSummary}
 ## School-wide recurring reminders
 ${schoolRemindersSummary}
 
-## When a parent asks to be reminded about something already covered above
-If a parent's request matches an item in the School-wide recurring reminders list (for example, they ask you to remind them about PE kit, swimming, or another recurring item that is already listed), do NOT create a new personal reminder or note. Instead, reply conversationally that it's already covered by the existing school-wide reminder, mentioning which day it recurs on. Only create a new personal reminder or note if their request is genuinely different from anything already listed above.
+## HARD RULE — never claim something is "already saved" yourself
+- You must NEVER decide from the lists above that something is already saved, covered, down, or set. Duplicate checks are done by the save tools against the database.
+- Whenever a parent tells you about something for a child on a date (an activity, kit, event, packed lunch), ALWAYS call the matching save tool (save_parent_note, save_weekly_lunch_plan or save_child_reminder). Only say "already saved" if the tool result starts with "ALREADY_SAVED:".
+- A different activity on the same day is a NEW item (e.g. "gymnastics" is not "PE kit"; packed lunch Wednesday is not packed lunch Monday).
+- If the tool result contains "POSSIBLE_DUPLICATE", ask the parent whether it's the same thing — don't claim either way.
+- If the result contains "NOT SAVED", tell the parent plainly it didn't save. Only confirm a save when the result says "Saved".
 
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
@@ -538,6 +542,10 @@ const tools = [
         child_name: {
           type: "string",
           description: "Which child this is for (optional)",
+        },
+        confirm_new: {
+          type: "boolean",
+          description: "Only set true after a POSSIBLE_DUPLICATE result, once the parent has confirmed this is a different thing.",
         },
       },
       required: ["summary", "date"],
@@ -687,6 +695,50 @@ function formatNoteDate(dateStr: string): string {
     return dateStr;
   }
 }
+
+// ── Duplicate matching (done in code, never by the model) ─────────────────────
+const MATCH_STOP = new Set([
+  "the", "and", "for", "with", "has", "have", "had", "needs", "need", "needed", "is", "are", "on", "at", "to", "in",
+  "of", "a", "an", "his", "her", "their", "my", "our", "your", "me", "remind", "reminder", "please", "about", "bring",
+  "take", "today", "tomorrow", "tonight", "morning", "afternoon", "evening", "am", "pm", "next", "this", "week",
+  "day", "school", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+  "december", "st", "nd", "rd", "th", "o", "clock",
+]);
+function itemTokens(text: string, childNames: string[]): Set<string> {
+  const names = new Set(childNames.map((n) => n.toLowerCase()));
+  return new Set(
+    (text || "").toLowerCase().replace(/'s\b/g, "").split(/[^a-z]+/)
+      .filter((w) => w.length >= 2 && !MATCH_STOP.has(w) && !names.has(w))
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)),
+  );
+}
+/** exact = same thing; ambiguous = overlapping but not identical; none = different thing */
+function matchItem(existing: string, incoming: string, childNames: string[]): "exact" | "ambiguous" | "none" {
+  const a = itemTokens(existing, childNames);
+  const b = itemTokens(incoming, childNames);
+  if (a.size === 0 || b.size === 0) return "none";
+  const shared = [...a].filter((w) => b.has(w));
+  if (shared.length === 0) return "none";
+  if (shared.length === a.size && shared.length === b.size) return "exact";
+  return "ambiguous";
+}
+async function logDedupDecision(d: {
+  phone: string; childName: string | null; tool: string; date?: string | null; newItem: string;
+  decision: string; match?: { table: string; id: string; text: string };
+}) {
+  console.log("[DEDUP]", JSON.stringify({ ...d, phone: `…${d.phone.slice(-4)}` }));
+  try {
+    await supabase.from("dedup_decisions").insert({
+      phone_number: d.phone, child_name: d.childName, tool: d.tool, item_date: d.date ?? null,
+      new_item: d.newItem, decision: d.decision,
+      matched_table: d.match?.table ?? null, matched_id: d.match?.id ?? "no match", matched_text: d.match?.text ?? null,
+    });
+  } catch (err) {
+    console.error("dedup log failed:", err);
+  }
+}
+const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
 
 async function executeTool(
   toolName: string,
