@@ -787,8 +787,9 @@ async function executeTool(
   }
 
   if (toolName === "save_parent_note") {
-    const noteDate = toolArgs.date;
+    const noteDate: string = toolArgs.date;
     const noteChild = toolArgs.child_name || null;
+    const confirmNew = toolArgs.confirm_new === true;
 
     // If no specific child, save for ALL children
     const childNames: (string | null)[] = noteChild
@@ -799,79 +800,97 @@ async function executeTool(
 
     const savedFor: string[] = [];
     const alreadySavedFor: string[] = [];
+    const failedFor: string[] = [];
+    const ambiguous: string[] = [];
 
     const newSummary: string = (toolArgs.summary || "").toString();
-    const newTitleLower = newSummary.toLowerCase().trim();
-    // Simple case-insensitive partial match: either side contains a meaningful substring of the other
-    const titlesSimilar = (a: string, b: string) => {
-      const x = a.toLowerCase().trim();
-      const y = b.toLowerCase().trim();
-      if (!x || !y) return false;
-      if (x === y) return true;
-      if (x.includes(y) || y.includes(x)) return true;
-      // Word overlap: share a content word of 4+ chars
-      const stop = new Set(["the", "and", "for", "with", "trip", "year", "school", "day"]);
-      const wordsA = x.split(/\W+/).filter((w) => w.length >= 4 && !stop.has(w));
-      const wordsB = new Set(y.split(/\W+/).filter((w) => w.length >= 4));
-      return wordsA.some((w) => wordsB.has(w));
-    };
+    const allChildNames = context.children.map((c) => c.first_name);
+    const validDate = typeof noteDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(noteDate);
+    const weekday = validDate
+      ? new Date(`${noteDate}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })
+      : null;
 
     let dupSummary: string | null = null;
 
     for (const childName of childNames) {
-      // Deduplicate against existing parent_notes for this phone/child/date with similar title
-      if (noteDate) {
+      const child = childName
+        ? context.children.find((c) => c.first_name.toLowerCase() === childName.toLowerCase())
+        : null;
+      const candidates: Array<{ table: string; id: string; text: string }> = [];
+
+      if (validDate) {
+        // 1. Existing notes on the same date for the same child
         const { data: existingNotes } = await supabase
           .from("parent_notes")
-          .select("id, child_name, summary, extracted_dates")
+          .select("id, child_name, summary")
           .eq("phone_number", phone)
           .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
-
-        const noteDup = existingNotes?.find((row: any) => {
-          const childMatches = childName ? row.child_name === childName : !row.child_name;
-          if (!childMatches) return false;
-          return titlesSimilar(row.summary || "", newSummary);
-        });
-
-        if (noteDup) {
-          alreadySavedFor.push(childName || "general");
-          dupSummary = dupSummary || (noteDup as any).summary || newSummary;
-          continue;
+        for (const row of existingNotes ?? []) {
+          const sameChild = childName
+            ? (row.child_name || "").toLowerCase() === childName.toLowerCase()
+            : !row.child_name;
+          if (sameChild) candidates.push({ table: "parent_notes", id: row.id, text: row.summary || "" });
         }
 
-        // Also check school_events on same date with similar title for this child's school/year
-        const child = childName
-          ? context.children.find((c) => c.first_name === childName)
-          : null;
-        const schoolIds = child
-          ? [child.school_id]
-          : context.children.map((c) => c.school_id);
+        // 2. This child's active recurring reminders on the same weekday
+        if (child && weekday) {
+          const { data: recurring } = await supabase
+            .from("child_reminders")
+            .select("id, title")
+            .eq("child_id", child.id)
+            .eq("day_of_week", weekday)
+            .eq("active", true);
+          for (const r of recurring ?? []) candidates.push({ table: "child_reminders", id: r.id, text: r.title });
+        }
 
+        // 3. School events + school-wide reminders on that date for the child's school
+        const schoolIds = child ? [child.school_id] : context.children.map((c) => c.school_id);
         if (schoolIds.length > 0) {
-          const dayStart = `${noteDate}T00:00:00.000Z`;
-          const dayEnd = `${noteDate}T23:59:59.999Z`;
           const { data: events } = await supabase
             .from("school_events")
-            .select("title, year_group, school_id")
+            .select("id, title, year_group")
             .in("school_id", schoolIds)
-            .gte("start_at", dayStart)
-            .lte("start_at", dayEnd);
-
-          const eventDup = events?.find((ev: any) => {
-            if (!titlesSimilar(ev.title || "", newSummary)) return false;
-            if (!child) return true;
+            .gte("start_at", `${noteDate}T00:00:00.000Z`)
+            .lte("start_at", `${noteDate}T23:59:59.999Z`);
+          for (const ev of events ?? []) {
             const yg = (ev.year_group || "all").toLowerCase();
-            if (yg === "all") return true;
-            return yg.includes((child.year_group || "").toLowerCase());
-          });
-
-          if (eventDup) {
-            alreadySavedFor.push(childName || "general");
-            dupSummary = dupSummary || (eventDup as any).title || newSummary;
-            continue;
+            if (child && yg !== "all" && !yg.includes((child.year_group || "").toLowerCase())) continue;
+            candidates.push({ table: "school_events", id: ev.id, text: ev.title || "" });
           }
+          const { data: schoolRems } = await supabase
+            .from("school_reminders")
+            .select("id, title")
+            .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
+            .or(`day_of_week.eq.${weekday},due_date.eq.${noteDate}`)
+            .eq("active", true);
+          for (const r of schoolRems ?? []) candidates.push({ table: "school_reminders", id: r.id, text: r.title });
         }
       }
+
+      // Exact match on same child + same date + same thing → genuine duplicate
+      let exact: typeof candidates[number] | undefined;
+      let partial: typeof candidates[number] | undefined;
+      for (const c of candidates) {
+        const m = matchItem(c.text, newSummary, allChildNames);
+        if (m === "exact") { exact = c; break; }
+        if (m === "ambiguous" && !partial) partial = c;
+      }
+
+      if (exact) {
+        await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "exact_match", match: exact });
+        alreadySavedFor.push(childName || "general");
+        dupSummary = dupSummary || exact.text || newSummary;
+        continue;
+      }
+      if (partial && !confirmNew) {
+        await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "ambiguous_asked_parent", match: partial });
+        ambiguous.push(`${childName || "the family"} already has "${partial.text}" on ${noteDate}`);
+        continue;
+      }
+      await logDedupDecision({
+        phone, childName, tool: toolName, date: noteDate, newItem: newSummary,
+        decision: partial ? "ambiguous_parent_confirmed_new" : "no_match", match: partial,
+      });
 
       const { error } = await supabase.from("parent_notes").insert({
         phone_number: phone,
@@ -884,13 +903,10 @@ async function executeTool(
 
       if (error) {
         console.error("Error saving note:", error);
+        failedFor.push(childName || "general");
       } else {
         savedFor.push(childName || "general");
       }
-    }
-
-    if (savedFor.length === 0 && alreadySavedFor.length > 0) {
-      return `ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
 
     // Notify linked partners only about genuinely new saves (not dedup hits)
@@ -905,8 +921,21 @@ async function executeTool(
       }
     }
 
+    const parts: string[] = [];
     const names = savedFor.filter((n) => n !== "general");
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`;
+    if (savedFor.length > 0) {
+      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`);
+    }
+    if (alreadySavedFor.length > 0) {
+      parts.push(`ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`);
+    }
+    if (ambiguous.length > 0) {
+      parts.push(`POSSIBLE_DUPLICATE (NOT SAVED): ${ambiguous.join("; ")}. Ask the parent whether "${newSummary}" is the same thing. If they say it's different, call save_parent_note again with confirm_new: true.`);
+    }
+    if (failedFor.length > 0) {
+      parts.push(`NOT SAVED (database error) for ${failedFor.join(" and ")} — tell the parent it didn't save and ask them to try again.`);
+    }
+    return parts.join("\n") || "NOT SAVED: nothing was saved — tell the parent it didn't save.";
   }
 
   if (toolName === "save_weekly_lunch_plan") {
