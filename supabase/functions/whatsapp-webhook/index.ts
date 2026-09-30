@@ -52,7 +52,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 async function logClaudeFailure(
   phone: string,
@@ -504,8 +504,8 @@ const tools = [
         },
         day_of_week: {
           type: "string",
-          enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-          description: "The day of the week this reminder applies to",
+          enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+          description: "The day of the week this reminder applies to (weekends allowed, e.g. Saturday gymnastics). For an activity on several days, call this tool once per day with the same title.",
         },
         reminder_time: {
           type: "string",
@@ -770,72 +770,76 @@ async function executeTool(
       }
     }
 
-    // Check if reminder already exists for this child/title (day can change)
-    const { data: existing } = await supabase
+    if (!DAYS.includes(toolArgs.day_of_week)) {
+      return `NOT SAVED: "${toolArgs.day_of_week}" isn't a valid day. Use Monday to Sunday.`;
+    }
+
+    // Match existing reminders for this child/title. A day change updates the row,
+    // but the same activity on several days in one message (e.g. gymnastics Mon, Wed, Sat)
+    // creates one row per day rather than overwriting.
+    const { data: existingRows, error: lookupErr } = await supabase
       .from("child_reminders")
-      .select("id")
+      .select("id, day_of_week")
       .eq("child_id", child.id)
-      .eq("title", toolArgs.title)
-      .maybeSingle();
+      .eq("title", toolArgs.title);
+    if (lookupErr) {
+      console.error("Reminder lookup failed:", lookupErr);
+      return `NOT SAVED: Error saving reminder (${lookupErr.message})`;
+    }
+    const turnKey = `${child.id}|${String(toolArgs.title).toLowerCase()}`;
+    const ctxAny = context as any;
+    ctxAny.__savedThisTurn = ctxAny.__savedThisTurn || new Set<string>();
+    const sameDay = (existingRows ?? []).find((r: any) => r.day_of_week === toolArgs.day_of_week);
+    const touchedThisTurn: Set<string> = ctxAny.__touchedIds || (ctxAny.__touchedIds = new Set<string>());
+    const existing = sameDay
+      ?? (ctxAny.__savedThisTurn.has(turnKey)
+        ? undefined
+        : (existingRows ?? []).find((r: any) => !touchedThisTurn.has(r.id)));
 
+    const fields = {
+      emoji: toolArgs.emoji,
+      day_of_week: toolArgs.day_of_week,
+      reminder_time: toolArgs.reminder_time,
+      recurrence_interval: toolArgs.recurrence_interval ?? 1,
+      anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
+      active: true,
+    };
+
+    let savedId: string | null = null;
+    let verb: "Updated" | "Saved";
     if (existing) {
-      // Update existing — including day_of_week in case it changed
-      await supabase
-        .from("child_reminders")
-        .update({
-          emoji: toolArgs.emoji,
-          day_of_week: toolArgs.day_of_week,
-          reminder_time: toolArgs.reminder_time,
-          recurrence_interval: toolArgs.recurrence_interval ?? 1,
-          anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
-          active: true,
-        })
-        .eq("id", existing.id);
-      try {
-        await notifyLinkedPartners(phone, {
-          type: "reminder",
-          data: {
-            child: toolArgs.child_name,
-            title: toolArgs.title,
-            day: toolArgs.day_of_week,
-          },
-        });
-      } catch (err) {
-        console.error("Partner notification failed:", err);
+      const { error: updErr } = await supabase.from("child_reminders").update(fields).eq("id", existing.id);
+      if (updErr) {
+        console.error("Error updating reminder:", updErr);
+        return `NOT SAVED: Error saving reminder (${updErr.message})`;
       }
-      return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
+      savedId = existing.id;
+      verb = "Updated";
     } else {
-      // Insert new
-      const { error } = await supabase.from("child_reminders").insert({
-        child_id: child.id,
-        parent_id: context.parentId,
-        title: toolArgs.title,
-        emoji: toolArgs.emoji,
-        day_of_week: toolArgs.day_of_week,
-        reminder_time: toolArgs.reminder_time,
-        recurrence_interval: toolArgs.recurrence_interval ?? 1,
-        anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
-        active: true,
-      });
-
+      const { data: ins, error } = await supabase
+        .from("child_reminders")
+        .insert({ child_id: child.id, parent_id: context.parentId, title: toolArgs.title, ...fields })
+        .select("id")
+        .single();
       if (error) {
         console.error("Error saving reminder:", error);
-        return `Error saving reminder: ${error.message}`;
+        return `NOT SAVED: Error saving reminder (${error.message})`;
       }
-      try {
-        await notifyLinkedPartners(phone, {
-          type: "reminder",
-          data: {
-            child: toolArgs.child_name,
-            title: toolArgs.title,
-            day: toolArgs.day_of_week,
-          },
-        });
-      } catch (err) {
-        console.error("Partner notification failed:", err);
-      }
-      return `Saved reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
+      savedId = ins.id;
+      verb = "Saved";
     }
+    ctxAny.__savedThisTurn.add(turnKey);
+    if (savedId) touchedThisTurn.add(savedId);
+
+    try {
+      await notifyLinkedPartners(phone, {
+        type: "reminder",
+        data: { child: toolArgs.child_name, title: toolArgs.title, day: toolArgs.day_of_week },
+      });
+    } catch (err) {
+      console.error("Partner notification failed:", err);
+    }
+    return `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
   }
 
   if (toolName === "save_parent_note") {
