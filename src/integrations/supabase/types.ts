@@ -535,6 +535,45 @@ export type Database = {
         }
         Relationships: []
       }
+      pending_family_updates: {
+        Row: {
+          actor_first_name: string | null
+          actor_user_id: string
+          created_at: string
+          family_key: string
+          id: string
+          item_key: string | null
+          processing_at: string | null
+          sent_at: string | null
+          summary: string
+          updated_at: string
+        }
+        Insert: {
+          actor_first_name?: string | null
+          actor_user_id: string
+          created_at?: string
+          family_key: string
+          id?: string
+          item_key?: string | null
+          processing_at?: string | null
+          sent_at?: string | null
+          summary: string
+          updated_at?: string
+        }
+        Update: {
+          actor_first_name?: string | null
+          actor_user_id?: string
+          created_at?: string
+          family_key?: string
+          id?: string
+          item_key?: string | null
+          processing_at?: string | null
+          sent_at?: string | null
+          summary?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
@@ -860,6 +899,27 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      claim_family_updates: {
+        Args: { _cap_minutes?: number; _quiet_minutes?: number }
+        Returns: {
+          actor_first_name: string | null
+          actor_user_id: string
+          created_at: string
+          family_key: string
+          id: string
+          item_key: string | null
+          processing_at: string | null
+          sent_at: string | null
+          summary: string
+          updated_at: string
+        }[]
+        SetofOptions: {
+          from: "*"
+          to: "pending_family_updates"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       delete_parent_note: { Args: { _note_id: string }; Returns: boolean }
       get_family_user_ids: { Args: { _user_id: string }; Returns: string[] }
       get_partner_phones: {
