@@ -1146,7 +1146,37 @@ async function generateReply(
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
-  const data = JSON.parse(rawText1);
+  let data = JSON.parse(rawText1);
+
+  // Guard: the model may not claim "already saved" without a database check.
+  // If it did so without calling a tool, force a tool call so the check runs in code.
+  if (data.stop_reason !== "tool_use") {
+    const firstText = data.content?.find((b: any) => b.type === "text")?.text || "";
+    if (ALREADY_CLAIM.test(firstText)) {
+      await logDedupDecision({
+        phone, childName: null, tool: "reply_guard", newItem: incomingMessage.slice(0, 300),
+        decision: "unverified_claim_blocked", match: { table: "model_reply", id: "no match", text: firstText.slice(0, 300) },
+      });
+      const retry = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: model1,
+          max_tokens: 500,
+          system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked; the tool checks the database for duplicates.",
+          messages,
+          tools,
+          tool_choice: { type: "any" },
+        }),
+      });
+      if (retry.ok) {
+        data = await retry.json();
+      } else {
+        await logClaudeFailure(phone, retry.status, await retry.text(), "Claude API - already-claim retry");
+        return "Sorry, I couldn't save that just now — could you send it again? 😊";
+      }
+    }
+  }
 
   // Claude returns stop_reason "tool_use" when it wants to call a tool
   if (data.stop_reason === "tool_use") {
