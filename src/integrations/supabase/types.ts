@@ -186,6 +186,48 @@ export type Database = {
         }
         Relationships: []
       }
+      dedup_decisions: {
+        Row: {
+          child_name: string | null
+          created_at: string
+          decision: string
+          id: string
+          item_date: string | null
+          matched_id: string | null
+          matched_table: string | null
+          matched_text: string | null
+          new_item: string | null
+          phone_number: string | null
+          tool: string
+        }
+        Insert: {
+          child_name?: string | null
+          created_at?: string
+          decision: string
+          id?: string
+          item_date?: string | null
+          matched_id?: string | null
+          matched_table?: string | null
+          matched_text?: string | null
+          new_item?: string | null
+          phone_number?: string | null
+          tool: string
+        }
+        Update: {
+          child_name?: string | null
+          created_at?: string
+          decision?: string
+          id?: string
+          item_date?: string | null
+          matched_id?: string | null
+          matched_table?: string | null
+          matched_text?: string | null
+          new_item?: string | null
+          phone_number?: string | null
+          tool?: string
+        }
+        Relationships: []
+      }
       event_exclusions: {
         Row: {
           child_id: string
