@@ -254,14 +254,41 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
 
 // ── Main send logic ───────────────────────────────────────────────────────────
 
+// Slot-level claim: one message per phone per target date per period, even if
+// the function is invoked twice (e.g. both BST/GMT cron slots or a manual run).
+// Backed by a unique index on reminder_log(reference_id) WHERE reminder_type='slot'.
+async function claimSlot(phone: string, targetDateStr: string, period: string): Promise<boolean> {
+  const { error } = await supabase.from("reminder_log").insert({
+    phone_number: phone,
+    reminder_type: "slot",
+    reference_id: `slot_${phone}_${targetDateStr}_${period}`,
+    reference_title: `${period} slot ${targetDateStr}`,
+    period,
+  });
+  if (error) {
+    if ((error as any).code !== "23505") console.error("claimSlot failed:", error);
+    return false;
+  }
+  return true;
+}
+
+async function releaseSlot(phone: string, targetDateStr: string, period: string) {
+  await supabase
+    .from("reminder_log")
+    .delete()
+    .eq("reminder_type", "slot")
+    .eq("reference_id", `slot_${phone}_${targetDateStr}_${period}`);
+}
+
 async function sendReminders(period: "morning" | "evening", testMode: boolean = false) {
   const now = new Date();
-  const today = now.toISOString().split("T")[0];
+  // All dates are UK-local (Europe/London) so they're correct in both BST and GMT.
+  const today = now.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 
-  const targetDate = new Date(now);
-  if (period === "evening") targetDate.setDate(targetDate.getDate() + 1);
+  const targetDate = new Date(today + "T12:00:00Z");
+  if (period === "evening") targetDate.setUTCDate(targetDate.getUTCDate() + 1);
 
-  const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long" });
+  const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   const targetDateStr = targetDate.toISOString().split("T")[0];
 
   const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id");
@@ -451,7 +478,7 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
       const dates = note.extracted_dates as Array<{ date: string }>;
       if (!dates.some((d) => d.date === targetDateStr)) continue;
 
-      const todayStr = now.toISOString().split("T")[0];
+      const todayStr = today;
       const hasFutureOrTodayDate = dates.some((d) => d.date && d.date >= todayStr);
       if (!hasFutureOrTodayDate) {
         console.log(`Skipping note ${note.id} — all extracted dates are in the past:`, dates);
@@ -476,6 +503,11 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
     const message = buildConsolidatedMessage(reminderItems, period);
 
     for (const phone of familyPhones) {
+      if (testMode && phone !== TEST_PHONE_NUMBER) continue;
+      if (!(await claimSlot(phone, targetDateStr, period))) {
+        console.log(`[${period}] Skipping ${phone} — slot ${targetDateStr} already claimed`);
+        continue;
+      }
       const ok = await sendWhatsApp(phone, message, period);
       if (ok) {
         for (const { refId, title, type } of refIdsToLog) {
@@ -483,6 +515,8 @@ async function sendReminders(period: "morning" | "evening", testMode: boolean = 
         }
         sentCount++;
         console.log(`[${period}] Sent to family phone ${phone} with ${reminderItems.length} items`);
+      } else {
+        await releaseSlot(phone, targetDateStr, period);
       }
     }
   }

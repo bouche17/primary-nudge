@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS reminder_log_slot_claim_uniq ON public.reminder_log (reference_id) WHERE reminder_type = 'slot';
