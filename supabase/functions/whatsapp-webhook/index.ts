@@ -416,8 +416,12 @@ ${childRemindersSummary}
 ## School-wide recurring reminders
 ${schoolRemindersSummary}
 
-## When a parent asks to be reminded about something already covered above
-If a parent's request matches an item in the School-wide recurring reminders list (for example, they ask you to remind them about PE kit, swimming, or another recurring item that is already listed), do NOT create a new personal reminder or note. Instead, reply conversationally that it's already covered by the existing school-wide reminder, mentioning which day it recurs on. Only create a new personal reminder or note if their request is genuinely different from anything already listed above.
+## HARD RULE — never claim something is "already saved" yourself
+- You must NEVER decide from the lists above that something is already saved, covered, down, or set. Duplicate checks are done by the save tools against the database.
+- Whenever a parent tells you about something for a child on a date (an activity, kit, event, packed lunch), ALWAYS call the matching save tool (save_parent_note, save_weekly_lunch_plan or save_child_reminder). Only say "already saved" if the tool result starts with "ALREADY_SAVED:".
+- A different activity on the same day is a NEW item (e.g. "gymnastics" is not "PE kit"; packed lunch Wednesday is not packed lunch Monday).
+- If the tool result contains "POSSIBLE_DUPLICATE", ask the parent whether it's the same thing — don't claim either way.
+- If the result contains "NOT SAVED", tell the parent plainly it didn't save. Only confirm a save when the result says "Saved".
 
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
@@ -538,6 +542,10 @@ const tools = [
         child_name: {
           type: "string",
           description: "Which child this is for (optional)",
+        },
+        confirm_new: {
+          type: "boolean",
+          description: "Only set true after a POSSIBLE_DUPLICATE result, once the parent has confirmed this is a different thing.",
         },
       },
       required: ["summary", "date"],
@@ -688,6 +696,50 @@ function formatNoteDate(dateStr: string): string {
   }
 }
 
+// ── Duplicate matching (done in code, never by the model) ─────────────────────
+const MATCH_STOP = new Set([
+  "the", "and", "for", "with", "has", "have", "had", "needs", "need", "needed", "is", "are", "on", "at", "to", "in",
+  "of", "a", "an", "his", "her", "their", "my", "our", "your", "me", "remind", "reminder", "please", "about", "bring",
+  "take", "today", "tomorrow", "tonight", "morning", "afternoon", "evening", "am", "pm", "next", "this", "week",
+  "day", "school", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november",
+  "december", "st", "nd", "rd", "th", "o", "clock",
+]);
+function itemTokens(text: string, childNames: string[]): Set<string> {
+  const names = new Set(childNames.map((n) => n.toLowerCase()));
+  return new Set(
+    (text || "").toLowerCase().replace(/'s\b/g, "").split(/[^a-z]+/)
+      .filter((w) => w.length >= 2 && !MATCH_STOP.has(w) && !names.has(w))
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)),
+  );
+}
+/** exact = same thing; ambiguous = overlapping but not identical; none = different thing */
+function matchItem(existing: string, incoming: string, childNames: string[]): "exact" | "ambiguous" | "none" {
+  const a = itemTokens(existing, childNames);
+  const b = itemTokens(incoming, childNames);
+  if (a.size === 0 || b.size === 0) return "none";
+  const shared = [...a].filter((w) => b.has(w));
+  if (shared.length === 0) return "none";
+  if (shared.length === a.size && shared.length === b.size) return "exact";
+  return "ambiguous";
+}
+async function logDedupDecision(d: {
+  phone: string; childName: string | null; tool: string; date?: string | null; newItem: string;
+  decision: string; match?: { table: string; id: string; text: string };
+}) {
+  console.log("[DEDUP]", JSON.stringify({ ...d, phone: `…${d.phone.slice(-4)}` }));
+  try {
+    await supabase.from("dedup_decisions").insert({
+      phone_number: d.phone, child_name: d.childName, tool: d.tool, item_date: d.date ?? null,
+      new_item: d.newItem, decision: d.decision,
+      matched_table: d.match?.table ?? null, matched_id: d.match?.id ?? "no match", matched_text: d.match?.text ?? null,
+    });
+  } catch (err) {
+    console.error("dedup log failed:", err);
+  }
+}
+const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
@@ -787,8 +839,9 @@ async function executeTool(
   }
 
   if (toolName === "save_parent_note") {
-    const noteDate = toolArgs.date;
+    const noteDate: string = toolArgs.date;
     const noteChild = toolArgs.child_name || null;
+    const confirmNew = toolArgs.confirm_new === true;
 
     // If no specific child, save for ALL children
     const childNames: (string | null)[] = noteChild
@@ -799,79 +852,97 @@ async function executeTool(
 
     const savedFor: string[] = [];
     const alreadySavedFor: string[] = [];
+    const failedFor: string[] = [];
+    const ambiguous: string[] = [];
 
     const newSummary: string = (toolArgs.summary || "").toString();
-    const newTitleLower = newSummary.toLowerCase().trim();
-    // Simple case-insensitive partial match: either side contains a meaningful substring of the other
-    const titlesSimilar = (a: string, b: string) => {
-      const x = a.toLowerCase().trim();
-      const y = b.toLowerCase().trim();
-      if (!x || !y) return false;
-      if (x === y) return true;
-      if (x.includes(y) || y.includes(x)) return true;
-      // Word overlap: share a content word of 4+ chars
-      const stop = new Set(["the", "and", "for", "with", "trip", "year", "school", "day"]);
-      const wordsA = x.split(/\W+/).filter((w) => w.length >= 4 && !stop.has(w));
-      const wordsB = new Set(y.split(/\W+/).filter((w) => w.length >= 4));
-      return wordsA.some((w) => wordsB.has(w));
-    };
+    const allChildNames = context.children.map((c) => c.first_name);
+    const validDate = typeof noteDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(noteDate);
+    const weekday = validDate
+      ? new Date(`${noteDate}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })
+      : null;
 
     let dupSummary: string | null = null;
 
     for (const childName of childNames) {
-      // Deduplicate against existing parent_notes for this phone/child/date with similar title
-      if (noteDate) {
+      const child = childName
+        ? context.children.find((c) => c.first_name.toLowerCase() === childName.toLowerCase())
+        : null;
+      const candidates: Array<{ table: string; id: string; text: string }> = [];
+
+      if (validDate) {
+        // 1. Existing notes on the same date for the same child
         const { data: existingNotes } = await supabase
           .from("parent_notes")
-          .select("id, child_name, summary, extracted_dates")
+          .select("id, child_name, summary")
           .eq("phone_number", phone)
           .filter("extracted_dates", "cs", JSON.stringify([{ date: noteDate }]));
-
-        const noteDup = existingNotes?.find((row: any) => {
-          const childMatches = childName ? row.child_name === childName : !row.child_name;
-          if (!childMatches) return false;
-          return titlesSimilar(row.summary || "", newSummary);
-        });
-
-        if (noteDup) {
-          alreadySavedFor.push(childName || "general");
-          dupSummary = dupSummary || (noteDup as any).summary || newSummary;
-          continue;
+        for (const row of existingNotes ?? []) {
+          const sameChild = childName
+            ? (row.child_name || "").toLowerCase() === childName.toLowerCase()
+            : !row.child_name;
+          if (sameChild) candidates.push({ table: "parent_notes", id: row.id, text: row.summary || "" });
         }
 
-        // Also check school_events on same date with similar title for this child's school/year
-        const child = childName
-          ? context.children.find((c) => c.first_name === childName)
-          : null;
-        const schoolIds = child
-          ? [child.school_id]
-          : context.children.map((c) => c.school_id);
+        // 2. This child's active recurring reminders on the same weekday
+        if (child && weekday) {
+          const { data: recurring } = await supabase
+            .from("child_reminders")
+            .select("id, title")
+            .eq("child_id", child.id)
+            .eq("day_of_week", weekday)
+            .eq("active", true);
+          for (const r of recurring ?? []) candidates.push({ table: "child_reminders", id: r.id, text: r.title });
+        }
 
+        // 3. School events + school-wide reminders on that date for the child's school
+        const schoolIds = child ? [child.school_id] : context.children.map((c) => c.school_id);
         if (schoolIds.length > 0) {
-          const dayStart = `${noteDate}T00:00:00.000Z`;
-          const dayEnd = `${noteDate}T23:59:59.999Z`;
           const { data: events } = await supabase
             .from("school_events")
-            .select("title, year_group, school_id")
+            .select("id, title, year_group")
             .in("school_id", schoolIds)
-            .gte("start_at", dayStart)
-            .lte("start_at", dayEnd);
-
-          const eventDup = events?.find((ev: any) => {
-            if (!titlesSimilar(ev.title || "", newSummary)) return false;
-            if (!child) return true;
+            .gte("start_at", `${noteDate}T00:00:00.000Z`)
+            .lte("start_at", `${noteDate}T23:59:59.999Z`);
+          for (const ev of events ?? []) {
             const yg = (ev.year_group || "all").toLowerCase();
-            if (yg === "all") return true;
-            return yg.includes((child.year_group || "").toLowerCase());
-          });
-
-          if (eventDup) {
-            alreadySavedFor.push(childName || "general");
-            dupSummary = dupSummary || (eventDup as any).title || newSummary;
-            continue;
+            if (child && yg !== "all" && !yg.includes((child.year_group || "").toLowerCase())) continue;
+            candidates.push({ table: "school_events", id: ev.id, text: ev.title || "" });
           }
+          const { data: schoolRems } = await supabase
+            .from("school_reminders")
+            .select("id, title")
+            .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
+            .or(`day_of_week.eq.${weekday},due_date.eq.${noteDate}`)
+            .eq("active", true);
+          for (const r of schoolRems ?? []) candidates.push({ table: "school_reminders", id: r.id, text: r.title });
         }
       }
+
+      // Exact match on same child + same date + same thing → genuine duplicate
+      let exact: typeof candidates[number] | undefined;
+      let partial: typeof candidates[number] | undefined;
+      for (const c of candidates) {
+        const m = matchItem(c.text, newSummary, allChildNames);
+        if (m === "exact") { exact = c; break; }
+        if (m === "ambiguous" && !partial) partial = c;
+      }
+
+      if (exact) {
+        await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "exact_match", match: exact });
+        alreadySavedFor.push(childName || "general");
+        dupSummary = dupSummary || exact.text || newSummary;
+        continue;
+      }
+      if (partial && !confirmNew) {
+        await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "ambiguous_asked_parent", match: partial });
+        ambiguous.push(`${childName || "the family"} already has "${partial.text}" on ${noteDate}`);
+        continue;
+      }
+      await logDedupDecision({
+        phone, childName, tool: toolName, date: noteDate, newItem: newSummary,
+        decision: partial ? "ambiguous_parent_confirmed_new" : "no_match", match: partial,
+      });
 
       const { error } = await supabase.from("parent_notes").insert({
         phone_number: phone,
@@ -884,13 +955,10 @@ async function executeTool(
 
       if (error) {
         console.error("Error saving note:", error);
+        failedFor.push(childName || "general");
       } else {
         savedFor.push(childName || "general");
       }
-    }
-
-    if (savedFor.length === 0 && alreadySavedFor.length > 0) {
-      return `ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`;
     }
 
     // Notify linked partners only about genuinely new saves (not dedup hits)
@@ -905,8 +973,21 @@ async function executeTool(
       }
     }
 
+    const parts: string[] = [];
     const names = savedFor.filter((n) => n !== "general");
-    return `Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`;
+    if (savedFor.length > 0) {
+      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`);
+    }
+    if (alreadySavedFor.length > 0) {
+      parts.push(`ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`);
+    }
+    if (ambiguous.length > 0) {
+      parts.push(`POSSIBLE_DUPLICATE (NOT SAVED): ${ambiguous.join("; ")}. Ask the parent whether "${newSummary}" is the same thing. If they say it's different, call save_parent_note again with confirm_new: true.`);
+    }
+    if (failedFor.length > 0) {
+      parts.push(`NOT SAVED (database error) for ${failedFor.join(" and ")} — tell the parent it didn't save and ask them to try again.`);
+    }
+    return parts.join("\n") || "NOT SAVED: nothing was saved — tell the parent it didn't save.";
   }
 
   if (toolName === "save_weekly_lunch_plan") {
@@ -1065,7 +1146,37 @@ async function generateReply(
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
 
-  const data = JSON.parse(rawText1);
+  let data = JSON.parse(rawText1);
+
+  // Guard: the model may not claim "already saved" without a database check.
+  // If it did so without calling a tool, force a tool call so the check runs in code.
+  if (data.stop_reason !== "tool_use") {
+    const firstText = data.content?.find((b: any) => b.type === "text")?.text || "";
+    if (ALREADY_CLAIM.test(firstText)) {
+      await logDedupDecision({
+        phone, childName: null, tool: "reply_guard", newItem: incomingMessage.slice(0, 300),
+        decision: "unverified_claim_blocked", match: { table: "model_reply", id: "no match", text: firstText.slice(0, 300) },
+      });
+      const retry = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: model1,
+          max_tokens: 500,
+          system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked; the tool checks the database for duplicates.",
+          messages,
+          tools,
+          tool_choice: { type: "any" },
+        }),
+      });
+      if (retry.ok) {
+        data = await retry.json();
+      } else {
+        await logClaudeFailure(phone, retry.status, await retry.text(), "Claude API - already-claim retry");
+        return "Sorry, I couldn't save that just now — could you send it again? 😊";
+      }
+    }
+  }
 
   // Claude returns stop_reason "tool_use" when it wants to call a tool
   if (data.stop_reason === "tool_use") {
