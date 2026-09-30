@@ -151,7 +151,31 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
+  // Tell the other linked adult(s) about a dashboard change. One call per save;
+  // the function skips sending if there's no one else in the family.
+  const notifyFamily = (summary: string) => {
+    if (!user) return;
+    const meta = (user.user_metadata || {}) as Record<string, string | undefined>;
+    const firstName = (meta.full_name || meta.name || "").trim().split(" ")[0];
+    const full = firstName ? `${summary} (changed by ${firstName})` : summary;
+    supabase.functions
+      .invoke("send-family-update", {
+        body: { family_id: user.id, summary: full, exclude_profile_id: user.id },
+      })
+      .then(({ error }) => {
+        if (error) console.error("send-family-update failed:", error);
+      });
+  };
+
+  const reminderLabel = (id: string) => {
+    const r = recurring.find((x) => x.id === id);
+    if (!r) return null;
+    const child = children.find((c) => c.id === r.child_id)?.first_name ?? "Your child";
+    return { child, title: r.title, day: capitalise(r.day_of_week) };
+  };
+
   const deleteNote = async (noteIds: string[]) => {
+    const noteItem = upcoming.find((i) => i.noteIds?.some((id) => noteIds.includes(id)));
     const results = await Promise.all(
       noteIds.map((id) => supabase.rpc("delete_parent_note", { _note_id: id }))
     );
@@ -168,9 +192,16 @@ const Dashboard = () => {
       prev.filter((i) => !i.noteIds || !i.noteIds.some((id) => noteIds.includes(id)))
     );
     toast({ title: "Note removed" });
+    if (noteItem) {
+      const when = new Date(`${noteItem.date}T12:00:00`).toLocaleDateString("en-GB", {
+        weekday: "short", day: "numeric", month: "short",
+      });
+      notifyFamily(`Note removed: "${noteItem.title}" on ${when}`);
+    }
   };
 
   const deleteRecurring = async (id: string) => {
+    const label = reminderLabel(id);
     const { error } = await supabase.from("child_reminders").delete().eq("id", id);
     if (error) {
       toast({ title: "Couldn't remove reminder", description: error.message, variant: "destructive" });
@@ -178,19 +209,26 @@ const Dashboard = () => {
     }
     setRecurring((prev) => prev.filter((r) => r.id !== id));
     toast({ title: "Reminder removed" });
+    if (label) notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" was removed`);
   };
 
   const toggleRecurring = async (id: string, next: boolean) => {
+    const label = reminderLabel(id);
     const previous = recurring;
     setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, active: next } : r)));
     const { error } = await supabase.from("child_reminders").update({ active: next }).eq("id", id);
     if (error) {
       setRecurring(previous);
       toast({ title: "Couldn't update reminder", description: error.message, variant: "destructive" });
+      return;
+    }
+    if (label) {
+      notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" is now ${next ? "on" : "paused"}`);
     }
   };
 
   const updateRecurringDay = async (id: string, day: string) => {
+    const label = reminderLabel(id);
     const previous = recurring;
     setRecurring((prev) => prev.map((r) => (r.id === id ? { ...r, day_of_week: day } : r)));
     setEditingDay(null);
@@ -201,6 +239,10 @@ const Dashboard = () => {
     if (error) {
       setRecurring(previous);
       toast({ title: "Couldn't update day", description: error.message, variant: "destructive" });
+      return;
+    }
+    if (label && label.day.toLowerCase() !== day.toLowerCase()) {
+      notifyFamily(`${label.child}'s "${label.title}" reminder moved from ${label.day} to ${capitalise(day)}`);
     }
   };
 
