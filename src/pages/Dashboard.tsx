@@ -151,16 +151,21 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
-  // Tell the other linked adult(s) about a dashboard change. One call per save;
-  // the function skips sending if there's no one else in the family.
-  const notifyFamily = (summary: string) => {
+  // Queue a change for the other linked adult(s). The backend bundles queued
+  // changes into one WhatsApp once the parent stops editing.
+  const notifyFamily = (summary: string, itemKey: string) => {
     if (!user) return;
     const meta = (user.user_metadata || {}) as Record<string, string | undefined>;
-    const firstName = (meta.full_name || meta.name || "").trim().split(" ")[0];
-    const full = firstName ? `${summary} (changed by ${firstName})` : summary;
+    const firstName = (meta.full_name || meta.name || "").trim().split(" ")[0] || undefined;
     supabase.functions
       .invoke("send-family-update", {
-        body: { family_id: user.id, summary: full, exclude_profile_id: user.id },
+        body: {
+          family_id: user.id,
+          summary,
+          item_key: itemKey,
+          actor_first_name: firstName,
+          exclude_profile_id: user.id,
+        },
       })
       .then(({ error }) => {
         if (error) console.error("send-family-update failed:", error);
