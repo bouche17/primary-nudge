@@ -52,7 +52,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
 async function logClaudeFailure(
   phone: string,
@@ -504,8 +504,8 @@ const tools = [
         },
         day_of_week: {
           type: "string",
-          enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"],
-          description: "The day of the week this reminder applies to",
+          enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+          description: "The day of the week this reminder applies to (weekends allowed, e.g. Saturday gymnastics). For an activity on several days, call this tool once per day with the same title.",
         },
         reminder_time: {
           type: "string",
@@ -739,6 +739,41 @@ async function logDedupDecision(d: {
   }
 }
 const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
+const SUCCESS_CLAIM = /\b(saved|added|set up|sorted|noted|booked|done|updated|got (that|it|them) down|i'?ll remind)\b/i;
+const isSuccessResult = (r: string) => /^(Saved|Updated|ALREADY_SAVED)/.test(r.trim());
+const isFailResult = (r: string) => /NOT SAVED|Error|Could not find|POSSIBLE_DUPLICATE/i.test(r);
+
+/** Reply built only from what the tools actually did — never claims unconfirmed success. */
+function buildHonestReply(results: string[]): string {
+  const lines: string[] = [];
+  for (const r of results) {
+    const t = r.trim();
+    if (/^(Saved|Updated)/.test(t)) {
+      lines.push(t.replace(/^Saved note: /, "Saved: ").replace(/^(Saved|Updated) reminder for /, "$1: ").split(" (reminders")[0]);
+    } else if (t.startsWith("ALREADY_SAVED:")) {
+      const [, what, date, who] = t.split(":");
+      lines.push(`Already saved: ${who ? who + " — " : ""}${what}${date ? " on " + date : ""}`);
+    }
+  }
+  const failed = results.some(isFailResult);
+  if (lines.length === 0) {
+    return "Sorry — that didn't save. Could you send it to me again? 🙏";
+  }
+  return lines.join("\n") + (failed ? "\n\nSome of it didn't save though — could you send the rest again? 🙏" : " ✅");
+}
+
+async function enforceHonestReply(reply: string, results: string[], phone: string, path: string): Promise<string> {
+  if (!reply) return buildHonestReply(results);
+  const anySuccess = results.some(isSuccessResult);
+  if (!anySuccess && SUCCESS_CLAIM.test(reply) && !/didn'?t save|not saved|couldn'?t save/i.test(reply)) {
+    await logDedupDecision({
+      phone, childName: null, tool: `reply_guard_${path}`, newItem: results.join(" || ").slice(0, 300),
+      decision: "unverified_success_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 300) },
+    });
+    return buildHonestReply(results);
+  }
+  return reply;
+}
 
 async function executeTool(
   toolName: string,
@@ -770,72 +805,76 @@ async function executeTool(
       }
     }
 
-    // Check if reminder already exists for this child/title (day can change)
-    const { data: existing } = await supabase
+    if (!DAYS.includes(toolArgs.day_of_week)) {
+      return `NOT SAVED: "${toolArgs.day_of_week}" isn't a valid day. Use Monday to Sunday.`;
+    }
+
+    // Match existing reminders for this child/title. A day change updates the row,
+    // but the same activity on several days in one message (e.g. gymnastics Mon, Wed, Sat)
+    // creates one row per day rather than overwriting.
+    const { data: existingRows, error: lookupErr } = await supabase
       .from("child_reminders")
-      .select("id")
+      .select("id, day_of_week")
       .eq("child_id", child.id)
-      .eq("title", toolArgs.title)
-      .maybeSingle();
+      .eq("title", toolArgs.title);
+    if (lookupErr) {
+      console.error("Reminder lookup failed:", lookupErr);
+      return `NOT SAVED: Error saving reminder (${lookupErr.message})`;
+    }
+    const turnKey = `${child.id}|${String(toolArgs.title).toLowerCase()}`;
+    const ctxAny = context as any;
+    ctxAny.__savedThisTurn = ctxAny.__savedThisTurn || new Set<string>();
+    const sameDay = (existingRows ?? []).find((r: any) => r.day_of_week === toolArgs.day_of_week);
+    const touchedThisTurn: Set<string> = ctxAny.__touchedIds || (ctxAny.__touchedIds = new Set<string>());
+    const existing = sameDay
+      ?? (ctxAny.__savedThisTurn.has(turnKey)
+        ? undefined
+        : (existingRows ?? []).find((r: any) => !touchedThisTurn.has(r.id)));
 
+    const fields = {
+      emoji: toolArgs.emoji,
+      day_of_week: toolArgs.day_of_week,
+      reminder_time: toolArgs.reminder_time,
+      recurrence_interval: toolArgs.recurrence_interval ?? 1,
+      anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
+      active: true,
+    };
+
+    let savedId: string | null = null;
+    let verb: "Updated" | "Saved";
     if (existing) {
-      // Update existing — including day_of_week in case it changed
-      await supabase
-        .from("child_reminders")
-        .update({
-          emoji: toolArgs.emoji,
-          day_of_week: toolArgs.day_of_week,
-          reminder_time: toolArgs.reminder_time,
-          recurrence_interval: toolArgs.recurrence_interval ?? 1,
-          anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
-          active: true,
-        })
-        .eq("id", existing.id);
-      try {
-        await notifyLinkedPartners(phone, {
-          type: "reminder",
-          data: {
-            child: toolArgs.child_name,
-            title: toolArgs.title,
-            day: toolArgs.day_of_week,
-          },
-        });
-      } catch (err) {
-        console.error("Partner notification failed:", err);
+      const { error: updErr } = await supabase.from("child_reminders").update(fields).eq("id", existing.id);
+      if (updErr) {
+        console.error("Error updating reminder:", updErr);
+        return `NOT SAVED: Error saving reminder (${updErr.message})`;
       }
-      return `Updated reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
+      savedId = existing.id;
+      verb = "Updated";
     } else {
-      // Insert new
-      const { error } = await supabase.from("child_reminders").insert({
-        child_id: child.id,
-        parent_id: context.parentId,
-        title: toolArgs.title,
-        emoji: toolArgs.emoji,
-        day_of_week: toolArgs.day_of_week,
-        reminder_time: toolArgs.reminder_time,
-        recurrence_interval: toolArgs.recurrence_interval ?? 1,
-        anchor_date: toolArgs.recurrence_interval === 2 ? toolArgs.anchor_date ?? null : null,
-        active: true,
-      });
-
+      const { data: ins, error } = await supabase
+        .from("child_reminders")
+        .insert({ child_id: child.id, parent_id: context.parentId, title: toolArgs.title, ...fields })
+        .select("id")
+        .single();
       if (error) {
         console.error("Error saving reminder:", error);
-        return `Error saving reminder: ${error.message}`;
+        return `NOT SAVED: Error saving reminder (${error.message})`;
       }
-      try {
-        await notifyLinkedPartners(phone, {
-          type: "reminder",
-          data: {
-            child: toolArgs.child_name,
-            title: toolArgs.title,
-            day: toolArgs.day_of_week,
-          },
-        });
-      } catch (err) {
-        console.error("Partner notification failed:", err);
-      }
-      return `Saved reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
+      savedId = ins.id;
+      verb = "Saved";
     }
+    ctxAny.__savedThisTurn.add(turnKey);
+    if (savedId) touchedThisTurn.add(savedId);
+
+    try {
+      await notifyLinkedPartners(phone, {
+        type: "reminder",
+        data: { child: toolArgs.child_name, title: toolArgs.title, day: toolArgs.day_of_week },
+      });
+    } catch (err) {
+      console.error("Partner notification failed:", err);
+    }
+    return `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
   }
 
   if (toolName === "save_parent_note") {
@@ -1223,15 +1262,17 @@ async function generateReply(
     const rawFollowUp = await followUpResponse.text();
     console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
 
+    const resultTexts = toolResults.map((t: any) => String(t.content ?? ""));
     if (!followUpResponse.ok) {
       console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
       await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
-      return "Done! I've saved that for you 😊";
+      return buildHonestReply(resultTexts);
     }
 
-    const followUpData = JSON.parse(rawFollowUp);
-    const textBlock = followUpData.content?.find((b: any) => b.type === "text");
-    return textBlock?.text?.trim() || "Done! I've saved that for you 😊";
+    let followUpData: any = null;
+    try { followUpData = JSON.parse(rawFollowUp); } catch { /* fall through */ }
+    const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
+    return await enforceHonestReply(textBlock?.text?.trim() || "", resultTexts, phone, "text");
   }
 
   // No tool use — just return the text response
@@ -1662,9 +1703,15 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       const rawVisionFollowUp = await followUp.text();
       console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
-      const followUpData = JSON.parse(rawVisionFollowUp);
-      const textBlock = followUpData.content?.find((b: any) => b.type === "text");
-      return textBlock?.text?.trim() || "Done! I've saved those dates for you 😊";
+      const visionResults = toolResults.map((t: any) => String(t.content ?? ""));
+      if (!followUp.ok) {
+        await logClaudeFailure(phone, followUp.status, rawVisionFollowUp, "Claude API - vision follow-up");
+        return buildHonestReply(visionResults);
+      }
+      let followUpData: any = null;
+      try { followUpData = JSON.parse(rawVisionFollowUp); } catch { /* fall through */ }
+      const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
+      return await enforceHonestReply(textBlock?.text?.trim() || "", visionResults, phone, "vision");
     }
 
     // No tool use — Claude couldn't find anything or image was unreadable
