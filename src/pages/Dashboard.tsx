@@ -151,16 +151,21 @@ const Dashboard = () => {
     toast({ title: "Child removed" });
   };
 
-  // Tell the other linked adult(s) about a dashboard change. One call per save;
-  // the function skips sending if there's no one else in the family.
-  const notifyFamily = (summary: string) => {
+  // Queue a change for the other linked adult(s). The backend bundles queued
+  // changes into one WhatsApp once the parent stops editing.
+  const notifyFamily = (summary: string, itemKey: string) => {
     if (!user) return;
     const meta = (user.user_metadata || {}) as Record<string, string | undefined>;
-    const firstName = (meta.full_name || meta.name || "").trim().split(" ")[0];
-    const full = firstName ? `${summary} (changed by ${firstName})` : summary;
+    const firstName = (meta.full_name || meta.name || "").trim().split(" ")[0] || undefined;
     supabase.functions
       .invoke("send-family-update", {
-        body: { family_id: user.id, summary: full, exclude_profile_id: user.id },
+        body: {
+          family_id: user.id,
+          summary,
+          item_key: itemKey,
+          actor_first_name: firstName,
+          exclude_profile_id: user.id,
+        },
       })
       .then(({ error }) => {
         if (error) console.error("send-family-update failed:", error);
@@ -196,7 +201,7 @@ const Dashboard = () => {
       const when = new Date(`${noteItem.date}T12:00:00`).toLocaleDateString("en-GB", {
         weekday: "short", day: "numeric", month: "short",
       });
-      notifyFamily(`Note removed: "${noteItem.title}" on ${when}`);
+      notifyFamily(`Note removed: "${noteItem.title}" on ${when}`, `note:${noteIds[0]}`);
     }
   };
 
@@ -209,7 +214,7 @@ const Dashboard = () => {
     }
     setRecurring((prev) => prev.filter((r) => r.id !== id));
     toast({ title: "Reminder removed" });
-    if (label) notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" was removed`);
+    if (label) notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" was removed`, `reminder:${id}`);
   };
 
   const toggleRecurring = async (id: string, next: boolean) => {
@@ -223,7 +228,7 @@ const Dashboard = () => {
       return;
     }
     if (label) {
-      notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" is now ${next ? "on" : "paused"}`);
+      notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" is now ${next ? "on" : "paused"}`, `reminder:${id}`);
     }
   };
 
@@ -242,7 +247,7 @@ const Dashboard = () => {
       return;
     }
     if (label && label.day.toLowerCase() !== day.toLowerCase()) {
-      notifyFamily(`${label.child}'s "${label.title}" reminder moved from ${label.day} to ${capitalise(day)}`);
+      notifyFamily(`${label.child}'s "${label.title}" reminder moved from ${label.day} to ${capitalise(day)}`, `reminder:${id}`);
     }
   };
 

@@ -26,3 +26,5 @@ verify_jwt = true
 
 [functions.send-family-update]
 verify_jwt = false
+[functions.flush-family-updates]
+verify_jwt = false
