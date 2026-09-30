@@ -201,7 +201,7 @@ const Dashboard = () => {
       const when = new Date(`${noteItem.date}T12:00:00`).toLocaleDateString("en-GB", {
         weekday: "short", day: "numeric", month: "short",
       });
-      notifyFamily(`Note removed: "${noteItem.title}" on ${when}`);
+      notifyFamily(`Note removed: "${noteItem.title}" on ${when}`, `note:${noteIds[0]}`);
     }
   };
 
@@ -214,7 +214,7 @@ const Dashboard = () => {
     }
     setRecurring((prev) => prev.filter((r) => r.id !== id));
     toast({ title: "Reminder removed" });
-    if (label) notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" was removed`);
+    if (label) notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" was removed`, `reminder:${id}`);
   };
 
   const toggleRecurring = async (id: string, next: boolean) => {
@@ -228,7 +228,7 @@ const Dashboard = () => {
       return;
     }
     if (label) {
-      notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" is now ${next ? "on" : "paused"}`);
+      notifyFamily(`${label.child}'s ${label.day} reminder "${label.title}" is now ${next ? "on" : "paused"}`, `reminder:${id}`);
     }
   };
 
@@ -247,7 +247,7 @@ const Dashboard = () => {
       return;
     }
     if (label && label.day.toLowerCase() !== day.toLowerCase()) {
-      notifyFamily(`${label.child}'s "${label.title}" reminder moved from ${label.day} to ${capitalise(day)}`);
+      notifyFamily(`${label.child}'s "${label.title}" reminder moved from ${label.day} to ${capitalise(day)}`, `reminder:${id}`);
     }
   };
 
