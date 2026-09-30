@@ -119,14 +119,46 @@ Deno.serve(async (req) => {
       .not("phone_number", "is", null);
 
     let recipients = (profiles || [])
-      .filter((p) => p.id !== excludeId && p.user_id !== excludeId)
+      .filter((p) => p.id !== excludeId && p.user_id !== excludeId && p.user_id !== callerId)
       .map((p) => p.phone_number as string);
     recipients = Array.from(new Set(recipients));
 
-    if (testMode) {
-      console.log(`[send-family-update] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
-      recipients = recipients.filter((p) => p === TEST_PHONE_NUMBER);
+    if (!testMode) {
+      // Queue for bundling — flush-family-updates sends one combined message later.
+      if (recipients.length === 0) {
+        return json({ queued: false, skipped: true, reason: "no_other_adults" });
+      }
+      const itemKey = typeof body.item_key === "string" && body.item_key.trim() ? body.item_key.trim().slice(0, 200) : null;
+      const meta = (authData.user.user_metadata || {}) as Record<string, unknown>;
+      const rawName = String(meta.full_name || meta.name || body.actor_first_name || "").trim().split(/\s+/)[0] || "";
+      const actorFirstName = sanitiseSummary(rawName).slice(0, 50) || null;
+      const familyKey = Array.from(family).sort()[0];
+      const row = { family_key: familyKey, actor_user_id: callerId, actor_first_name: actorFirstName, item_key: itemKey, summary };
+
+      if (itemKey) {
+        const update = () =>
+          supabase.from("pending_family_updates")
+            .update({ actor_user_id: callerId, actor_first_name: actorFirstName, summary, processing_at: null })
+            .eq("family_key", familyKey).eq("item_key", itemKey).is("sent_at", null).is("processing_at", null)
+            .select("id");
+        const { data: updated, error: upErr } = await update();
+        if (upErr) throw upErr;
+        if (!updated || updated.length === 0) {
+          const { error: insErr } = await supabase.from("pending_family_updates").insert(row);
+          if (insErr?.code === "23505") {
+            const { error: retryErr } = await update();
+            if (retryErr) throw retryErr;
+          } else if (insErr) throw insErr;
+        }
+      } else {
+        const { error: insErr } = await supabase.from("pending_family_updates").insert(row);
+        if (insErr) throw insErr;
+      }
+      return json({ queued: true, family_key: familyKey, item_key: itemKey });
     }
+
+    console.log(`[send-family-update] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    recipients = recipients.filter((p) => p === TEST_PHONE_NUMBER);
 
     const payloads = recipients.map((to) => ({
       To: `whatsapp:${to}`,
@@ -136,7 +168,7 @@ Deno.serve(async (req) => {
     }));
 
     if (recipients.length === 0) {
-      return json({ sent: 0, skipped: true, reason: "no_other_adults", test_mode: testMode, payloads });
+      return json({ sent: 0, skipped: true, reason: "no_other_adults", test_mode: true, payloads });
     }
 
     let sent = 0;
@@ -144,7 +176,7 @@ Deno.serve(async (req) => {
       const r = await sendTemplate(to, summary);
       if (r.ok) sent++;
     }
-    return json({ sent, attempted: recipients.length, test_mode: testMode, ...(testMode ? { payloads } : {}) });
+    return json({ sent, attempted: recipients.length, test_mode: true, payloads });
   } catch (e) {
     console.error("[send-family-update] error:", e);
     return json({ error: "Internal server error" }, 500);
