@@ -205,7 +205,7 @@ Deno.serve(async (req) => {
   }
 
   // sender_suite
-  const { data: run } = await admin.from("test_runs").insert({ suite: "sender", triggered_by: adminId }).select("id").single();
+  const { data: run } = await admin.from("test_runs").insert({ suite: "sender", triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
   let results: Result[] = [];
   let fatal: string | null = null;
   try {
