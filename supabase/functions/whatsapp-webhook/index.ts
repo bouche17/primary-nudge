@@ -740,37 +740,55 @@ async function logDedupDecision(d: {
 }
 const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
 const SUCCESS_CLAIM = /\b(saved|added|set up|sorted|noted|booked|done|updated|got (that|it|them) down|i'?ll remind)\b/i;
-const isSuccessResult = (r: string) => /^(Saved|Updated|ALREADY_SAVED)/.test(r.trim());
-const isFailResult = (r: string) => /NOT SAVED|Error|Could not find|POSSIBLE_DUPLICATE/i.test(r);
+/** Structured tool outcome. The honesty guard reads `ok`/`failed`, never the text. */
+type ToolAction = "saved" | "updated" | "deleted" | "onboarding_complete" | "no_change" | "not_saved" | "pending" | "unknown_tool";
+interface ToolResult {
+  ok: boolean;          // something genuinely succeeded (or was confirmed already saved)
+  action: ToolAction;
+  summary: string;      // short, parent-facing description used by the honest reply
+  text: string;         // full text given to Claude as the tool_result content
+  failed?: boolean;     // part of the request failed (may be true alongside ok)
+}
+const okResult = (action: ToolAction, summary: string, text: string = summary, failed = false): ToolResult =>
+  ({ ok: true, action, summary, text, failed });
+const failResult = (text: string, action: ToolAction = "not_saved"): ToolResult =>
+  ({ ok: false, action, summary: text, text, failed: action === "not_saved" });
+const isSuccessResult = (r: ToolResult) => r.ok;
+const isFailResult = (r: ToolResult) => !!r.failed;
 
 /** Reply built only from what the tools actually did — never claims unconfirmed success. */
-function buildHonestReply(results: string[]): string {
-  const lines: string[] = [];
-  for (const r of results) {
-    const t = r.trim();
-    if (/^(Saved|Updated)/.test(t)) {
-      lines.push(t.replace(/^Saved note: /, "Saved: ").replace(/^(Saved|Updated) reminder for /, "$1: ").split(" (reminders")[0]);
-    } else if (t.startsWith("ALREADY_SAVED:")) {
-      const [, what, date, who] = t.split(":");
-      lines.push(`Already saved: ${who ? who + " — " : ""}${what}${date ? " on " + date : ""}`);
-    }
-  }
+function buildHonestReply(results: ToolResult[]): string {
+  const successes = results.filter((r) => r.ok);
   const failed = results.some(isFailResult);
-  if (lines.length === 0) {
+  if (successes.length === 0) {
+    if (results.some((r) => r.action === "pending")) {
+      return "I haven't saved that yet — could you tell me which child it's for? 🙏";
+    }
     return "Sorry — that didn't save. Could you send it to me again? 🙏";
   }
-  return lines.join("\n") + (failed ? "\n\nSome of it didn't save though — could you send the rest again? 🙏" : " ✅");
+  const lines = successes.map((r) => r.summary);
+  return lines.join(" | ") + (failed ? " | Some of it didn't save though — could you send the rest again? 🙏" : " ✅");
 }
 
-async function enforceHonestReply(reply: string, results: string[], phone: string, path: string): Promise<string> {
-  if (!reply) return buildHonestReply(results);
+/** Every reply replacement goes through here so it's always audited. */
+async function replaceReply(
+  original: string, results: ToolResult[], phone: string, path: string, decision: string,
+): Promise<string> {
+  const honest = buildHonestReply(results);
+  await logDedupDecision({
+    phone, childName: null, tool: `reply_guard_${path}`,
+    newItem: JSON.stringify(results.map(({ ok, action, summary, failed }) => ({ ok, action, summary, failed }))).slice(0, 2000),
+    decision,
+    match: { table: "model_reply", id: "no match", text: (original || "(empty reply)").slice(0, 2000) },
+  });
+  return honest;
+}
+
+async function enforceHonestReply(reply: string, results: ToolResult[], phone: string, path: string): Promise<string> {
+  if (!reply) return await replaceReply(reply, results, phone, path, "empty_reply_replaced");
   const anySuccess = results.some(isSuccessResult);
-  if (!anySuccess && SUCCESS_CLAIM.test(reply) && !/didn'?t save|not saved|couldn'?t save/i.test(reply)) {
-    await logDedupDecision({
-      phone, childName: null, tool: `reply_guard_${path}`, newItem: results.join(" || ").slice(0, 300),
-      decision: "unverified_success_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 300) },
-    });
-    return buildHonestReply(results);
+  if (!anySuccess && SUCCESS_CLAIM.test(reply) && !/didn'?t save|not saved|couldn'?t save|haven'?t saved/i.test(reply)) {
+    return await replaceReply(reply, results, phone, path, "unverified_success_claim_blocked");
   }
   return reply;
 }
@@ -780,7 +798,7 @@ async function executeTool(
   toolArgs: any,
   context: MontyContext,
   phone: string
-): Promise<string> {
+): Promise<ToolResult> {
   if (toolName === "save_child_reminder") {
     // Find the child by name
     const child = context.children.find(
@@ -788,25 +806,25 @@ async function executeTool(
     );
 
     if (!child) {
-      return `Could not find child named ${toolArgs.child_name}`;
+      return failResult(`NOT SAVED: Could not find child named ${toolArgs.child_name}`);
     }
 
     // Server-side guard: never save a fortnightly reminder without a real anchor,
     // and never let frequency be encoded in the title.
     const freqPattern = /\b(fortnight(ly)?|every\s+other|alternate\s+(weeks?|\w+days?)|bi-?weekly)\b/i;
     if (toolArgs.recurrence_interval === 2 && !(typeof toolArgs.anchor_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(toolArgs.anchor_date))) {
-      return "NOT SAVED: fortnightly reminders need a specific confirmed next date (anchor_date). Ask the parent when the next one is, then save with recurrence_interval=2 and that date.";
+      return failResult("NOT SAVED: fortnightly reminders need a specific confirmed next date (anchor_date). Ask the parent when the next one is, then save with recurrence_interval=2 and that date.");
     }
     if (typeof toolArgs.title === "string" && freqPattern.test(toolArgs.title)) {
       if (toolArgs.recurrence_interval === 2 && toolArgs.anchor_date) {
         toolArgs.title = toolArgs.title.replace(/\s*\(?\s*(fortnight(ly)?|every\s+other\s+\w+|alternate\s+\w+|bi-?weekly)\s*\)?\s*/gi, " ").trim();
       } else {
-        return "NOT SAVED: the title mentions a fortnightly/every-other frequency but recurrence_interval is not 2 with a real anchor_date. Ask the parent for the next specific date, then save with recurrence_interval=2, that anchor_date, and a title describing only what it's for.";
+        return failResult("NOT SAVED: the title mentions a fortnightly/every-other frequency but recurrence_interval is not 2 with a real anchor_date. Ask the parent for the next specific date, then save with recurrence_interval=2, that anchor_date, and a title describing only what it's for.");
       }
     }
 
     if (!DAYS.includes(toolArgs.day_of_week)) {
-      return `NOT SAVED: "${toolArgs.day_of_week}" isn't a valid day. Use Monday to Sunday.`;
+      return failResult(`NOT SAVED: "${toolArgs.day_of_week}" isn't a valid day. Use Monday to Sunday.`);
     }
 
     // Match existing reminders for this child/title. A day change updates the row,
@@ -819,7 +837,7 @@ async function executeTool(
       .eq("title", toolArgs.title);
     if (lookupErr) {
       console.error("Reminder lookup failed:", lookupErr);
-      return `NOT SAVED: Error saving reminder (${lookupErr.message})`;
+      return failResult(`NOT SAVED: Error saving reminder (${lookupErr.message})`);
     }
     const turnKey = `${child.id}|${String(toolArgs.title).toLowerCase()}`;
     const ctxAny = context as any;
@@ -846,7 +864,7 @@ async function executeTool(
       const { error: updErr } = await supabase.from("child_reminders").update(fields).eq("id", existing.id);
       if (updErr) {
         console.error("Error updating reminder:", updErr);
-        return `NOT SAVED: Error saving reminder (${updErr.message})`;
+        return failResult(`NOT SAVED: Error saving reminder (${updErr.message})`);
       }
       savedId = existing.id;
       verb = "Updated";
@@ -858,7 +876,7 @@ async function executeTool(
         .single();
       if (error) {
         console.error("Error saving reminder:", error);
-        return `NOT SAVED: Error saving reminder (${error.message})`;
+        return failResult(`NOT SAVED: Error saving reminder (${error.message})`);
       }
       savedId = ins.id;
       verb = "Saved";
@@ -874,7 +892,11 @@ async function executeTool(
     } catch (err) {
       console.error("Partner notification failed:", err);
     }
-    return `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`;
+    return okResult(
+      verb === "Updated" ? "updated" : "saved",
+      `${verb}: ${toolArgs.child_name} — ${toolArgs.title} on ${toolArgs.day_of_week}`,
+      `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`,
+    );
   }
 
   if (toolName === "save_parent_note") {
@@ -1026,7 +1048,16 @@ async function executeTool(
     if (failedFor.length > 0) {
       parts.push(`NOT SAVED (database error) for ${failedFor.join(" and ")} — tell the parent it didn't save and ask them to try again.`);
     }
-    return parts.join("\n") || "NOT SAVED: nothing was saved — tell the parent it didn't save.";
+    const text = parts.join("\n") || "NOT SAVED: nothing was saved — tell the parent it didn't save.";
+    const partFailed = failedFor.length > 0;
+    if (savedFor.length > 0) {
+      return okResult("saved", `Saved: ${newSummary} on ${noteDate}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}`, text, partFailed);
+    }
+    if (alreadySavedFor.length > 0) {
+      return okResult("no_change", `Already saved: ${alreadySavedFor.join(" and ")} — ${dupSummary || newSummary} on ${noteDate}`, text, partFailed);
+    }
+    if (ambiguous.length > 0 && !partFailed) return failResult(text, "pending");
+    return failResult(text);
   }
 
   if (toolName === "save_weekly_lunch_plan") {
@@ -1035,7 +1066,7 @@ async function executeTool(
     );
 
     if (!child) {
-      return `Could not find child named ${toolArgs.child_name}`;
+      return failResult(`NOT SAVED: Could not find child named ${toolArgs.child_name}`);
     }
 
     // Prefer an explicit week_start from the AI (must be a valid Monday), else
@@ -1083,7 +1114,7 @@ async function executeTool(
         .maybeSingle();
       if (fetchErr) {
         console.error("Error fetching existing lunch plan:", fetchErr);
-        return `Error saving lunch plan: ${fetchErr.message}`;
+        return failResult(`NOT SAVED: Error saving lunch plan: ${fetchErr.message}`);
       }
       resultSet = new Set(normDays(existing?.packed_lunch_days));
       if (mode === "add") given.forEach((d) => resultSet.add(d));
@@ -1102,7 +1133,7 @@ async function executeTool(
 
     if (error) {
       console.error("Error saving lunch plan:", error);
-      return `Error saving lunch plan: ${error.message}`;
+      return failResult(`NOT SAVED: Error saving lunch plan: ${error.message}`);
     }
 
     const weekLabel = new Date(`${weekStart}T12:00:00Z`).toLocaleDateString("en-GB", {
@@ -1121,20 +1152,24 @@ async function executeTool(
     }
 
     if (days.length === 0) {
-      return `Saved: ${toolArgs.child_name} now has school dinners all week for week of ${weekLabel}`;
+      return okResult("saved", `Saved: ${toolArgs.child_name} — school dinners all week (week of ${weekLabel})`, `Saved: ${toolArgs.child_name} now has school dinners all week for week of ${weekLabel}`);
     }
-    return `Saved: ${toolArgs.child_name} now needs packed lunch on ${days.join(", ")} for week of ${weekLabel} (reminders go out the evening before and the morning of each day)`;
+    return okResult("saved", `Saved: ${toolArgs.child_name} — packed lunch on ${days.join(", ")} (week of ${weekLabel})`, `Saved: ${toolArgs.child_name} now needs packed lunch on ${days.join(", ")} for week of ${weekLabel} (reminders go out the evening before and the morning of each day)`);
   }
 
   if (toolName === "complete_onboarding") {
-    await supabase
+    const { error: obErr } = await supabase
       .from("onboarding_state")
       .update({ status: "complete" })
       .eq("phone_number", phone);
-    return "Onboarding marked as complete";
+    if (obErr) {
+      console.error("complete_onboarding failed:", obErr);
+      return failResult(`NOT SAVED: Error completing onboarding (${obErr.message})`);
+    }
+    return okResult("onboarding_complete", "You're all set up — your reminders are ready", "Onboarding marked as complete");
   }
 
-  return "Unknown tool";
+  return failResult(`Unknown tool ${toolName}`, "unknown_tool");
 }
 
 // ── AI reply generator ────────────────────────────────────────────────────────
@@ -1221,6 +1256,7 @@ async function generateReply(
   if (data.stop_reason === "tool_use") {
     const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
     const toolResults = [];
+    const structuredResults: ToolResult[] = [];
 
     for (const toolBlock of toolUseBlocks) {
       const toolName = toolBlock.name;
@@ -1228,12 +1264,13 @@ async function generateReply(
       console.log(`Executing tool: ${toolName}`, toolArgs);
 
       const result = await executeTool(toolName, toolArgs, context, phone);
-      console.log(`Tool result: ${result}`);
+      console.log(`Tool result:`, JSON.stringify(result));
+      structuredResults.push(result);
 
       toolResults.push({
         type: "tool_result",
         tool_use_id: toolBlock.id,
-        content: result,
+        content: result.text,
       });
     }
 
@@ -1262,17 +1299,16 @@ async function generateReply(
     const rawFollowUp = await followUpResponse.text();
     console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
 
-    const resultTexts = toolResults.map((t: any) => String(t.content ?? ""));
     if (!followUpResponse.ok) {
       console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
       await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
-      return buildHonestReply(resultTexts);
+      return await replaceReply("", structuredResults, phone, "text", "followup_failed_replaced");
     }
 
     let followUpData: any = null;
     try { followUpData = JSON.parse(rawFollowUp); } catch { /* fall through */ }
     const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
-    return await enforceHonestReply(textBlock?.text?.trim() || "", resultTexts, phone, "text");
+    return await enforceHonestReply(textBlock?.text?.trim() || "", structuredResults, phone, "text");
   }
 
   // No tool use — just return the text response
@@ -1598,6 +1634,7 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       // Track notes that need clarification (no child identified, 2+ children in family)
       const pendingClarifications: Array<{ summary: string; date: string }> = [];
+      const visionStructured: ToolResult[] = [];
 
       for (const toolBlock of toolUseBlocks) {
         // For save_parent_note, auto-inject child_name based on year group detection
@@ -1612,7 +1649,8 @@ If the image is unclear or unreadable, ask them to try again.`;
             for (const childName of matchedChildren) {
               const childInput = { ...toolBlock.input, child_name: childName };
               const r = await executeTool(toolBlock.name, childInput, context, phone);
-              results.push(r);
+              visionStructured.push(r);
+              results.push(r.text);
             }
             console.log(`Image: Auto-attributed note to: ${matchedChildren.join(", ")}`);
             toolBlock.input.child_name = matchedChildren.join(" and ");
@@ -1631,6 +1669,7 @@ If the image is unclear or unreadable, ask them to try again.`;
               date: toolBlock.input.date,
             });
             console.log(`Image: Deferring note for clarification — ${toolBlock.input.summary}`);
+            visionStructured.push(failResult("PENDING_CLARIFICATION: not saved yet — awaiting parent to confirm which child this is for", "pending"));
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolBlock.id,
@@ -1642,10 +1681,11 @@ If the image is unclear or unreadable, ask them to try again.`;
         }
 
         const result = await executeTool(toolBlock.name, toolBlock.input, context, phone);
+        visionStructured.push(result);
         toolResults.push({
           type: "tool_result",
           tool_use_id: toolBlock.id,
-          content: result,
+          content: result.text,
         });
       }
 
@@ -1703,15 +1743,14 @@ If the image is unclear or unreadable, ask them to try again.`;
 
       const rawVisionFollowUp = await followUp.text();
       console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
-      const visionResults = toolResults.map((t: any) => String(t.content ?? ""));
       if (!followUp.ok) {
         await logClaudeFailure(phone, followUp.status, rawVisionFollowUp, "Claude API - vision follow-up");
-        return buildHonestReply(visionResults);
+        return await replaceReply("", visionStructured, phone, "vision", "followup_failed_replaced");
       }
       let followUpData: any = null;
       try { followUpData = JSON.parse(rawVisionFollowUp); } catch { /* fall through */ }
       const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
-      return await enforceHonestReply(textBlock?.text?.trim() || "", visionResults, phone, "vision");
+      return await enforceHonestReply(textBlock?.text?.trim() || "", visionStructured, phone, "vision");
     }
 
     // No tool use — Claude couldn't find anything or image was unreadable
@@ -1801,16 +1840,20 @@ async function tryResolvePendingClarification(
 
   // Save each pending note for each matched child
   const savedSummaries: string[] = [];
+  const clarifyResults: ToolResult[] = [];
   for (const note of pending) {
+    let anyOk = false;
     for (const childName of mentionedChildren) {
-      await executeTool(
+      const r = await executeTool(
         "save_parent_note",
         { summary: note.summary, date: note.date, child_name: childName },
         context,
         phone
       );
+      clarifyResults.push(r);
+      if (r.ok) anyOk = true;
     }
-    savedSummaries.push(note.summary);
+    if (anyOk) savedSummaries.push(note.summary);
   }
 
   // Clear pending notes from conversation context
@@ -1819,6 +1862,9 @@ async function tryResolvePendingClarification(
     .update({ context: { ...(convo.context || {}), pending_notes: [] } })
     .eq("id", convo.id);
 
+  if (savedSummaries.length === 0 || clarifyResults.some(isFailResult)) {
+    return await replaceReply("(clarification confirmation not sent)", clarifyResults, phone, "clarification", "clarification_save_failed_replaced");
+  }
   const childLabel = mentionedChildren.join(" and ");
   const summaryLabel = savedSummaries.length === 1
     ? savedSummaries[0]
