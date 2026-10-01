@@ -880,6 +880,158 @@ export type Database = {
         }
         Relationships: []
       }
+      test_entry_audit: {
+        Row: {
+          allowed: boolean
+          created_at: string
+          entry_point: string
+          id: string
+          phone_number: string | null
+          reason: string | null
+          scenario: string | null
+        }
+        Insert: {
+          allowed: boolean
+          created_at?: string
+          entry_point: string
+          id?: string
+          phone_number?: string | null
+          reason?: string | null
+          scenario?: string | null
+        }
+        Update: {
+          allowed?: boolean
+          created_at?: string
+          entry_point?: string
+          id?: string
+          phone_number?: string | null
+          reason?: string | null
+          scenario?: string | null
+        }
+        Relationships: []
+      }
+      test_phone_numbers: {
+        Row: {
+          created_at: string
+          label: string | null
+          phone_number: string
+        }
+        Insert: {
+          created_at?: string
+          label?: string | null
+          phone_number: string
+        }
+        Update: {
+          created_at?: string
+          label?: string | null
+          phone_number?: string
+        }
+        Relationships: []
+      }
+      test_run_results: {
+        Row: {
+          category: string
+          created_at: string
+          details: Json | null
+          id: string
+          reason: string | null
+          reply: string | null
+          run_id: string
+          scenario: string
+          status: string
+        }
+        Insert: {
+          category: string
+          created_at?: string
+          details?: Json | null
+          id?: string
+          reason?: string | null
+          reply?: string | null
+          run_id: string
+          scenario: string
+          status: string
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          details?: Json | null
+          id?: string
+          reason?: string | null
+          reply?: string | null
+          run_id?: string
+          scenario?: string
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_run_results_run_id_fkey"
+            columns: ["run_id"]
+            isOneToOne: false
+            referencedRelation: "test_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      test_runner_tokens: {
+        Row: {
+          created_at: string
+          expires_at: string
+          token_hash: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at: string
+          token_hash: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          token_hash?: string
+        }
+        Relationships: []
+      }
+      test_runs: {
+        Row: {
+          failed: number
+          finished_at: string | null
+          flaky: number
+          id: string
+          notes: string | null
+          passed: number
+          started_at: string
+          status: string
+          suite: string
+          total: number
+          triggered_by: string | null
+        }
+        Insert: {
+          failed?: number
+          finished_at?: string | null
+          flaky?: number
+          id?: string
+          notes?: string | null
+          passed?: number
+          started_at?: string
+          status?: string
+          suite?: string
+          total?: number
+          triggered_by?: string | null
+        }
+        Update: {
+          failed?: number
+          finished_at?: string | null
+          flaky?: number
+          id?: string
+          notes?: string | null
+          passed?: number
+          started_at?: string
+          status?: string
+          suite?: string
+          total?: number
+          triggered_by?: string | null
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string

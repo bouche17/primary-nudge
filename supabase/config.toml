@@ -28,3 +28,7 @@ verify_jwt = true
 verify_jwt = false
 [functions.flush-family-updates]
 verify_jwt = false
+[functions.legacy-reminders-dryrun]
+verify_jwt = false
+[functions.monty-test-runner]
+verify_jwt = false

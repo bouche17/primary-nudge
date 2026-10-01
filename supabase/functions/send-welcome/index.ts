@@ -5,6 +5,7 @@
 // Called via POST with JSON body: { user_id: "uuid" }
 // Or via GET with query param: ?user_id=uuid
 
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(
@@ -25,6 +26,7 @@ const corsHeaders = {
 // ── WhatsApp template sender ──────────────────────────────────────────────────
 
 async function sendWelcomeTemplate(to: string, childNamesText: string): Promise<boolean> {
+  if (await blockIfTestPhone(to, "send-welcome")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);

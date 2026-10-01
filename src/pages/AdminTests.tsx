@@ -1,0 +1,136 @@
+import { useCallback, useEffect, useState } from "react";
+import { Link, Navigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { useAdmin } from "@/hooks/use-admin";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { useToast } from "@/hooks/use-toast";
+import { ArrowLeft, Play, Loader2 } from "lucide-react";
+
+interface Run {
+  id: string; started_at: string; finished_at: string | null; suite: string;
+  total: number; passed: number; failed: number; flaky: number; status: string; notes: string | null;
+}
+interface Result {
+  id: string; scenario: string; category: string; status: string; reply: string | null; reason: string | null;
+}
+
+const statusVariant = (s: string) =>
+  s === "pass" || s === "passed" ? "default" : s === "flaky" ? "secondary" : "destructive";
+
+const AdminTests = () => {
+  const { isAdmin, loading } = useAdmin();
+  const { toast } = useToast();
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [results, setResults] = useState<Result[]>([]);
+  const [running, setRunning] = useState(false);
+
+  const loadRuns = useCallback(async () => {
+    const { data } = await supabase.from("test_runs" as any).select("*").order("started_at", { ascending: false }).limit(20);
+    const list = (data as unknown as Run[]) ?? [];
+    setRuns(list);
+    if (list.length && !selected) setSelected(list[0].id);
+  }, [selected]);
+
+  useEffect(() => { if (isAdmin) loadRuns(); }, [isAdmin, loadRuns]);
+
+  useEffect(() => {
+    if (!selected) return;
+    supabase.from("test_run_results" as any).select("*").eq("run_id", selected).order("created_at")
+      .then(({ data }) => setResults((data as unknown as Result[]) ?? []));
+  }, [selected]);
+
+  const runSuite = async () => {
+    setRunning(true);
+    const { data, error } = await supabase.functions.invoke("monty-test-runner", { body: { action: "sender_suite" } });
+    setRunning(false);
+    if (error) {
+      toast({ title: "Test run failed to start", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: `Run finished: ${data.passed}/${data.total} passed`, description: data.failed ? `${data.failed} failing` : "All green" });
+    setSelected(data.run_id);
+    loadRuns();
+  };
+
+  if (loading) return null;
+  if (!isAdmin) return <Navigate to="/dashboard" replace />;
+
+  return (
+    <div className="min-h-screen bg-background px-6 py-10">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <Link to="/dashboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="w-4 h-4" /> Dashboard
+        </Link>
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-heading font-bold text-foreground">Monty test suite</h1>
+            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages.</p>
+          </div>
+          <Button onClick={runSuite} disabled={running} className="rounded-full">
+            {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+            {running ? "Running…" : "Run suite"}
+          </Button>
+        </div>
+
+        <div className="grid md:grid-cols-[240px_1fr] gap-6">
+          <div className="space-y-2">
+            <h2 className="text-sm font-semibold text-muted-foreground">Recent runs</h2>
+            {runs.length === 0 && <p className="text-sm text-muted-foreground">No runs yet.</p>}
+            {runs.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => setSelected(r.id)}
+                className={`w-full text-left rounded-xl border p-3 transition-colors ${selected === r.id ? "border-primary bg-secondary" : "border-border bg-card hover:bg-secondary"}`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-foreground">
+                    {new Date(r.started_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                  <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {r.passed}/{r.total} passed{r.failed ? ` · ${r.failed} failed` : ""}{r.flaky ? ` · ${r.flaky} flaky` : ""}
+                </p>
+              </button>
+            ))}
+          </div>
+
+          <div className="bg-card border border-border rounded-2xl overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-secondary text-left">
+                <tr>
+                  <th className="p-3 font-semibold text-foreground">Scenario</th>
+                  <th className="p-3 font-semibold text-foreground">Result</th>
+                  <th className="p-3 font-semibold text-foreground">Monty would send / reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((r) => (
+                  <tr key={r.id} className="border-t border-border align-top">
+                    <td className="p-3 text-foreground">
+                      {r.scenario}
+                      <div className="text-xs text-muted-foreground">{r.category}</div>
+                    </td>
+                    <td className="p-3"><Badge variant={statusVariant(r.status)}>{r.status}</Badge></td>
+                    <td className="p-3">
+                      {r.reply && <p className="text-foreground">{r.reply}</p>}
+                      {r.reason && <p className="text-destructive text-xs mt-1">{r.reason}</p>}
+                      {!r.reply && !r.reason && <span className="text-muted-foreground">(no message)</span>}
+                    </td>
+                  </tr>
+                ))}
+                {results.length === 0 && (
+                  <tr><td colSpan={3} className="p-6 text-center text-muted-foreground">Pick a run to see its results.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AdminTests;

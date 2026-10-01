@@ -1,3 +1,4 @@
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 // One-off broadcast test: sends monty_summer_signoff template to a single number.
 const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
 const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
@@ -13,6 +14,9 @@ Deno.serve(async (req: Request) => {
 
   try {
     const { to, contentSid, contentVariables } = await req.json();
+    if (await blockIfTestPhone(to, "send-broadcast-test")) {
+      return new Response(JSON.stringify({ ok: false, blocked: "test number" }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
 
     const params = new URLSearchParams();
     params.append("To", `whatsapp:${to}`);

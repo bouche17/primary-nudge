@@ -18,6 +18,7 @@ import BotFlows from "./pages/BotFlows";
 import CalendarFeeds from "./pages/CalendarFeeds";
 import SchoolReminders from "./pages/SchoolReminders";
 import FamilyAudit from "./pages/FamilyAudit";
+import AdminTests from "./pages/AdminTests";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -65,6 +66,7 @@ const App = () => (
               <Route path="/school-reminders" element={<SchoolReminders />} />
               <Route path="/calendar-feeds" element={<CalendarFeeds />} />
               <Route path="/family-audit" element={<FamilyAudit />} />
+              <Route path="/admin/tests" element={<AdminTests />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/invite/:token" element={<AcceptInvite />} />
               <Route path="/privacy" element={<Privacy />} />

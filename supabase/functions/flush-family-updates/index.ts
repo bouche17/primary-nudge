@@ -1,5 +1,6 @@
 // Runs every minute (pg_cron). Bundles queued dashboard changes per family into
 // ONE monty_family_update WhatsApp per other adult.
+import { blockIfTestPhone, isTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -80,6 +81,7 @@ async function resolveFamily(userId: string): Promise<Set<string>> {
 }
 
 async function sendTemplate(to: string, text: string) {
+  if (await blockIfTestPhone(to, "flush-family-updates")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);

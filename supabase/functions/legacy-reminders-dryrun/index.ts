@@ -1,4 +1,9 @@
-import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { validTestSecret } from "../_shared/testGuard.ts";
+// TEMPORARY: frozen copy of the pre-refactor send-reminders build logic, with all writes and sends stubbed.
+// Used once to prove the refactor produces identical messages. Delete after comparison.
+const RECORDED: Array<{ phone: string; message: string }> = [];
+let NOW_OVERRIDE: Date | null = null;
+let IGNORE_SENT_LOG = false;
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -55,78 +60,9 @@ function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string):
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, text: string, period: "morning" | "evening"): Promise<boolean> {
-  if (await blockIfTestPhone(to, "send-reminders")) return true;
-  const sid = TWILIO_ACCOUNT_SID;
-  const token = TWILIO_AUTH_TOKEN;
-  const from = TWILIO_WHATSAPP_NUMBER;
-
-  const templateSid = period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID;
-
-  if (!templateSid) {
-    console.error(`No template SID configured for period=${period} — refusing to send freeform.`);
-    return false;
-  }
-
-  console.log('Sending to:', to, 'templateSid:', templateSid);
-
-  const sanitisedText = text
-    .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/\\/g, "")
-    .replace(/'/g, "'")
-    .replace(/'/g, "'")
-    .replace(/—/g, "-")
-    .replace(/–/g, "-")
-    .trim()
-    .slice(0, 1024);
-
-  const contentVariables = JSON.stringify({ "1": sanitisedText });
-
-  console.log("RAW sanitisedText:", JSON.stringify(sanitisedText));
-
-  console.log("ContentVariables JSON valid:", (() => { try { JSON.parse(contentVariables); return true; } catch { return false; } })());
-  console.log('ContentVariables string:', contentVariables);
-
-  const params = new URLSearchParams();
-  params.append("To", `whatsapp:${to}`);
-  params.append("From", `whatsapp:${from}`);
-  params.append("ContentSid", templateSid);
-  params.append("ContentVariables", contentVariables);
-  params.append(
-    "StatusCallback",
-    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=send-reminders`
-  );
-
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${sid}:${token}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: params.toString(),
-  });
-
-  console.log('Twilio response status:', res.status);
-  const responseBody = await res.text();
-  console.log('Twilio response body:', responseBody);
-
-  if (!res.ok) {
-    try {
-      await supabase.from("message_send_failures").insert({
-        function_name: "send-reminders",
-        phone_number: to,
-        period,
-        status_code: res.status,
-        error_body: responseBody,
-        context: `Template SID: ${templateSid}`,
-      });
-    } catch (logError) {
-      console.error("Failed to log message send failure:", logError);
-    }
-  }
-
-  return res.ok;
+async function sendWhatsApp(to: string, text: string, _period: string): Promise<boolean> {
+  RECORDED.push({ phone: to, message: text });
+  return true;
 }
 
 // ── Holiday check ─────────────────────────────────────────────────────────────
@@ -151,8 +87,6 @@ async function isSchoolHoliday(schoolId: string | null, dateStr: string): Promis
 
 // ── Dedup check ───────────────────────────────────────────────────────────────
 
-// Only ever set by the read-only real-family comparison (no writes, no sends).
-let IGNORE_SENT_LOG = false;
 async function alreadySent(phone: string, refId: string, period: string, today: string): Promise<boolean> {
   if (IGNORE_SENT_LOG) return false;
   const { data } = await supabase
@@ -167,6 +101,7 @@ async function alreadySent(phone: string, refId: string, period: string, today: 
 }
 
 async function logReminder(phone: string, type: string, refId: string, title: string, period: string) {
+  return;
   await supabase.from("reminder_log").insert({
     phone_number: phone,
     reminder_type: type,
@@ -263,6 +198,7 @@ function buildItemLine(item: ReminderItem, period: "morning" | "evening"): strin
 // the function is invoked twice (e.g. both BST/GMT cron slots or a manual run).
 // Backed by a unique index on reminder_log(reference_id) WHERE reminder_type='slot'.
 async function claimSlot(phone: string, targetDateStr: string, period: string): Promise<boolean> {
+  return true;
   const { error } = await supabase.from("reminder_log").insert({
     phone_number: phone,
     reminder_type: "slot",
@@ -278,6 +214,7 @@ async function claimSlot(phone: string, targetDateStr: string, period: string): 
 }
 
 async function releaseSlot(phone: string, targetDateStr: string, period: string) {
+  return;
   await supabase
     .from("reminder_log")
     .delete()
@@ -285,25 +222,8 @@ async function releaseSlot(phone: string, targetDateStr: string, period: string)
     .eq("reference_id", `slot_${phone}_${targetDateStr}_${period}`);
 }
 
-interface PlannedMessage {
-  phone: string;
-  familyId: string;
-  message: string;
-  itemCount: number;
-  refIdsToLog: Array<{ refId: string; title: string; type: string }>;
-}
-
-interface BuildOptions {
-  now?: Date;
-  testMode?: boolean;            // legacy ?test=true: only the family containing TEST_PHONE_NUMBER
-  includeTestFamilies?: boolean; // false for every real run
-  onlyPhones?: Set<string>;      // restrict recipients (test suite)
-}
-
-/** Pure build step: reads the database and returns what WOULD be sent. Never writes, never sends. */
-async function buildReminderMessages(period: "morning" | "evening", opts: BuildOptions = {}) {
-  const testMode = !!opts.testMode;
-  const now = opts.now ?? new Date();
+async function sendReminders(period: "morning" | "evening", testMode: boolean = false) {
+  const now = NOW_OVERRIDE ?? new Date();
   // All dates are UK-local (Europe/London) so they're correct in both BST and GMT.
   const today = now.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 
@@ -315,10 +235,9 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
   const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id");
 
-  const planned: PlannedMessage[] = [];
   if (!children || children.length === 0) {
     console.log("No children registered yet");
-    return { planned, targetDateStr, today };
+    return;
   }
 
   const { data: profiles } = await supabase
@@ -328,7 +247,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
   if (!profiles || profiles.length === 0) {
     console.log("No parent phone numbers found");
-    return { planned, targetDateStr, today };
+    return;
   }
 
   const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
@@ -377,14 +296,11 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
     phonesByFamily.get(fam)!.add(phone);
   }
 
+  let sentCount = 0;
+
   for (const [familyId, familyChildren] of childrenByFamily) {
     const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
     if (familyPhones.length === 0) continue;
-
-    // Test families are excluded from every real run; included only for the test suite.
-    const hasTestPhone = (await Promise.all(familyPhones.map((p) => isTestPhone(p)))).some(Boolean);
-    if (hasTestPhone && !opts.includeTestFamilies) continue;
-    if (!hasTestPhone && opts.includeTestFamilies && opts.onlyPhones) continue;
 
     if (testMode && !familyPhones.includes(TEST_PHONE_NUMBER)) {
       console.log(`[${period}] Test mode: skipping family ${familyId} — test number not in family phones`);
@@ -530,171 +446,37 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
     for (const phone of familyPhones) {
       if (testMode && phone !== TEST_PHONE_NUMBER) continue;
-      if (opts.onlyPhones && !opts.onlyPhones.has(phone)) continue;
-      planned.push({ phone, familyId, message, itemCount: reminderItems.length, refIdsToLog });
-    }
-  }
-
-  return { planned, targetDateStr, today };
-}
-
-/**
- * Delivery step. mode "real" sends via Twilio; mode "stub" never calls Twilio and only
- * records what would have been sent (still claims the slot, so the double-send guard is exercised).
- */
-async function deliverReminderMessages(
-  planned: PlannedMessage[], period: "morning" | "evening", targetDateStr: string, mode: "real" | "stub",
-) {
-  const delivered: Array<{ phone: string; message: string }> = [];
-  const blocked: Array<{ phone: string; reason: string }> = [];
-  for (const p of planned) {
-    if (!(await claimSlot(p.phone, targetDateStr, period))) {
-      console.log(`[${period}] Skipping ${p.phone} — slot ${targetDateStr} already claimed`);
-      blocked.push({ phone: p.phone, reason: "slot_already_claimed" });
-      continue;
-    }
-    const ok = mode === "stub" ? true : await sendWhatsApp(p.phone, p.message, period);
-    if (ok) {
-      for (const { refId, title, type } of p.refIdsToLog) {
-        await logReminder(p.phone, type, refId, title, period);
+      if (!(await claimSlot(phone, targetDateStr, period))) {
+        console.log(`[${period}] Skipping ${phone} — slot ${targetDateStr} already claimed`);
+        continue;
       }
-      delivered.push({ phone: p.phone, message: p.message });
-      console.log(`[${period}] ${mode === "stub" ? "Recorded (stub)" : "Sent"} to ${p.phone} with ${p.itemCount} items`);
-    } else {
-      await releaseSlot(p.phone, targetDateStr, period);
+      const ok = await sendWhatsApp(phone, message, period);
+      if (ok) {
+        for (const { refId, title, type } of refIdsToLog) {
+          await logReminder(phone, type, refId, title, period);
+        }
+        sentCount++;
+        console.log(`[${period}] Sent to family phone ${phone} with ${reminderItems.length} items`);
+      } else {
+        await releaseSlot(phone, targetDateStr, period);
+      }
     }
   }
-  return { delivered, blocked };
-}
 
-async function sendReminders(period: "morning" | "evening", testMode: boolean = false) {
-  const { planned, targetDateStr } = await buildReminderMessages(period, { testMode, includeTestFamilies: false });
-  const { delivered } = await deliverReminderMessages(planned, period, targetDateStr, "real");
-  console.log(`[${period}] Sent ${delivered.length} consolidated messages`);
-}
-
-// ── Test entry point ──────────────────────────────────────────────────────────
-// Requires MONTY_TEST_SECRET (constant-time). dry_run defaults to true. Never calls Twilio.
-// scope "test": only allowlisted phones; may stub-send (records + claims slots for test phones only).
-// scope "real_readonly": builds real families' messages; no writes, no sends, phones masked.
-async function handleTestEntry(req: Request, secret: string | null): Promise<Response> {
-  const jsonRes = (b: unknown, status = 200) =>
-    new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-  let body: any = {};
-  try { body = await req.json(); } catch { /* empty */ }
-  const scenario = typeof body.scenario === "string" ? body.scenario.slice(0, 200) : null;
-  const phones: string[] = Array.isArray(body.only_phones) ? body.only_phones.map(String) : [];
-
-  if (!(await validTestSecret(secret))) {
-    await auditTestEntry({ entry_point: "send-reminders", phone_number: phones.join(",") || null, scenario, allowed: false, reason: "bad_secret" });
-    return jsonRes({ error: "Unauthorized" }, 401);
-  }
-  const period = body.period === "evening" ? "evening" : body.period === "morning" ? "morning" : null;
-  if (!period) return jsonRes({ error: "period must be morning or evening" }, 400);
-  const now = body.now ? new Date(body.now) : new Date();
-  if (isNaN(now.getTime())) return jsonRes({ error: "invalid now" }, 400);
-  const scope = body.scope === "real_readonly" ? "real_readonly" : "test";
-  const dryRun = body.dry_run !== false; // defaults to true
-  const stubSend = body.stub_send === true;
-
-  if (scope === "real_readonly") {
-    if (stubSend || !dryRun) {
-      await auditTestEntry({ entry_point: "send-reminders", scenario, allowed: false, reason: "real_readonly_cannot_write" });
-      return jsonRes({ error: "real_readonly is build-only" }, 403);
-    }
-    await auditTestEntry({ entry_point: "send-reminders:real_readonly", scenario, allowed: true, reason: `${period} ${now.toISOString()} ignore_log=${body.ignore_sent_log === true}` });
-    IGNORE_SENT_LOG = body.ignore_sent_log === true;
-    let built;
-    try {
-      built = await buildReminderMessages(period, { now, includeTestFamilies: false });
-    } finally {
-      IGNORE_SENT_LOG = false;
-    }
-    const { planned, targetDateStr } = built;
-    return jsonRes({
-      scope, period, now: now.toISOString(), target_date: targetDateStr, count: planned.length,
-      messages: planned.map((p) => ({ phone_last4: p.phone.slice(-4), family: p.familyId.slice(0, 8), message: p.message })),
-    });
-  }
-
-  if (phones.length === 0) return jsonRes({ error: "only_phones required" }, 400);
-  for (const ph of phones) {
-    if (!(await isTestPhone(ph))) {
-      await auditTestEntry({ entry_point: "send-reminders", phone_number: ph, scenario, allowed: false, reason: "not_on_allowlist" });
-      return jsonRes({ error: `Refused: ${ph.slice(-4)} is not a test number` }, 403);
-    }
-  }
-  await auditTestEntry({ entry_point: "send-reminders", phone_number: phones.join(","), scenario, allowed: true, reason: `${period} ${now.toISOString()} stub_send=${stubSend}` });
-
-  const { planned, targetDateStr } = await buildReminderMessages(period, {
-    now, includeTestFamilies: true, onlyPhones: new Set(phones),
-  });
-  if (!stubSend) {
-    return jsonRes({ scope, period, target_date: targetDateStr, messages: planned.map((p) => ({ phone: p.phone, message: p.message })) });
-  }
-  // Stub delivery: never Twilio. Belt and braces: every planned phone is an allowlisted test number.
-  const safe = planned.filter((p) => phones.includes(p.phone));
-  const { delivered, blocked } = await deliverReminderMessages(safe, period, targetDateStr, "stub");
-  return jsonRes({ scope, period, target_date: targetDateStr, stub_send: true, delivered, blocked });
+  console.log(`[${period}] Sent ${sentCount} consolidated messages`);
 }
 
 // ── HTTP handler ──────────────────────────────────────────────────────────────
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+  if (!(await validTestSecret(req.headers.get("x-monty-test-secret")))) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
   }
-
-  try {
-    const url = new URL(req.url);
-
-    // ── Locked-down test entry point (Monty test suite) ─────────────────────
-    const testSecretHeader = req.headers.get("x-monty-test-secret");
-    if (testSecretHeader !== null || url.searchParams.get("dry_run") !== null) {
-      return await handleTestEntry(req, testSecretHeader);
-    }
-
-    let period = url.searchParams.get("period") as "evening" | "morning" | null;
-    const testMode = url.searchParams.get("test") === "true";
-
-    if (testMode) {
-      console.log(`[send-reminders] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
-    }
-
-    if (!period) {
-      const hour = new Date().getUTCHours();
-      period = hour < 12 ? "morning" : "evening";
-    }
-
-    // --- Holiday pause guard --------------------------------------------------
-    // Reminders are paused for the summer break and resume automatically on 2 Sep.
-    const RESUME_DATE = "2026-09-02"; // first day back; reminders fire from this date onward
-    // Today's date in UK local time as YYYY-MM-DD (en-CA gives ISO-style output,
-    // timeZone keeps it correct through BST/GMT so it flips on the right morning)
-    const todayUK = new Date().toLocaleDateString("en-CA", {
-      timeZone: "Europe/London",
-    });
-    if (todayUK < RESUME_DATE) {
-      console.log(
-        `Reminders paused for school holiday (today ${todayUK} < resume ${RESUME_DATE}) - skipping.`
-      );
-      return new Response(
-        JSON.stringify({ skipped: true, reason: "holiday_pause", today: todayUK, resume: RESUME_DATE, test_mode: testMode }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-    // --------------------------------------------------------------------------
-
-    await sendReminders(period, testMode);
-
-    return new Response(JSON.stringify({ success: true, period, test_mode: testMode }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    console.error("send-reminders error:", error);
-    return new Response(JSON.stringify({ error: "Internal server error" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
+  const body = await req.json().catch(() => ({}));
+  RECORDED.length = 0;
+  NOW_OVERRIDE = body.now ? new Date(body.now) : null;
+  IGNORE_SENT_LOG = body.ignore_sent_log === true;
+  await sendReminders(body.period === "morning" ? "morning" : "evening", false);
+  const out = RECORDED.map((r) => ({ phone_last4: r.phone.slice(-4), message: r.message }));
+  return new Response(JSON.stringify({ count: out.length, messages: out }), { headers: { "Content-Type": "application/json" } });
 });
