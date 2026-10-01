@@ -1,3 +1,4 @@
+import { getTestPhones } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -93,7 +94,10 @@ Deno.serve(async (req: Request) => {
       links.map((l) => [`${l.primary_user_id}|${l.linked_user_id}`, l]),
     );
 
-    const families = Array.from(groups.entries()).map(([root, userIds]) => {
+    const testPhones = await getTestPhones();
+    const isTestFamily = (userIds: string[]) =>
+      userIds.some((id) => { const p = profileByUser.get(id)?.phone_number; return !!p && (testPhones.has(p) || /^\+4470000000\d\d$/.test(p)); });
+    const families = Array.from(groups.entries()).filter(([, userIds]) => !isTestFamily(userIds)).map(([root, userIds]) => {
       const memberPhones = userIds
         .map((id) => profileByUser.get(id)?.phone_number)
         .filter((p): p is string => !!p);
