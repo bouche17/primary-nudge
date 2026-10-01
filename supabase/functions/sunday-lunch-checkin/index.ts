@@ -7,6 +7,7 @@
 // NOTE: deliberately does NOT respect the send-reminders holiday pause guard —
 // this check-in is meant to build trust with parents in the run-up to term starting.
 
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -63,6 +64,7 @@ async function isSchoolHoliday(schoolId: string | null, dateStr: string): Promis
 }
 
 async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
+  if (await blockIfTestPhone(to, "sunday-lunch-checkin")) return { ok: true, status_code: 0, body: "blocked: test number" };
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
     console.error("No TWILIO_SUNDAY_TEMPLATE_SID configured — refusing to send freeform.");
     return { ok: false, status_code: 0, body: "No TWILIO_SUNDAY_TEMPLATE_SID configured" };

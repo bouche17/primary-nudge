@@ -1,3 +1,4 @@
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as encodeBase64 } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
@@ -1368,6 +1369,7 @@ async function saveMessage(
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
 async function sendWhatsApp(to: string, body: string): Promise<boolean> {
+  if (await blockIfTestPhone(to, "whatsapp-webhook")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
@@ -1398,6 +1400,7 @@ async function sendWhatsAppTemplate(
   contentSid: string,
   variables: Record<string, string>
 ): Promise<boolean> {
+  if (await blockIfTestPhone(to, "whatsapp-webhook-template")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);

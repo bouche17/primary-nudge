@@ -1,3 +1,4 @@
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -108,6 +109,7 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 }
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+  if (await blockIfTestPhone(to, "handle-school-email")) return true;
   const sanitisedText = text
     .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
     .replace(/\s+/g, " ")

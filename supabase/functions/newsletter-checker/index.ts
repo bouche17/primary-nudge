@@ -4,6 +4,7 @@
 // If found, messages all parents with a link
 // pg_cron: 0 8 * * 1
 
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(
@@ -26,6 +27,7 @@ const corsHeaders = {
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
 async function sendWhatsApp(to: string, text: string): Promise<boolean> {
+  if (await blockIfTestPhone(to, "newsletter-checker")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);

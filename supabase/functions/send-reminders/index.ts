@@ -1,3 +1,4 @@
+import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ function isEventRelevantToChild(eventYearGroup: string, childYearGroup: string):
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
 async function sendWhatsApp(to: string, text: string, period: "morning" | "evening"): Promise<boolean> {
+  if (await blockIfTestPhone(to, "send-reminders")) return true;
   const sid = TWILIO_ACCOUNT_SID;
   const token = TWILIO_AUTH_TOKEN;
   const from = TWILIO_WHATSAPP_NUMBER;
