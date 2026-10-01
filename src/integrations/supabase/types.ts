@@ -972,6 +972,24 @@ export type Database = {
           },
         ]
       }
+      test_runner_tokens: {
+        Row: {
+          created_at: string
+          expires_at: string
+          token_hash: string
+        }
+        Insert: {
+          created_at?: string
+          expires_at: string
+          token_hash: string
+        }
+        Update: {
+          created_at?: string
+          expires_at?: string
+          token_hash?: string
+        }
+        Relationships: []
+      }
       test_runs: {
         Row: {
           failed: number
