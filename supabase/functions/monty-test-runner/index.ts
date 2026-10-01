@@ -17,7 +17,21 @@ const FAMILY_A_PHONE = "+447000000001";
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+async function sha256Hex(s: string) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
+  return Array.from(d).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function requireAdmin(req: Request): Promise<string | null> {
+  // Backend-issued single-use token (inserted directly into test_runner_tokens by someone with DB access).
+  const runnerToken = req.headers.get("x-runner-token");
+  if (runnerToken && runnerToken.length >= 32) {
+    const hash = await sha256Hex(runnerToken);
+    const { data } = await admin.from("test_runner_tokens").delete()
+      .eq("token_hash", hash).gt("expires_at", new Date().toISOString()).select("token_hash");
+    if (data && data.length === 1) return "backend-token";
+    return null;
+  }
   const token = (req.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
   if (!token) return null;
   const { data, error } = await admin.auth.getUser(token);
