@@ -1,5 +1,6 @@
 // Sends the monty_family_update template to every OTHER adult in a family
 // when someone changes the family's plans from the dashboard.
+import { blockIfTestPhone, isTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -52,6 +53,7 @@ async function resolveFamily(userId: string): Promise<Set<string>> {
 }
 
 async function sendTemplate(to: string, summary: string) {
+  if (await blockIfTestPhone(to, "send-family-update")) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
