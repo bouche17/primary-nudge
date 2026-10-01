@@ -125,6 +125,13 @@ Deno.serve(async (req) => {
       .map((p) => p.phone_number as string);
     recipients = Array.from(new Set(recipients));
 
+    // Test families never enter the real family-update queue.
+    for (const p of profiles || []) {
+      if (await isTestPhone(p.phone_number as string)) {
+        return json({ queued: false, skipped: true, reason: "test_family" });
+      }
+    }
+
     if (!testMode) {
       // Queue for bundling — flush-family-updates sends one combined message later.
       if (recipients.length === 0) {
