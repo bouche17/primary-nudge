@@ -53,7 +53,7 @@ async function resolveFamily(userId: string): Promise<Set<string>> {
 }
 
 async function sendTemplate(to: string, summary: string) {
-  if (await blockIfTestPhone(to, "send-family-update")) return true;
+  if (await blockIfTestPhone(to, "send-family-update")) return { ok: true, status: 0 };
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
