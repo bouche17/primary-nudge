@@ -1,4 +1,11 @@
-import { blockIfTestPhone } from "../_shared/testGuard.ts";
+import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+// Per-request test context. Only ever set by the secret-gated test entry point,
+// scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
+interface TestCtx { now: Date; toolCalls: Array<{ name: string; input: unknown; ok: boolean; action: string; text: string }> }
+const testStore = new AsyncLocalStorage<TestCtx>();
+const nowD = (): Date => new Date((testStore.getStore()?.now ?? new Date()).getTime());
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as encodeBase64 } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
@@ -118,6 +125,7 @@ interface MontyContext {
 interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
+  at?: string; // ISO timestamp the message was sent
 }
 
 // ── Context loader ────────────────────────────────────────────────────────────
@@ -180,7 +188,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
   }));
 
   // Load upcoming school events (next 14 days)
-  const now = new Date();
+  const now = nowD();
   const twoWeeksAhead = new Date(now);
   twoWeeksAhead.setDate(twoWeeksAhead.getDate() + 14);
 
@@ -248,7 +256,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
   const isOnboarding = onboardingStatus === "new" || onboardingStatus === "collecting";
 
   // Saved packed lunch plans for this and next UK week
-  const ukTodayIso = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukTodayIso = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
   const ukNoon = new Date(ukTodayIso + "T12:00:00Z");
   const dow = ukNoon.getUTCDay();
   const thisMon = new Date(ukNoon);
@@ -350,7 +358,7 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 ` : "";
 
   // ── Authoritative UK date anchors ──
-  const nowDate = new Date();
+  const nowDate = nowD();
   const ukTime = nowDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
   const ukIso = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
   const ukLong = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" });
@@ -391,6 +399,13 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 - Next 7 days:
 ${next7}
 Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.
+
+## Only act on the parent's NEWEST message (critical)
+- The chat history is CONTEXT ONLY. Every earlier request in it has ALREADY been handled. Never save, re-save, re-announce or reply about an earlier request again.
+- Each earlier message is labelled with when it was sent, e.g. "[earlier message — sent Tue 30 Sep, 08:12]". A "tomorrow" in an old message means the day after THAT date, not after today. Never copy these labels into your reply.
+- The parent's new message is the final one, marked "=== NEW MESSAGE ===". Only save things that message asks for (or that it answers, if you had just asked the parent a question).
+- Your reply must only talk about what the new message asked. Don't mention other children or older items from history.
+- If the new message asks for several things, call a save tool for EACH of them before replying. You can call tools over several steps — never write "let me save…" or "I'll now save…": do the save, then say what was saved.
 
 ## Your personality
 - Warm and encouraging, like a knowledgeable friend — never corporate, never stiff
@@ -1084,7 +1099,7 @@ async function executeTool(
     if (!weekStart) {
       const ukDateStr = new Intl.DateTimeFormat("en-CA", {
         timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit",
-      }).format(new Date());
+      }).format(nowD());
       const ukNoon = new Date(`${ukDateStr}T12:00:00Z`);
       const dow = ukNoon.getUTCDay(); // 0=Sun
       const offset = dow === 6 ? 2 : dow === 0 ? 1 : 1 - dow;
@@ -1341,7 +1356,7 @@ async function getOrCreateConversation(phone: string): Promise<string> {
 async function getRecentHistory(conversationId: string, limit = 10): Promise<ConversationMessage[]> {
   const { data: messages } = await supabase
     .from("messages")
-    .select("direction, content")
+    .select("direction, content, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -1351,6 +1366,7 @@ async function getRecentHistory(conversationId: string, limit = 10): Promise<Con
     .map((m: any) => ({
       role: m.direction === "inbound" ? "user" : "assistant",
       content: m.content,
+      at: m.created_at,
     }));
 }
 
@@ -1494,7 +1510,7 @@ async function handleImageMessage(
       .map((c) => `${c.first_name} (${c.year_group || "unknown year"})`)
       .join(", ");
     console.log("Children with year groups:", childrenWithYearGroups);
-    const nowDate = new Date();
+    const nowDate = nowD();
     const today = nowDate.toISOString().split("T")[0];
     const todayHuman = nowDate.toLocaleDateString("en-GB", {
       weekday: "long",
