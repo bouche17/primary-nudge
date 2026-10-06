@@ -9,9 +9,10 @@
 - [x] Dry run of tonight's real 6pm reminders vs old code — report to Matt, then STOP
 
 ## Stage 2 (waits on Matt's go-ahead after Stage 1)
-- [ ] ~30 handler scenarios via locked-down whatsapp-webhook test entry point (allowlist-only, audited)
-- [ ] Forced-failure tests, flaky handling
-- [ ] Process rule in project memory
-- [ ] Full run + report
+- [x] ~30 handler scenarios via locked-down whatsapp-webhook test entry point (allowlist-only, audited)
+- [x] Forced-failure tests, flaky handling
+- [x] Process rule in project memory
+- [x] Full run + report
 - [ ] Delete temporary legacy-reminders-dryrun function once Matt confirms
 - [x] Fix: Monty acting on old history (grounding, multi-round tools, future-action guard) + 3 handler regression tests
+- [ ] Pronoun one-off ('she needs her swim bag tomorrow') saved as weekly on 'yes' — needs Matt's call

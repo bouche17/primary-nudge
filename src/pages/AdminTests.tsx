@@ -25,6 +25,7 @@ const AdminTests = () => {
   const [selected, setSelected] = useState<string | null>(null);
   const [results, setResults] = useState<Result[]>([]);
   const [running, setRunning] = useState(false);
+  const [refresh, setRefresh] = useState(0);
 
   const loadRuns = useCallback(async () => {
     const { data } = await supabase.from("test_runs" as any).select("*").order("started_at", { ascending: false }).limit(20);
@@ -39,18 +40,31 @@ const AdminTests = () => {
     if (!selected) return;
     supabase.from("test_run_results" as any).select("*").eq("run_id", selected).order("created_at")
       .then(({ data }) => setResults((data as unknown as Result[]) ?? []));
-  }, [selected]);
+  }, [selected, refresh]);
 
+  const [progress, setProgress] = useState<string>("");
   const runSuite = async () => {
     setRunning(true);
-    const { data, error } = await supabase.functions.invoke("monty-test-runner", { body: { action: "sender_suite" } });
-    setRunning(false);
-    if (error) {
-      toast({ title: "Test run failed to start", description: error.message, variant: "destructive" });
-      return;
+    // The runner works in chunks (sender tests, then a few conversation tests per call).
+    let body: Record<string, unknown> = { action: "full_suite", part: "sender" };
+    let last: any = null;
+    for (let i = 0; i < 40; i++) {
+      const { data, error } = await supabase.functions.invoke("monty-test-runner", { body });
+      if (error) {
+        setRunning(false); setProgress("");
+        toast({ title: "Test run stopped", description: error.message, variant: "destructive" });
+        loadRuns();
+        return;
+      }
+      last = data;
+      setSelected(data.run_id);
+      setRefresh((n) => n + 1);
+      setProgress(`${data.total} done · ${data.failed} failing`);
+      if (!data.next) break;
+      body = { action: "full_suite", run_id: data.run_id, ...data.next };
     }
-    toast({ title: `Run finished: ${data.passed}/${data.total} passed`, description: data.failed ? `${data.failed} failing` : "All green" });
-    setSelected(data.run_id);
+    setRunning(false); setProgress("");
+    toast({ title: `Run finished: ${last.passed}/${last.total} passed`, description: `${last.failed} failing · ${last.flaky} flaky · about $${last.cost_usd} of AI` });
     loadRuns();
   };
 
@@ -66,11 +80,11 @@ const AdminTests = () => {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-heading font-bold text-foreground">Monty test suite</h1>
-            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages.</p>
+            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages. A full run takes a few minutes.</p>
           </div>
           <Button onClick={runSuite} disabled={running} className="rounded-full">
             {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-            {running ? "Running…" : "Run suite"}
+            {running ? `Running… ${progress}` : "Run full suite"}
           </Button>
         </div>
 
@@ -115,7 +129,7 @@ const AdminTests = () => {
                     </td>
                     <td className="p-3"><Badge variant={statusVariant(r.status)}>{r.status}</Badge></td>
                     <td className="p-3">
-                      {r.reply && <p className="text-foreground">{r.reply}</p>}
+                      {r.reply && <p className="text-foreground whitespace-pre-line">{r.reply}</p>}
                       {r.reason && <p className="text-destructive text-xs mt-1">{r.reason}</p>}
                       {!r.reply && !r.reason && <span className="text-muted-foreground">(no message)</span>}
                     </td>

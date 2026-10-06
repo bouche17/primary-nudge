@@ -436,8 +436,18 @@ ${schoolRemindersSummary}
 - You must NEVER decide from the lists above that something is already saved, covered, down, or set. Duplicate checks are done by the save tools against the database.
 - Whenever a parent tells you about something for a child on a date (an activity, kit, event, packed lunch), ALWAYS call the matching save tool (save_parent_note, save_weekly_lunch_plan or save_child_reminder). Only say "already saved" if the tool result starts with "ALREADY_SAVED:".
 - A different activity on the same day is a NEW item (e.g. "gymnastics" is not "PE kit"; packed lunch Wednesday is not packed lunch Monday).
-- If the tool result contains "POSSIBLE_DUPLICATE", ask the parent whether it's the same thing — don't claim either way.
-- If the result contains "NOT SAVED", tell the parent plainly it didn't save. Only confirm a save when the result says "Saved".
+- If the tool result contains "POSSIBLE_DUPLICATE", ask the parent naturally whether it's the same thing (e.g. "Is that the same as the swimming you've already got on Tuesday?") — don't claim either way.
+- If the result says it was not saved because of an error, say so warmly and specifically, e.g. "Sorry, I couldn't save Jude's PE kit just then — could you send it again?". Only confirm a save when the result says "Saved".
+
+## NEVER show system wording to parents
+Tool results contain internal markers (NOT SAVED, POSSIBLE_DUPLICATE, ALREADY_SAVED, PENDING, TIMING, WAITING_FOR_PARENT, error codes). These are for you only — never copy them, or any technical wording, into your reply. Always talk like a friend.
+
+## When a save can't go ahead yet — ask, never refuse
+- No child named and the family has 2+ children → don't guess: call ask_parent_to_confirm with the item(s) and ask "Is that for Harry, Jude or both?" (real names). One-child family → just use that child.
+- "Both", "the kids", "all of them", "everyone" → save for every child, no question.
+- Pronouns ("she needs…", "he's got…") → if the recent conversation makes one child clearly the one meant, call ask_parent_to_confirm proposing that child ("For Rosa?"); otherwise ask which child.
+- Vague references ("same again next week", "the usual", "she needs her bag") → use the existing reminders, notes and recent conversation to work out the most likely meaning, then call ask_parent_to_confirm with the exact item(s) you'd save and a natural question like "Do you mean Rosa's swimming kit on Tuesday again?". Never save until the parent says yes.
+- If a save result says the item isn't in the latest message: if it was an old request from history, drop it silently and just reply to what the parent actually said; if the latest message is just vague, use ask_parent_to_confirm instead. Never tell the parent something was refused.
 
 ## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
@@ -452,7 +462,7 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
-Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly and don't work it out yourself. For other items, use the current UK time above: only if it's after 6pm AND the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
+Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly (or say nothing about timing if it tells you not to) and don't work it out yourself. Only ever mention upcoming reminders, positively. Never add lines about reminders that won't go out or have already gone ("tonight's reminder won't go out", "it's after 6pm so…").
 
 ## Packed lunches already saved
 ${lunchPlansSummary}
@@ -500,6 +510,30 @@ ${onboardingInstructions}`;
 // Claude API uses a different tool format to OpenAI/Gemini
 
 const tools = [
+  {
+    name: "ask_parent_to_confirm",
+    description: "Use when you can't safely save yet: the child isn't clear (2+ children, none named), a pronoun needs confirming, or the message is vague ('same again next week', 'the usual'). Stores the exact item(s) you'd save so that when the parent replies 'yes', a child's name, or 'both', they're saved straight away without repeating details. Your reply must then be just the natural question.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "The natural question you'll ask, e.g. 'Is that for Harry, Jude or both?' or 'Do you mean Rosa's swimming kit on Tuesday again?'" },
+        proposed_children: { type: "array", items: { type: "string" }, description: "Child first names you're proposing (for 'yes'). Empty if you're asking which child." },
+        items: {
+          type: "array",
+          description: "The save calls you'd make once confirmed (child_name may be left out if asking which child).",
+          items: {
+            type: "object",
+            properties: {
+              tool: { type: "string", enum: ["save_child_reminder", "save_parent_note", "save_weekly_lunch_plan"] },
+              args: { type: "object", description: "Exactly the arguments for that save tool." },
+            },
+            required: ["tool", "args"],
+          },
+        },
+      },
+      required: ["question", "items"],
+    },
+  },
   {
     name: "save_child_reminder",
     description: "Save a recurring reminder for a specific child. Use this when a parent tells you about a regular activity or schedule item for their child. If the parent describes something as 'every other [day]' or 'fortnightly', set recurrence_interval to 2 and use one specific confirmed occurrence date as anchor_date — ask the parent for the next actual date if they haven't given one; never guess.",
@@ -592,7 +626,12 @@ const tools = [
         mode: {
           type: "string",
           enum: ["replace", "add", "remove"],
-          description: "'replace' (default) = these are the full week's packed lunch days (e.g. answering the Sunday check-in). 'add' = add these extra packed lunch days to the existing plan. 'remove' = switch these days back to school dinners.",
+          description: "'replace' (default) = these are the full week's packed lunch days (e.g. answering the Sunday check-in). 'add' = add these extra packed lunch days to the existing plan. 'remove' = switch the days in school_dinner_days back to school dinners.",
+        },
+        school_dinner_days: {
+          type: "array",
+          items: { type: "string", enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"] },
+          description: "Only for mode 'remove': ONLY the day(s) switching to school dinners (e.g. 'school dinners tomorrow' on a Monday → ['Tuesday']). Never the days that stay packed lunch. Set packed_lunch_days to the same days.",
         },
       },
       required: ["child_name", "packed_lunch_days"],
@@ -764,6 +803,8 @@ interface ToolResult {
   summary: string;      // short, parent-facing description used by the honest reply
   text: string;         // full text given to Claude as the tool_result content
   failed?: boolean;     // part of the request failed (may be true alongside ok)
+  label?: string;       // parent-facing description of the item
+  when?: string;        // parent-facing upcoming reminder timing
 }
 const okResult = (action: ToolAction, summary: string, text: string = summary, failed = false): ToolResult =>
   ({ ok: true, action, summary, text, failed });
@@ -772,25 +813,33 @@ const failResult = (text: string, action: ToolAction = "not_saved"): ToolResult 
 const isSuccessResult = (r: ToolResult) => r.ok;
 const isFailResult = (r: ToolResult) => !!r.failed;
 
-/** Reply built only from what the tools actually did — never claims unconfirmed success. */
-function buildHonestReply(results: ToolResult[]): string {
-  const successes = results.filter((r) => r.ok);
-  const failed = results.some(isFailResult);
-  if (successes.length === 0) {
-    if (results.some((r) => r.action === "pending")) {
-      return "I haven't saved that yet — could you tell me which child it's for? 🙏";
-    }
-    return "Sorry — that didn't save. Could you send it to me again? 🙏";
+/** Reply built only from what the tools actually did — never claims unconfirmed success, never system words. */
+function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null): string {
+  const saved = results.filter((r) => r.ok && r.action !== "no_change");
+  const already = results.filter((r) => r.ok && r.action === "no_change");
+  const failed = results.filter((r) => r.failed);
+  const parts: string[] = [];
+  if (saved.length) {
+    const labels = saved.map((r) => r.label || "that");
+    parts.push(`Done — saved ${labels.join(", and ")} ✅`);
+    const when = saved.length === 1 ? saved[0].when : "";
+    if (when) parts.push(when);
   }
-  const lines = successes.map((r) => r.summary);
-  return lines.join(" | ") + (failed ? " | Some of it didn't save though — could you send the rest again? 🙏" : " ✅");
+  if (already.length) parts.push(`I've already got ${already.map((r) => r.label || "that").join(" and ")} saved 👍`);
+  if (failed.length) parts.push(`Sorry, I couldn't save ${failed.map((r) => r.label || "that").join(" or ")} just then — could you send it again? 🙏`);
+  if (pendingQuestion) parts.push(pendingQuestion);
+  if (!parts.length) {
+    if (results.some((r) => r.action === "pending")) return "Just to check before I save it — which child is that for? 😊";
+    return "Sorry, I couldn't save that just then — could you send it again? 🙏";
+  }
+  return parts.join(" ");
 }
 
 /** Every reply replacement goes through here so it's always audited. */
 async function replaceReply(
-  original: string, results: ToolResult[], phone: string, path: string, decision: string,
+  original: string, results: ToolResult[], phone: string, path: string, decision: string, pendingQuestion?: string | null,
 ): Promise<string> {
-  const honest = buildHonestReply(results);
+  const honest = buildHonestReply(results, pendingQuestion);
   await logDedupDecision({
     phone, childName: null, tool: `reply_guard_${path}`,
     newItem: JSON.stringify(results.map(({ ok, action, summary, failed }) => ({ ok, action, summary, failed }))).slice(0, 2000),
@@ -811,16 +860,8 @@ async function enforceHonestReply(reply: string, results: ToolResult[], phone: s
 
 /** Exact, code-computed reminder timing for a dated item, so the reply never guesses. */
 function reminderTimingFor(dateIso: string): string {
-  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
-  const ukHour = Number(nowD().toLocaleTimeString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Europe/London" }));
-  const fmt = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
-  const eve = new Date(`${dateIso}T12:00:00Z`); eve.setUTCDate(eve.getUTCDate() - 1);
-  const eveIso = eve.toISOString().slice(0, 10);
-  const evePassed = eveIso < ukToday || (eveIso === ukToday && ukHour >= 18);
-  const mornPassed = dateIso < ukToday || (dateIso === ukToday && ukHour >= 7);
-  if (mornPassed) return "TIMING: both reminders for this have already gone out — tell the parent it's saved but no further reminder will be sent.";
-  if (evePassed) return `TIMING: the evening reminder has already passed; the parent will get the morning reminder at 7am on ${fmt(dateIso)}.`;
-  return `TIMING: the parent will get an evening reminder at 6pm on ${fmt(eveIso)} and a morning reminder at 7am on ${fmt(dateIso)}. Describe exactly this.`;
+  const p = upcomingReminderPhrase(dateIso);
+  return p ? `TIMING (say only this about timing): "${p}"` : "TIMING: don't mention reminder timing at all.";
 }
 
 /** Timing of the first upcoming reminder for a weekly item, computed in code. */
@@ -831,9 +872,9 @@ function nextWeeklyTiming(day: string, when: string): string {
     const d = new Date(base); d.setUTCDate(base.getUTCDate() + i);
     if (d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" }) !== day) continue;
     const t = reminderTimingFor(d.toISOString().slice(0, 10));
-    if (t.includes("already gone out")) continue; // look at next week's occurrence
+    if (t.includes("don't mention")) continue; // look at next week's occurrence
     if (when === "morning") return `TIMING: the first reminder is at 7am on ${d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}, then every week.`;
-    return t.replace("TIMING:", "TIMING (first occurrence, then every week):");
+    return t.replace("TIMING (say only this about timing):", "TIMING (first occurrence, then every week — say only this about timing):");
   }
   return "";
 }
@@ -868,6 +909,16 @@ async function executeTool(
       }
     }
 
+    // A one-off ("just this Wednesday", "tomorrow", a date) is a dated note, not a weekly reminder.
+    {
+      const g = String((context as any).__grounding || "");
+      const oneOff = /\b(just|only)\s+(for\s+)?(this|next|tomorrow|today|on)\b|\bthis (coming )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\btomorrow\b|\btoday\b|\b\d{1,2}(st|nd|rd|th)\b/i.test(g);
+      const recurring = /\b(every|each|weekly|fortnightly|every other|on (mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)|(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays))\b/i.test(g);
+      if (g && oneOff && !recurring && toolArgs.recurrence_interval !== 2) {
+        return failResult("NOT SAVED: the parent described a one-off, not a weekly activity. Use save_parent_note with the specific date instead.", "no_change");
+      }
+    }
+
     if (!DAYS.includes(toolArgs.day_of_week)) {
       return failResult(`NOT SAVED: "${toolArgs.day_of_week}" isn't a valid day. Use Monday to Sunday.`);
     }
@@ -875,11 +926,13 @@ async function executeTool(
     // Match existing reminders for this child/title. A day change updates the row,
     // but the same activity on several days in one message (e.g. gymnastics Mon, Wed, Sat)
     // creates one row per day rather than overwriting.
-    const { data: existingRows, error: lookupErr } = await supabase
+    // Same activity = same item tokens ("PE kit" == "PE kit needed"), not just an identical title.
+    const { data: childRows, error: lookupErr } = await supabase
       .from("child_reminders")
-      .select("id, day_of_week")
-      .eq("child_id", child.id)
-      .eq("title", toolArgs.title);
+      .select("id, day_of_week, title")
+      .eq("child_id", child.id);
+    const existingRows = (childRows ?? []).filter((r: any) =>
+      r.title === toolArgs.title || matchItem(r.title, String(toolArgs.title), context.children.map((c) => c.first_name)) === "exact");
     if (lookupErr) {
       console.error("Reminder lookup failed:", lookupErr);
       return failResult(`NOT SAVED: Error saving reminder (${lookupErr.message})`);
@@ -1146,7 +1199,22 @@ async function executeTool(
             .filter((d): d is string => !!d)
         : [];
     const mode = ["replace", "add", "remove"].includes(toolArgs.mode) ? toolArgs.mode : "replace";
-    const given = normDays(toolArgs.packed_lunch_days);
+    let given = normDays(toolArgs.packed_lunch_days);
+    if (mode === "remove") {
+      if (Array.isArray(toolArgs.school_dinner_days)) given = normDays(toolArgs.school_dinner_days);
+      // The days being switched to school dinners must be the ones the parent named.
+      const g = ((context as any).__grounding || "").toLowerCase();
+      if (g) {
+        const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+        const dayOf = (offset: number) => { const d = new Date(`${ukToday}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + offset); return d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" }); };
+        const named = new Set(DAY_ORDER.filter((d) => new RegExp(`\\b${d.toLowerCase()}`).test(g)));
+        if (/\btomorrow\b/.test(g)) named.add(dayOf(1));
+        if (/\btoday\b/.test(g)) named.add(dayOf(0));
+        if (named.size && !given.every((d) => named.has(d))) {
+          return failResult(`NOT SAVED: for mode 'remove', school_dinner_days must be only the day(s) switching to school dinners (${[...named].join(", ")}), not the days that stay packed lunch. Call again with school_dinner_days set to those days.`);
+        }
+      }
+    }
 
     let resultSet: Set<string>;
     if (mode === "replace") {
@@ -1167,6 +1235,7 @@ async function executeTool(
       else given.forEach((d) => resultSet.delete(d));
     }
     const days = DAY_ORDER.filter((d) => resultSet.has(d));
+    (context as any).__lastLunchDays = days;
 
     const { error } = await supabase
       .from("weekly_lunch_plans")
@@ -1281,16 +1350,152 @@ async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: s
   return await enforceHonestReply(reply, results, phone, path);
 }
 
+// ── Parent-facing wording helpers (no system words ever reach a parent) ──
+const SYSTEM_WORDS = /NOT SAVED|POSSIBLE_DUPLICATE|ALREADY_SAVED|PENDING|TIMING|WAITING_FOR_PARENT|ASK_WHICH_CHILD|CONFIRM_STORED|\bungrounded\b|tool_result|recurrence_interval|anchor_date|child_name/i;
+const PLURAL_CHILDREN = /\b(both|both kids|the kids|all the kids|my kids|the children|all of them|all three|everyone|each of them)\b/i;
+const fmtLongDate = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+const fmtShortDay = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+
+/** "I'll remind you at 6pm on Tuesday and 7am on Wednesday." — only upcoming reminders, never negatives. */
+function upcomingReminderPhrase(dateIso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso || "")) return "";
+  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukHour = Number(nowD().toLocaleTimeString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Europe/London" }));
+  const eve = new Date(`${dateIso}T12:00:00Z`); eve.setUTCDate(eve.getUTCDate() - 1);
+  const eveIso = eve.toISOString().slice(0, 10);
+  const evePassed = eveIso < ukToday || (eveIso === ukToday && ukHour >= 18);
+  const mornPassed = dateIso < ukToday || (dateIso === ukToday && ukHour >= 7);
+  if (mornPassed) return "";
+  const dayWord = (iso: string) => iso === ukToday ? "today" : (() => { const t = new Date(`${ukToday}T12:00:00Z`); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10) === iso ? "tomorrow" : `on ${fmtShortDay(iso)}`; })();
+  if (evePassed) return `I'll remind you at 7am ${dayWord(dateIso)}.`;
+  return `I'll remind you at 6pm ${dayWord(eveIso)} and 7am ${dayWord(dateIso)}.`;
+}
+
+/** Short parent-facing description of what a save call was for. */
+function tidyItem(text: string, child: string): string {
+  let t = String(text || "").trim().replace(/\s+needed$/i, "");
+  const m = t.match(/^(\w+)\s+(?:needs|has got|has|needs to bring)\s+(?:his|her|their|a|an|the)?\s*(.+)$/i);
+  if (m && (!child || m[1].toLowerCase() === child.toLowerCase())) t = `${m[1]}'s ${m[2]}`;
+  else if (child && !new RegExp(`\\b${child}\\b`, "i").test(t)) t = `${child}'s ${/^[A-Z]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1)}`;
+  return t;
+}
+function friendlyLabel(tool: string, args: any): string {
+  const child = args?.child_name ? String(args.child_name) : "";
+  if (tool === "save_parent_note") {
+    const s = tidyItem(String(args?.summary || "that"), child);
+    return `${s}${/^\d{4}-\d{2}-\d{2}$/.test(args?.date || "") ? ` on ${fmtLongDate(args.date)}` : ""}`;
+  }
+  if (tool === "save_child_reminder") {
+    const every = args?.recurrence_interval === 2 ? "every other" : "every";
+    return `${tidyItem(String(args?.title || "reminder"), child)} ${every} ${args?.day_of_week || ""}`.trim();
+  }
+  if (tool === "save_weekly_lunch_plan") {
+    const days: string[] = Array.isArray(args?.packed_lunch_days) ? args.packed_lunch_days : [];
+    if (args?.mode === "remove") return `${child ? child + "'s " : ""}school dinners on ${days.join(" and ")}`;
+    return days.length ? `${child ? child + "'s " : ""}packed lunch on ${days.join(" and ")}` : `school dinners all week for ${child}`;
+  }
+  return "that";
+}
+
+function whichChildQuestion(names: string[], proposed: string[] | null, label: string): string {
+  if (proposed && proposed.length) return `Just to check — is ${label ? `the ${label.replace(/^.*?'s /, "")}` : "that"} for ${proposed.join(" and ")}? 😊`;
+  const list = names.length <= 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+  return `Is that for ${list}${names.length >= 2 ? " or both" : ""}? 😊`.replace(" or both?", names.length > 2 ? " or all of them?" : " or both?");
+}
+
+// ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
+interface PendingAction {
+  kind: "which_child" | "confirm";
+  items: Array<{ tool: string; args: any }>;
+  proposed: string[] | null; // proposed child names (for "yes")
+  question: string;
+  created_at: string;
+}
+async function getConversationRow(phone: string) {
+  const { data } = await supabase.from("conversations").select("id, context").eq("phone_number", phone).maybeSingle();
+  return data as { id: string; context: any } | null;
+}
+async function setPendingAction(phone: string, p: PendingAction | null) {
+  const row = await getConversationRow(phone);
+  if (!row) return;
+  await supabase.from("conversations").update({ context: { ...(row.context || {}), pending_action: p } }).eq("id", row.id);
+}
+
+async function tryResolvePendingAction(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  const row = await getConversationRow(phone);
+  const p: PendingAction | null = row?.context?.pending_action ?? null;
+  if (!row || !p) return null;
+  if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
+
+  const words = message.trim().split(/\s+/).length;
+  const short = words <= 7;
+  const names = context.children.map((c) => c.first_name).filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+  const plural = PLURAL_CHILDREN.test(message);
+  const yes = /^\s*(yes|yep|yeah|yea|yup|yes please|correct|that'?s right|exactly|sure|ok|okay|please|go on|right|y)\b/i.test(message);
+  let targets: string[] | null = null;
+  if (short && names.length && !/^\s*(no|nope|nah)\b/i.test(message)) targets = names;
+  else if (short && names.length) targets = names; // "no, Harry" → Harry
+  else if (short && plural) targets = context.children.map((c) => c.first_name);
+  else if (short && yes) targets = p.proposed ?? (p.kind === "confirm" ? [] : null);
+
+  // Anything else (a "no", or a change of topic) → drop the pending item, don't re-ask.
+  await setPendingAction(phone, null);
+  if (targets === null) {
+    await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
+    return null;
+  }
+
+  const results: ToolResult[] = [];
+  // One save per distinct item per chosen child (the model may list the same item once per child).
+  const seen = new Set<string>();
+  const items = p.items.filter((it) => {
+    const { child_name: _c, ...rest } = it.args || {};
+    const k = `${it.tool}|${JSON.stringify(rest)}`;
+    if (targets!.length && seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  for (const item of items) {
+    const childList = targets.length ? targets : [item.args?.child_name ?? null];
+    for (const child of childList) {
+      const args = { ...item.args, ...(child ? { child_name: child } : {}) };
+      if (item.tool === "save_parent_note" && !child) delete args.child_name;
+      const r = await runSave(item.tool, args, context, phone);
+      results.push(r);
+    }
+  }
+  return buildHonestReply(results);
+}
+
+/** Single place every save goes through (forced DB failure switch for tests lives here). */
+async function runSave(tool: string, args: any, context: MontyContext, phone: string): Promise<ToolResult> {
+  const label = friendlyLabel(tool, args);
+  let r: ToolResult;
+  if ((testStore.getStore() as any)?.failDb === true && SAVE_TOOLS.has(tool)) {
+    r = failResult(`NOT SAVED: database error (forced test failure) for ${label}. Tell the parent warmly you couldn't save ${label} just then and ask them to send it again.`);
+  } else {
+    r = await executeTool(tool, args, context, phone);
+  }
+  r.label = label;
+  if (tool === "save_parent_note") r.when = upcomingReminderPhrase(args?.date);
+  testStore.getStore()?.toolCalls.push({ name: tool, input: args, ok: r.ok, action: r.action, text: r.text });
+  return r;
+}
+
 // ── AI reply generator ────────────────────────────────────────────────────────
 
 const MAX_TOOL_ROUNDS = 5;
 
 async function callClaude(body: Record<string, unknown>) {
-  return await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+  const st: any = testStore.getStore();
+  if (st && r.ok) {
+    try { const u = (await r.clone().json()).usage; st.usage = st.usage || { input: 0, output: 0, calls: 0 }; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
+  }
+  return r;
 }
 
 async function generateReply(
@@ -1309,6 +1514,7 @@ async function generateReply(
   let grounding = incomingMessage;
   if (lastAssistant && /\?/.test(lastAssistant.content)) grounding += "\n" + lastAssistant.content;
   const childNames = context.children.map((c) => c.first_name);
+  (context as any).__grounding = grounding;
 
   const res = await callClaude({ model, max_tokens: 500, system: systemPrompt, messages, tools });
   const rawText1 = await res.text();
@@ -1341,32 +1547,72 @@ async function generateReply(
 
   const structuredResults: ToolResult[] = [];
   const convo = [...messages];
+  const multiChild = context.children.length >= 2;
+  const pluralMsg = PLURAL_CHILDREN.test(incomingMessage);
+  const namesInGrounding = childNames.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(grounding));
+  let pending: PendingAction | null = null;
+  const addPending = (kind: PendingAction["kind"], items: PendingAction["items"], proposed: string[] | null, question: string) => {
+    if (!pending) pending = { kind, items: [], proposed, question, created_at: nowD().toISOString() };
+    pending.items.push(...items);
+    if (kind === "confirm") pending.kind = "confirm";
+    if (proposed?.length) pending.proposed = proposed;
+    pending.question = question || pending.question;
+  };
   let round = 1;
   while (data.stop_reason === "tool_use") {
     const toolResults: any[] = [];
     for (const block of data.content.filter((b: any) => b.type === "tool_use")) {
       let result: ToolResult;
-      const why = SAVE_TOOLS.has(block.name) ? checkGrounding(block.name, block.input, grounding, childNames) : null;
-      if (why) {
-        result = { ok: false, action: "not_saved", failed: false, summary: "",
-          text: `NOT SAVED: not mentioned in the parent's latest message (${why}). Earlier requests in the history were already handled — do not save them again, and don't mention them in your reply.` };
-        await logDedupDecision({
-          phone, childName: block.input?.child_name ?? null, tool: block.name, date: block.input?.date ?? null,
-          newItem: JSON.stringify(block.input).slice(0, 500), decision: "ungrounded_save_blocked",
-          match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) },
-        });
+      const input = block.input ?? {};
+      if (block.name === "ask_parent_to_confirm") {
+        const items = (Array.isArray(input.items) ? input.items : []).filter((i: any) => SAVE_TOOLS.has(i?.tool) && i.args && typeof i.args === "object");
+        let proposed = Array.isArray(input.proposed_children) ? input.proposed_children.filter((n: string) => childNames.includes(n)) : [];
+        if (childNames.length > 1 && proposed.length === childNames.length) proposed = []; // "Harry, Jude or both?" isn't a proposal
+        if (items.length) addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, String(input.question || ""));
+        result = { ok: false, action: "pending", summary: "", text: items.length
+          ? "CONFIRM_STORED: nothing saved yet. Reply with just your natural question to the parent; their answer will save it."
+          : "Nothing stored — include the item(s) you'd save." };
+        testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: false, action: "pending", text: result.text });
+      } else if (SAVE_TOOLS.has(block.name)) {
+        const why = checkGrounding(block.name, input, grounding, childNames);
+        const child = input.child_name ? String(input.child_name) : "";
+        const needsChild = multiChild && !pluralMsg && (!child || !namesInGrounding.some((n) => n.toLowerCase() === child.toLowerCase()));
+        if (why) {
+          result = { ok: false, action: "not_saved", failed: false, summary: "",
+            text: `NOT SAVED: not in the parent's latest message (${why}). If this is an old request from the history, drop it silently and don't mention it. If the latest message is just vague and you think this is what they mean, call ask_parent_to_confirm instead.` };
+          await logDedupDecision({
+            phone, childName: input.child_name ?? null, tool: block.name, date: input.date ?? null,
+            newItem: JSON.stringify(input).slice(0, 500), decision: "ungrounded_save_blocked",
+            match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) },
+          });
+          testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: false, action: "ungrounded_blocked", text: result.text });
+        } else if (needsChild) {
+          const proposed = child && childNames.includes(child) ? [child] : null;
+          const args = { ...input }; if (!proposed) delete args.child_name;
+          const q = whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args));
+          addPending(proposed ? "confirm" : "which_child", [{ tool: block.name, args }], proposed, q);
+          result = { ok: false, action: "pending", summary: "",
+            text: `WAITING_FOR_PARENT: not saved yet — the child isn't clear. Stored for confirmation. Reply with just this question: "${q}"` };
+          await logDedupDecision({ phone, childName: child || null, tool: block.name, newItem: JSON.stringify(input).slice(0, 500), decision: "child_unclear_asked", match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) } });
+          testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: false, action: "child_unclear_asked", text: result.text });
+        } else {
+          if (multiChild && pluralMsg && block.name === "save_parent_note" && !child) delete input.child_name;
+          result = await runSave(block.name, input, context, phone);
+          structuredResults.push(result);
+        }
       } else {
-        result = await executeTool(block.name, block.input, context, phone);
+        result = await executeTool(block.name, input, context, phone);
         structuredResults.push(result);
+        testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: result.ok, action: result.action, text: result.text });
       }
       console.log(`Tool ${block.name} →`, JSON.stringify(result));
-      testStore.getStore()?.toolCalls.push({ name: block.name, input: block.input, ok: result.ok, action: why ? "ungrounded_blocked" : result.action, text: result.text });
       toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result.text });
     }
     convo.push({ role: "assistant", content: data.content }, { role: "user", content: toolResults });
 
     if (round >= MAX_TOOL_ROUNDS) {
-      return await replaceReply("", structuredResults, phone, "text", "max_tool_rounds_replaced");
+      if (pending) await setPendingAction(phone, pending);
+      return await replaceReply("", structuredResults, phone, "text", "max_tool_rounds_replaced", (pending as PendingAction | null)?.question);
     }
     round++;
     const failNext = (testStore.getStore() as any)?.failFollowup === true;
@@ -1376,17 +1622,61 @@ async function generateReply(
     console.log(`[Claude] Raw response text (round ${round}):`, raw);
     if (!next.ok) {
       await logClaudeFailure(phone, next.status, raw, "Claude API - tool follow-up");
-      return await replaceReply("", structuredResults, phone, "text", "followup_failed_replaced");
+      if (pending) await setPendingAction(phone, pending);
+      return await replaceReply("", structuredResults, phone, "text", "followup_failed_replaced", (pending as PendingAction | null)?.question);
     }
     try { data = JSON.parse(raw); } catch { return await replaceReply("", structuredResults, phone, "text", "followup_unparseable_replaced"); }
   }
 
   const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
-  if (structuredResults.length === 0 && round === 1) {
-    if (text && FUTURE_ACTION.test(text)) return await enforceTurnHonesty(text, [], phone, "text");
-    return text || "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  const p = pending as PendingAction | null;
+  if (p) {
+    await setPendingAction(phone, p);
+    // The reply must ask the question; it may only confirm things that really saved.
+    let reply = text;
+    if (!reply || !reply.includes("?") || SYSTEM_WORDS.test(reply) || FUTURE_ACTION.test(reply) ||
+        (!structuredResults.some((r) => r.ok) && SUCCESS_CLAIM.test(reply))) {
+      reply = await replaceReply(text, structuredResults, phone, "text", "pending_question_rebuilt", p.question || whichChildQuestion(childNames, p.proposed, ""));
+    }
+    return reply;
   }
-  return await enforceTurnHonesty(text, structuredResults, phone, "text");
+  let reply: string;
+  if (structuredResults.length === 0 && round === 1) {
+    reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text")
+      : text || "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  } else {
+    reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
+  }
+  if (SYSTEM_WORDS.test(reply)) reply = await replaceReply(reply, structuredResults, phone, "text", "system_words_blocked");
+  // A failed save must be named specifically (e.g. "Jude's PE kit"), never a vague "that".
+  const vagueFailure = structuredResults.filter((r) => r.failed && r.label).some((r) =>
+    ![...itemTokens(r.label!, [])].some((t) => reply.toLowerCase().includes(t.slice(0, 4))));
+  if (vagueFailure) reply = await replaceReply(reply, structuredResults, phone, "text", "vague_failure_rebuilt");
+  return reply;
+}
+
+// ── Text message flow (shared by the real webhook and the test entry point) ──
+async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
+  // 1) Image notes awaiting "which child?"
+  const clarification = await tryResolvePendingClarification(from, incomingMessage, context);
+  if (clarification) return clarification;
+  // 2) Text items awaiting "which child?" / "do you mean…?"
+  const resolved = await tryResolvePendingAction(from, incomingMessage, context);
+  if (resolved) return resolved;
+
+  let processedMessage = incomingMessage;
+  if (context.children.length > 0) {
+    const matchedChildren = detectYearGroupChildren(incomingMessage, context.children);
+    if (matchedChildren.length > 0) {
+      const childList = matchedChildren.join(" and ");
+      processedMessage = `${incomingMessage}\n\n[System note: Based on year groups mentioned, this is relevant to: ${childList}. Please save notes with child_name set accordingly.]`;
+    }
+  }
+  const history = await getRecentHistory(conversationId, 11);
+  // The inbound message was already stored — don't also show it as "earlier history".
+  const last = history[history.length - 1];
+  if (last && last.role === "user" && last.content === incomingMessage) history.pop();
+  return await generateReply(processedMessage, history.slice(-10), context, from);
 }
 
 // ── Test entry point ──────────────────────────────────────────────────────────
@@ -1407,17 +1697,17 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const dryRun = b.dry_run !== false; // defaults true; this path never calls Twilio either way
   await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone, scenario, allowed: true, reason: dryRun ? "dry_run" : "dry_run(forced)" });
   const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
-  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true };
+  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true };
   return await testStore.run(store, async () => {
     const context = await loadParentContext(phone);
     if (!context) return j({ error: "no test family for this phone" }, 400);
-    const history: ConversationMessage[] = Array.isArray(b.history)
-      ? b.history.filter((m: any) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-        .map((m: any) => ({ role: m.role, content: m.content, at: m.at }))
-      : [];
     const message = String(b.message || "");
-    const reply = await generateReply(message, history, context, phone);
-    return j({ reply, tool_calls: store.toolCalls, now: now.toISOString(), dry_run: true, twilio_called: false });
+    const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
+    await saveMessage(conversationId, "inbound", message);
+    const reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
+      : await handleTextMessage(phone, message, context, conversationId);
+    await saveMessage(conversationId, "outbound", reply);
+    return j({ reply, tool_calls: store.toolCalls, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
 }
 
@@ -1467,6 +1757,7 @@ async function saveMessage(
     conversation_id: conversationId,
     direction,
     content,
+    created_at: nowD().toISOString(),
   });
 }
 
@@ -2063,31 +2354,7 @@ Deno.serve(async (req: Request) => {
       // Parent forwarded an image/screenshot
       reply = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from);
     } else {
-      // Check if there are pending notes awaiting child clarification
-      const clarification = await tryResolvePendingClarification(
-        from,
-        incomingMessage,
-        context
-      );
-      if (clarification) {
-        reply = clarification;
-      } else {
-        // Pre-process text to detect year group mentions and inject child names
-        // This ensures Claude always knows which child to attribute events to
-        let processedMessage = incomingMessage;
-        if (context.children.length > 0) {
-          const matchedChildren = detectYearGroupChildren(incomingMessage, context.children);
-          if (matchedChildren.length > 0) {
-            const childList = matchedChildren.join(" and ");
-            processedMessage = `${incomingMessage}\n\n[System note: Based on year groups mentioned, this is relevant to: ${childList}. Please save notes with child_name set accordingly.]`;
-            console.log(`Year group pre-processor matched: ${childList}`);
-          }
-        }
-
-        // Normal text conversation
-        const history = await getRecentHistory(conversationId, 10);
-        reply = await generateReply(processedMessage, history, context, from);
-      }
+      reply = await handleTextMessage(from, incomingMessage, context, conversationId);
     }
 
     // Save and send reply

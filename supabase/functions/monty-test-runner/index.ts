@@ -80,6 +80,12 @@ async function resetTestData() {
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
+    const { data: convos } = await admin.from("conversations").select("id").in("phone_number", allow);
+    const convoIds = (convos ?? []).map((c) => c.id);
+    if (convoIds.length) {
+      await admin.from("messages").delete().in("conversation_id", convoIds);
+      await admin.from("conversations").delete().in("id", convoIds);
+    }
   }
 }
 
@@ -182,112 +188,291 @@ async function runSenderSuite(): Promise<Result[]> {
 
 // ── Handler scenarios (real AI, dry run, never Twilio) ──
 
-async function seedHandlerFixtures() {
-  const parentId = await ensureTestUser(FAMILY_A_PHONE);
-  const { error } = await admin.from("children").insert([
-    { parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Jude", year_group: "Year 1" },
-    { parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Harry", year_group: "Year 3" },
-  ]);
-  if (error) throw new Error(`seed children failed: ${error.message}`);
+const FAMILIES: Record<string, { phone: string; kids: { name: string; year: string }[] }> = {
+  A: { phone: "+447000000001", kids: [{ name: "Jude", year: "Year 6" }, { name: "Harry", year: "Year 3" }] },
+  B: { phone: "+447000000002", kids: [{ name: "Rosa", year: "Year 4" }, { name: "Tom", year: "Year 2" }] },
+  C: { phone: "+447000000003", kids: [{ name: "Mila", year: "Year 5" }] },
+};
+const REAL_CONVERSATION_ID = "21634d6e-1eda-4198-b9be-5b8b1d716d54"; // read-only source for the replay test
+const SYSTEM_WORDS = /NOT SAVED|POSSIBLE_DUPLICATE|ALREADY_SAVED|PENDING|TIMING|WAITING_FOR_PARENT|CONFIRM_STORED|ungrounded|tool_result|child_name|recurrence_interval/i;
+
+type Msg = { role: "user" | "assistant"; content: string; at: string };
+interface Seed {
+  reminders?: { child: string; title: string; day: string }[];
+  notes?: { child: string | null; summary: string; date: string }[];
+  lunches?: { child: string; days: string[]; week: string }[];
+  history?: Msg[];
+  realHistory?: { from: string; to: string };
+}
+interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean }
+interface Rows {
+  notes: { child: string | null; summary: string; dates: string[] }[];
+  reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
+  lunches: { child: string; days: string[]; week: string }[];
+  pending: unknown;
+}
+interface HandlerCase {
+  name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
+  check: (after: Rows[], replies: string[]) => string | null;
 }
 
-async function familyRows() {
+async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
+  const f = FAMILIES[fam];
+  const parentId = await ensureTestUser(f.phone);
+  const { data: kids, error } = await admin.from("children")
+    .insert(f.kids.map((k) => ({ parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: k.name, year_group: k.year })))
+    .select("id, first_name");
+  if (error) throw new Error(`seed children failed: ${error.message}`);
+  const id = (n: string) => kids!.find((k) => k.first_name === n)!.id;
+  if (seed.reminders?.length) {
+    const { error: e } = await admin.from("child_reminders").insert(seed.reminders.map((r) => ({
+      child_id: id(r.child), parent_id: parentId, title: r.title, emoji: "📌", day_of_week: r.day, reminder_time: "both", active: true, recurrence_interval: 1,
+    })));
+    if (e) throw new Error(`seed reminders: ${e.message}`);
+  }
+  if (seed.notes?.length) {
+    const { error: e } = await admin.from("parent_notes").insert(seed.notes.map((n) => ({
+      phone_number: f.phone, raw_content: n.summary, summary: n.summary, extracted_dates: [{ date: n.date }], source_type: "whatsapp", child_name: n.child,
+    })));
+    if (e) throw new Error(`seed notes: ${e.message}`);
+  }
+  if (seed.lunches?.length) {
+    const { error: e } = await admin.from("weekly_lunch_plans").insert(seed.lunches.map((l) => ({
+      child_id: id(l.child), parent_id: parentId, week_start: l.week, packed_lunch_days: l.days,
+    })));
+    if (e) throw new Error(`seed lunches: ${e.message}`);
+  }
+  let history: Msg[] = seed.history ?? [];
+  if (seed.realHistory) {
+    // Copy (read-only) the real conversation's messages into the TEST number's own conversation.
+    const { data: real } = await admin.from("messages").select("direction, content, created_at")
+      .eq("conversation_id", REAL_CONVERSATION_ID).gte("created_at", seed.realHistory.from).lt("created_at", seed.realHistory.to)
+      .order("created_at");
+    history = (real ?? []).map((m) => ({ role: m.direction === "inbound" ? "user" : "assistant", content: m.content, at: m.created_at }));
+    if (!history.length) throw new Error("real history copy found no messages");
+  }
+  if (history.length) {
+    const { data: convo, error: ce } = await admin.from("conversations").insert({ phone_number: f.phone, current_step: "active" }).select("id").single();
+    if (ce) throw new Error(`seed conversation: ${ce.message}`);
+    await admin.from("messages").insert(history.map((m) => ({
+      conversation_id: convo.id, direction: m.role === "user" ? "inbound" : "outbound", content: m.content, created_at: m.at,
+    })));
+  }
+}
+
+async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
+  const f = FAMILIES[fam];
   const ids = await testUserIds();
   const { data: kids } = await admin.from("children").select("id, first_name").in("parent_id", ids);
   const kidIds = (kids ?? []).map((k) => k.id);
-  const [notes, rems, lunches] = await Promise.all([
-    admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", FAMILY_A_PHONE),
-    kidIds.length ? admin.from("child_reminders").select("child_id, title, day_of_week").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
+  const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name ?? "?";
+  const [notes, rems, lunches, convo] = await Promise.all([
+    admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", f.phone),
+    kidIds.length ? admin.from("child_reminders").select("child_id, title, day_of_week, recurrence_interval, anchor_date").eq("active", true).in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     kidIds.length ? admin.from("weekly_lunch_plans").select("child_id, packed_lunch_days, week_start").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
+    admin.from("conversations").select("context").eq("phone_number", f.phone).maybeSingle(),
   ]);
-  const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name;
   return {
-    notes: (notes.data ?? []).map((n: any) => ({ child: n.child_name, summary: n.summary, dates: (n.extracted_dates ?? []).map((d: any) => d.date) })),
-    reminders: (rems.data ?? []).map((r: any) => ({ child: nameOf(r.child_id), title: r.title, day: r.day_of_week })),
-    lunches: (lunches.data ?? []).map((l: any) => ({ child: nameOf(l.child_id), days: l.packed_lunch_days, week: l.week_start })),
+    notes: (notes.data ?? []).map((n: any) => ({ child: n.child_name, summary: n.summary ?? "", dates: (n.extracted_dates ?? []).map((d: any) => d.date) })),
+    reminders: (rems.data ?? []).map((r: any) => ({ child: nameOf(r.child_id), title: r.title, day: r.day_of_week, interval: r.recurrence_interval, anchor: r.anchor_date })),
+    lunches: (lunches.data ?? []).map((l: any) => ({ child: nameOf(l.child_id), days: [...(l.packed_lunch_days ?? [])].sort(), week: l.week_start })),
+    pending: (convo.data as any)?.context?.pending_action ?? null,
   };
 }
 
-type Rows = Awaited<ReturnType<typeof familyRows>>;
-interface HandlerCase {
-  name: string; now: string; message: string;
-  history?: { role: "user" | "assistant"; content: string; at: string }[];
-  check: (rows: Rows, reply: string) => string | null;
-}
+// ── check helpers ──
+const total = (r: Rows) => r.notes.length + r.reminders.length + r.lunches.filter((l) => l.days.length).length;
+const noteFor = (r: Rows, child: string | null, date: string, re: RegExp) =>
+  r.notes.filter((n) => (child === null || n.child === child || n.child === null) && n.dates.includes(date) && re.test(n.summary));
+const remFor = (r: Rows, child: string, day: string, re: RegExp) => r.reminders.filter((x) => x.child === child && x.day === day && re.test(x.title));
+const lunchDays = (r: Rows, child: string, week: string) => r.lunches.find((l) => l.child === child && l.week === week)?.days ?? [];
+const asks = (reply: string) => reply.includes("?");
+const claimsSaved = (reply: string) => /\b(saved|done|added|sorted|noted|got (it|that) down)\b/i.test(reply);
+const eq = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+const firstFail = (...xs: (string | null | false)[]) => (xs.find((x) => typeof x === "string") as string | undefined) ?? null;
+const peThu = (r: Rows, child: string) => noteFor(r, child, "2026-10-08", /pe/i).length + remFor(r, child, "Thursday", /pe/i).length;
 
-const OLD_GYM_HISTORY = [
-  { role: "user" as const, content: "Harry has gymnastics at 8am tomorrow morning", at: "2026-09-30T07:40:00Z" },
-  { role: "assistant" as const, content: "Saved: Harry has gymnastics at 8am on Thursday 1 October ✅", at: "2026-09-30T07:40:10Z" },
-  { role: "user" as const, content: "Jude needs a packed lunch on Friday", at: "2026-09-30T07:41:00Z" },
-  { role: "assistant" as const, content: "Saved: packed lunch for Jude on Friday ✅", at: "2026-09-30T07:41:10Z" },
+const MON = "2026-10-05T18:17:00Z";      // Mon 5 Oct 19:17 BST
+const MON_AM = "2026-10-05T08:00:00Z";   // Mon 5 Oct 09:00 BST
+const WK = "2026-10-05";
+const OLD_GYM_HISTORY: Msg[] = [
+  { role: "user", content: "Harry has gymnastics at 8am tomorrow morning", at: "2026-09-30T07:40:00Z" },
+  { role: "assistant", content: "Saved: Harry has gymnastics at 8am on Thursday 1 October ✅", at: "2026-09-30T07:40:10Z" },
+  { role: "user", content: "Jude needs a packed lunch on Friday", at: "2026-09-30T07:41:00Z" },
+  { role: "assistant", content: "Saved: packed lunch for Jude on Friday ✅", at: "2026-09-30T07:41:10Z" },
 ];
-const MON_EVENING = "2026-10-05T18:17:00Z"; // Mon 5 Oct, 19:17 BST
+const PE_WED = "Jude needs a PE kit just for this Wednesday";
+const oneJudePeWed = (r: Rows) => {
+  if (r.reminders.length || r.lunches.some((l) => l.days.length)) return `unexpected reminder/lunch rows: ${JSON.stringify(r)}`;
+  if (r.notes.length !== 1) return `expected 1 note, got ${r.notes.length}: ${JSON.stringify(r.notes)}`;
+  const n = r.notes[0];
+  if (n.child !== "Jude" || !n.dates.includes("2026-10-07") || !/pe/i.test(n.summary)) return `wrong note: ${JSON.stringify(n)}`;
+  return null;
+};
 
 const HANDLER_CASES: HandlerCase[] = [
-  {
-    name: "Old 'gymnastics tomorrow' in history + unrelated new message → nothing re-saved",
-    now: MON_EVENING, history: OLD_GYM_HISTORY, message: "Thanks Monty, that's brilliant",
-    check: (r, reply) => {
-      const n = r.notes.length + r.reminders.length + r.lunches.length;
-      if (n) return `expected no saves, got ${JSON.stringify(r)}`;
-      if (/gymnastic/i.test(reply)) return "reply mentions old gymnastics request";
-      return null;
-    },
-  },
-  {
-    name: "'Jude needs a PE kit just for this Wednesday' on a Monday (with old history) → one Jude note for Wed",
-    now: MON_EVENING, history: OLD_GYM_HISTORY, message: "Jude needs a PE kit just for this Wednesday",
-    check: (r, reply) => {
-      if (r.reminders.length || r.lunches.length) return `unexpected reminder/lunch rows: ${JSON.stringify(r)}`;
-      if (r.notes.length !== 1) return `expected 1 note, got ${r.notes.length}: ${JSON.stringify(r.notes)}`;
-      const n = r.notes[0];
-      if (n.child !== "Jude") return `note child ${n.child}, expected Jude`;
-      if (!n.dates.includes("2026-10-07")) return `note dated ${n.dates}, expected 2026-10-07`;
-      if (!/pe/i.test(n.summary)) return `note summary "${n.summary}" missing PE`;
-      if (/gymnastic|packed lunch/i.test(reply)) return "reply mentions old requests";
-      if (/let me|i'll save|now saving/i.test(reply)) return "reply announces a future action";
-      if (!/tuesday|tomorrow (evening|at 6)|6pm tomorrow/i.test(reply)) return "reply doesn't say the evening reminder comes on Tuesday";
-      return null;
-    },
-  },
-  {
-    name: "Message needing two saves → both saved, reply confirms both",
-    now: MON_EVENING, message: "Harry has swimming every Monday, and Jude needs his recorder this Friday",
-    check: (r, reply) => {
-      const swim = r.reminders.filter((x) => x.child === "Harry" && /swim/i.test(x.title) && x.day === "Monday");
-      const rec = r.notes.filter((x) => x.child === "Jude" && /recorder/i.test(x.summary) && x.dates.includes("2026-10-09"));
-      if (swim.length !== 1) return `expected 1 Harry swimming Monday reminder, rows: ${JSON.stringify(r.reminders)}`;
-      if (rec.length !== 1) return `expected 1 Jude recorder note on 2026-10-09, rows: ${JSON.stringify(r.notes)}`;
-      if (!/swim/i.test(reply) || !/recorder/i.test(reply)) return "reply doesn't confirm both";
-      if (/(already|has) (gone|passed)|won't get a reminder/i.test(reply)) return "reply wrongly says a reminder has already gone";
-      return null;
-    },
-  },
+  // ── history / grounding ──
+  { name: "Old 'gymnastics tomorrow' in history + unrelated new message → nothing re-saved", family: "A", now: MON,
+    seed: { history: OLD_GYM_HISTORY }, steps: [{ message: "Thanks Monty, that's brilliant" }],
+    check: ([r], [reply]) => firstFail(total(r) > 0 && `expected no saves, got ${JSON.stringify(r)}`, /gymnastic/i.test(reply) && "reply mentions old gymnastics") },
+  { name: "'Jude needs a PE kit just for this Wednesday' on a Monday (old history) → one Jude note for Wed", family: "A", now: MON,
+    seed: { history: OLD_GYM_HISTORY }, steps: [{ message: PE_WED }],
+    check: ([r], [reply]) => firstFail(oneJudePeWed(r), /gymnastic|packed lunch/i.test(reply) && "reply mentions old requests",
+      /let me|i'll save|now saving/i.test(reply) && "reply announces a future action",
+      !/tuesday|tomorrow (evening|at 6)|6pm tomorrow/i.test(reply) && "reply doesn't mention Tuesday's 6pm reminder") },
+  { name: "Real history replay (Matt, 29 Sep–5 Oct) → PE kit Wednesday saves exactly one Jude note", family: "A", now: MON,
+    seed: { realHistory: { from: "2026-09-29T00:00:00Z", to: "2026-10-05T18:17:30Z" } }, steps: [{ message: PE_WED }],
+    check: ([r], [reply]) => firstFail(oneJudePeWed(r), /gymnastic|packed lunch/i.test(reply) && "reply mentions old requests") },
+  { name: "Message needing two saves → both saved, reply confirms both", family: "A", now: MON,
+    steps: [{ message: "Harry has swimming every Monday, and Jude needs his recorder this Friday" }],
+    check: ([r], [reply]) => firstFail(
+      remFor(r, "Harry", "Monday", /swim/i).length !== 1 && `no Harry swimming Monday reminder: ${JSON.stringify(r.reminders)}`,
+      noteFor(r, "Jude", "2026-10-09", /recorder/i).length !== 1 && `no Jude recorder note 9 Oct: ${JSON.stringify(r.notes)}`,
+      !(/swim/i.test(reply) && /recorder/i.test(reply)) && "reply doesn't confirm both",
+      /(already|has) (gone|passed)|won't (get|go)/i.test(reply) && "reply has a negative timing line") },
+  // ── weekly reminders ──
+  { name: "New weekly reminder", family: "A", now: MON, steps: [{ message: "Harry has football club every Tuesday" }],
+    check: ([r]) => firstFail(remFor(r, "Harry", "Tuesday", /football/i).length !== 1 && `rows: ${JSON.stringify(r.reminders)}`, r.reminders.length !== 1 && "extra reminders saved") },
+  { name: "Multi-day activity including Saturday", family: "A", now: MON, steps: [{ message: "Jude has gymnastics on Wednesdays and Saturdays" }],
+    check: ([r]) => firstFail(remFor(r, "Jude", "Wednesday", /gym/i).length !== 1 && "no Wednesday", remFor(r, "Jude", "Saturday", /gym/i).length !== 1 && `no Saturday: ${JSON.stringify(r.reminders)}`) },
+  { name: "Sunday reminder", family: "A", now: MON, steps: [{ message: "Harry has swimming lessons every Sunday" }],
+    check: ([r]) => remFor(r, "Harry", "Sunday", /swim/i).length !== 1 ? `rows: ${JSON.stringify(r.reminders)}` : null },
+  { name: "Fortnightly with a confirmed date", family: "A", now: MON, steps: [{ message: "Harry has Forest School every other Thursday, the next one is 8th October" }],
+    check: ([r]) => {
+      const x = remFor(r, "Harry", "Thursday", /forest/i);
+      return firstFail(x.length !== 1 && `rows: ${JSON.stringify(r.reminders)}`, x[0] && x[0].interval !== 2 && "not fortnightly",
+        x[0] && x[0].anchor !== "2026-10-08" && `anchor ${x[0]?.anchor}`, x[0] && /fortnight|every other/i.test(x[0].title) && "frequency in title");
+    } },
+  { name: "'Every other Friday' with no date → asks for the next date, saves nothing", family: "A", now: MON, steps: [{ message: "Jude has cooking club every other Friday" }],
+    check: ([r], [reply]) => firstFail(r.reminders.length > 0 && `saved without anchor: ${JSON.stringify(r.reminders)}`, !asks(reply) && "didn't ask a question", !/when|date|next/i.test(reply) && "didn't ask for the next date") },
+  { name: "Exact duplicate weekly reminder → no second row", family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry needs his PE kit every Tuesday" }],
+    check: ([r]) => remFor(r, "Harry", "Tuesday", /pe/i).length !== 1 ? `PE rows: ${JSON.stringify(r.reminders)}` : null },
+  { name: "Same day, different activity → both kept", family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry has football club on Tuesdays too" }],
+    check: ([r]) => firstFail(remFor(r, "Harry", "Tuesday", /football/i).length !== 1 && "no football", remFor(r, "Harry", "Tuesday", /pe/i).length !== 1 && `PE changed: ${JSON.stringify(r.reminders)}`) },
+  { name: "Moving a reminder to another day", family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry's PE kit day has moved from Tuesday to Wednesday" }],
+    check: ([r]) => firstFail(remFor(r, "Harry", "Wednesday", /pe/i).length !== 1 && `no Wednesday PE: ${JSON.stringify(r.reminders)}`, remFor(r, "Harry", "Tuesday", /pe/i).length > 0 && "Tuesday PE still active") },
+  // ── which child / clarification ──
+  { name: "No child named, 2 children → asks which child, then 'Jude' saves for Jude", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude" }],
+    check: ([r1, r2], [q, a]) => firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`, !(asks(q) && /jude/i.test(q) && /harry/i.test(q)) && "didn't ask with both names",
+      peThu(r2, "Jude") !== 1 && `Jude not saved: ${JSON.stringify(r2)}`, peThu(r2, "Harry") > 0 && r2.notes.every((n) => n.child !== null) && "also saved for Harry",
+      !/jude/i.test(a) && "confirmation doesn't name Jude", r2.pending !== null && "pending not cleared") },
+  { name: "Reply 'both' to which-child → saved for both", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "both" }],
+    check: ([r1, r2]) => firstFail(total(r1) > 0 && "saved before asking", peThu(r2, "Jude") < 1 && `Jude missing: ${JSON.stringify(r2)}`, peThu(r2, "Harry") < 1 && "Harry missing") },
+  { name: "Parent changes topic instead of answering → pending dropped, not re-asked", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "What time do the morning reminders come through?" }],
+    check: ([r1, r2], [, a]) => firstFail(total(r2) > 0 && `saved something: ${JSON.stringify(r2)}`, /is that for|which child|harry or jude|jude or harry/i.test(a) && "re-asked which child", r2.pending !== null && "pending not cleared") },
+  { name: "Pending question expires after 24 hours", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude", now: "2026-10-06T19:30:00Z" }],
+    check: ([, r2]) => peThu(r2, "Jude") > 0 ? "saved from an expired question" : null },
+  { name: "One-child family → assumes the child, no question", family: "C", now: MON, steps: [{ message: "PE kit on Thursday" }],
+    check: ([r], [reply]) => firstFail(peThu(r, "Mila") < 1 && `not saved for Mila: ${JSON.stringify(r)}`, /which child|who is (that|it) for/i.test(reply) && "asked which child") },
+  { name: "'Both kids have non-uniform day Friday' → saved for all children, no question", family: "A", now: MON,
+    steps: [{ message: "Both kids have non-uniform day on Friday" }],
+    check: ([r], [reply]) => firstFail(noteFor(r, "Jude", "2026-10-09", /uniform/i).length < 1 && `Jude missing: ${JSON.stringify(r.notes)}`, noteFor(r, "Harry", "2026-10-09", /uniform/i).length < 1 && "Harry missing", /which child|is that for/i.test(reply) && "asked which child") },
+  { name: "Note for two named children", family: "A", now: MON, steps: [{ message: "Harry and Jude both have a school trip to the farm on Friday" }],
+    check: ([r]) => firstFail(noteFor(r, "Jude", "2026-10-09", /trip|farm/i).length < 1 && `Jude missing: ${JSON.stringify(r.notes)}`, noteFor(r, "Harry", "2026-10-09", /trip|farm/i).length < 1 && "Harry missing") },
+  { name: "Pronoun 'She needs her swim bag tomorrow' → proposes Rosa, 'yes' saves", family: "B", now: MON,
+    seed: { history: [
+      { role: "user", content: "Rosa has swimming on Tuesdays", at: "2026-10-05T17:00:00Z" },
+      { role: "assistant", content: "Done — saved Rosa's swimming kit every Tuesday ✅", at: "2026-10-05T17:00:10Z" },
+    ] },
+    steps: [{ message: "She needs her swim bag tomorrow" }, { message: "yes" }],
+    check: ([r1, r2], [q]) => firstFail(total(r1) > 0 && `saved before confirming: ${JSON.stringify(r1)}`, !(asks(q) && /rosa/i.test(q)) && "didn't propose Rosa",
+      noteFor(r2, "Rosa", "2026-10-06", /swim/i).length + remFor(r2, "Rosa", "Tuesday", /swim/i).length < 1 && `not saved for Rosa: ${JSON.stringify(r2)}`, r2.notes.some((n) => n.child === "Tom") && "saved for Tom") },
+  { name: "'Same again next week' → proposes the recorder, 'yes' saves next Friday", family: "A", now: MON,
+    seed: { notes: [{ child: "Jude", summary: "Jude needs her recorder", date: "2026-10-09" }], history: [
+      { role: "user", content: "Jude needs her recorder this Friday", at: "2026-10-05T17:00:00Z" },
+      { role: "assistant", content: "Done — saved Jude needs her recorder on Friday 9 October ✅", at: "2026-10-05T17:00:10Z" },
+    ] },
+    steps: [{ message: "Same again next week" }, { message: "yes" }],
+    check: ([r1, r2], [q]) => firstFail(r1.notes.length !== 1 && `saved before confirming: ${JSON.stringify(r1.notes)}`, !(asks(q) && /recorder/i.test(q)) && "didn't propose the recorder",
+      noteFor(r2, "Jude", "2026-10-16", /recorder/i).length !== 1 && `not saved for 16 Oct: ${JSON.stringify(r2.notes)}`) },
+  // ── dated notes ──
+  { name: "After-6pm note for tomorrow", family: "A", now: MON, steps: [{ message: "Harry has a dentist appointment at 9am tomorrow" }],
+    check: ([r], [reply]) => firstFail(noteFor(r, "Harry", "2026-10-06", /dentist/i).length !== 1 && `rows: ${JSON.stringify(r.notes)}`, /won't|already (gone|passed)|after 6/i.test(reply) && "negative timing line") },
+  { name: "Gymnastics on a day with PE kit already saved → not 'already saved'", family: "A", now: MON,
+    seed: { notes: [{ child: "Harry", summary: "Harry needs PE kit", date: "2026-10-07" }] }, steps: [{ message: "Harry has gymnastics at 8am on Wednesday" }],
+    check: ([r], [reply]) => firstFail(noteFor(r, "Harry", "2026-10-07", /gym/i).length + remFor(r, "Harry", "Wednesday", /gym/i).length < 1 && `gymnastics not saved: ${JSON.stringify(r)}`, /already/i.test(reply) && "claimed already saved") },
+  { name: "Rosa's gymnastics not treated as PE kit", family: "B", now: MON,
+    seed: { reminders: [{ child: "Rosa", title: "PE kit", day: "Thursday" }] }, steps: [{ message: "Rosa has gymnastics club on Thursdays" }],
+    check: ([r]) => firstFail(remFor(r, "Rosa", "Thursday", /gym/i).length !== 1 && `rows: ${JSON.stringify(r.reminders)}`, remFor(r, "Rosa", "Thursday", /pe/i).length !== 1 && "PE kit changed") },
+  { name: "Reading-for-pleasure book every Friday", family: "C", now: MON, steps: [{ message: "Mila needs her reading for pleasure book every Friday" }],
+    check: ([r]) => remFor(r, "Mila", "Friday", /read/i).length !== 1 ? `rows: ${JSON.stringify(r.reminders)}` : null },
+  { name: "Young Voices 'remind me the night before' → no duplicate note", family: "C", now: MON_AM,
+    seed: { notes: [{ child: "Mila", summary: "Young Voices concert", date: "2026-10-08" }] }, steps: [{ message: "Can you remind me about Young Voices the night before?" }],
+    check: ([r]) => noteFor(r, "Mila", "2026-10-08", /young voices/i).length !== 1 ? `notes: ${JSON.stringify(r.notes)}` : null },
+  { name: "General question → nothing saved, no success claim", family: "A", now: MON, steps: [{ message: "What time do the reminders come through?" }],
+    check: ([r], [reply]) => firstFail(total(r) > 0 && `saved: ${JSON.stringify(r)}`, /\b(saved|added|noted)\b/i.test(reply) && "claims a save") },
+  // ── packed lunches ──
+  { name: "Packed lunch tomorrow saved for the right day", family: "A", now: MON, steps: [{ message: "Jude needs a packed lunch tomorrow" }],
+    check: ([r]) => !eq(lunchDays(r, "Jude", WK), ["Tuesday"]) ? `lunches: ${JSON.stringify(r.lunches)}` : null },
+  { name: "Jude's packed lunch on Thursday (past wrong-day bug)", family: "A", now: MON, steps: [{ message: "Jude needs a packed lunch on Thursday" }],
+    check: ([r]) => !eq(lunchDays(r, "Jude", WK), ["Thursday"]) ? `lunches: ${JSON.stringify(r.lunches)}` : null },
+  { name: "Sunday check-in answer saves the week's plan", family: "A", now: "2026-10-04T17:30:00Z",
+    seed: { history: [{ role: "assistant", content: "Hi! Which days do Jude and Harry need packed lunches this week (5 Oct–9 Oct)? 🥪", at: "2026-10-04T16:00:00Z" }] },
+    steps: [{ message: "Jude Monday and Wednesday, Harry school dinners all week" }],
+    check: ([r]) => firstFail(!eq(lunchDays(r, "Jude", WK), ["Monday", "Wednesday"]) && `Jude: ${JSON.stringify(r.lunches)}`, lunchDays(r, "Harry", WK).length > 0 && "Harry has packed lunches") },
+  { name: "Remove a packed lunch day (switch to school dinners)", family: "A", now: MON_AM,
+    seed: { lunches: [{ child: "Jude", days: ["Monday", "Wednesday"], week: WK }] }, steps: [{ message: "Jude doesn't need a packed lunch on Wednesday any more, school dinners instead" }],
+    check: ([r]) => !eq(lunchDays(r, "Jude", WK), ["Monday"]) ? `lunches: ${JSON.stringify(r.lunches)}` : null },
+  { name: "Full-week packed lunch replace", family: "A", now: MON_AM,
+    seed: { lunches: [{ child: "Jude", days: ["Monday"], week: WK }] }, steps: [{ message: "This week Jude needs packed lunches on Tuesday and Thursday only, school dinners the other days" }],
+    check: ([r]) => !eq(lunchDays(r, "Jude", WK), ["Thursday", "Tuesday"]) ? `lunches: ${JSON.stringify(r.lunches)}` : null },
+  { name: "Weekend packed lunch isn't saved as a school lunch", family: "A", now: MON, steps: [{ message: "Jude needs a packed lunch on Saturday" }],
+    check: ([r], [reply]) => firstFail(r.lunches.some((l) => l.days.includes("Saturday")) && "Saturday saved as school lunch", /saved.*packed lunch.*saturday/i.test(reply) && "claims Saturday lunch saved") },
+  { name: "'School dinners tomorrow' one-off removes the packed lunch", family: "A", now: MON,
+    seed: { lunches: [{ child: "Jude", days: ["Tuesday", "Thursday"], week: WK }] }, steps: [{ message: "Jude's having school dinners tomorrow" }],
+    check: ([r]) => !eq(lunchDays(r, "Jude", WK), ["Thursday"]) ? `lunches: ${JSON.stringify(r.lunches)}` : null },
+  // ── forced failures ──
+  { name: "Forced database failure → warm, specific 'couldn't save', nothing written", family: "A", now: MON, steps: [{ message: PE_WED, fail_db: true }],
+    check: ([r], [reply]) => firstFail(total(r) > 0 && `rows written: ${JSON.stringify(r)}`, !/sorry|couldn'?t/i.test(reply) && "not apologetic",
+      !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific (Jude's PE kit)", /\b(saved|done)\b(?!.*couldn)/i.test(reply) && !/couldn'?t save/i.test(reply) && "claims a save") },
+  { name: "Forced AI follow-up failure → code-built honest confirmation", family: "A", now: MON, steps: [{ message: PE_WED, fail_followup: true }],
+    check: ([r], [reply]) => firstFail(oneJudePeWed(r), !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific", !claimsSaved(reply) && "doesn't confirm the save") },
 ];
 
-async function runHandlerCase(c: HandlerCase): Promise<{ reason: string | null; reply: string | null; details: unknown }> {
+type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number } };
+async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   await resetTestData();
-  await seedHandlerFixtures();
-  const { status, data } = await callFn("whatsapp-webhook", {
-    scenario: c.name, phone: FAMILY_A_PHONE, message: c.message, now: c.now, history: c.history ?? [], dry_run: true,
-  });
-  const reply: string = data.reply ?? "";
-  const rows = await familyRows();
-  const reason = status !== 200 ? `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`
-    : data.twilio_called !== false ? "Twilio was not confirmed off" : c.check(rows, reply);
-  return { reason, reply, details: { rows, tool_calls: data.tool_calls } };
+  await seedFamily(c.family, c.seed);
+  const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = [];
+  const usage = { input: 0, output: 0, calls: 0 };
+  for (const step of c.steps) {
+    const { status, data } = await callFn("whatsapp-webhook", {
+      scenario: c.name, phone: FAMILIES[c.family].phone, message: step.message, now: step.now ?? c.now,
+      fail_db: step.fail_db === true, fail_followup: step.fail_followup === true, dry_run: true,
+    });
+    if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
+    if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
+    usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0;
+    replies.push(data.reply ?? ""); calls.push(data.tool_calls);
+    after.push(await familyRows(c.family));
+  }
+  const sys = replies.find((r) => SYSTEM_WORDS.test(r));
+  const empty = replies.findIndex((r) => !r.trim());
+  const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : c.check(after, replies);
+  const reply = c.steps.length > 1 ? c.steps.map((s, i) => `Parent: ${s.message}\nMonty: ${replies[i]}`).join("\n") : replies[0];
+  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls }, usage };
 }
 
-async function runHandlerSuite(): Promise<Result[]> {
+const usageTotals = { input: 0, output: 0, calls: 0 };
+async function runHandlerSlice(offset: number, limit: number): Promise<Result[]> {
   const out: Result[] = [];
-  for (const c of HANDLER_CASES) {
+  for (const c of HANDLER_CASES.slice(offset, offset + limit)) {
     let r = await runHandlerCase(c);
     let status: Result["status"] = r.reason ? "fail" : "pass";
-    if (r.reason) { // retry once; a pass on retry is flaky, not pass
-      const r2 = await runHandlerCase(c);
+    const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.calls += u.calls; };
+    add(r.usage);
+    if (r.reason) { // retry once; a pass on retry is "flaky", never "pass"
+      const r2 = await runHandlerCase(c); add(r2.usage);
       if (!r2.reason) { status = "flaky"; r = { ...r2, reason: `first attempt failed: ${r.reason}` }; }
     }
-    out.push({ scenario: c.name, category: "handler", status, reply: r.reply, reason: r.reason, details: r.details });
+    out.push({ scenario: c.name, category: "conversation", status, reply: r.reply, reason: r.reason, details: r.details });
   }
   return out;
 }
@@ -297,10 +482,9 @@ Deno.serve(async (req) => {
   const adminId = await requireAdmin(req);
   if (!adminId) return json({ error: "Admin only" }, 403);
   const body = await req.json().catch(() => ({}));
-  const action = body.action ?? "sender_suite";
+  const action = body.action ?? "full_suite";
 
   if (action === "compare_real") {
-    // Read-only: build what tonight's evening run would produce, new code vs frozen legacy code.
     const now = typeof body.now === "string" ? body.now : new Date().toISOString();
     const req2 = { scenario: "stage1 real comparison", period: body.period === "morning" ? "morning" : "evening", now, ignore_sent_log: true };
     const [neu, old] = await Promise.all([
@@ -310,35 +494,55 @@ Deno.serve(async (req) => {
     const key = (m: any) => `${m.phone_last4}::${m.message}`;
     const a = (neu.data.messages ?? []).map(key).sort();
     const b = (old.data.messages ?? []).map(key).sort();
-    const identical = JSON.stringify(a) === JSON.stringify(b);
-    return json({ now, identical, new_count: a.length, old_count: b.length,
-      only_in_new: a.filter((x: string) => !b.includes(x)), only_in_old: b.filter((x: string) => !a.includes(x)),
-      messages: neu.data.messages, status: { new: neu.status, old: old.status } });
+    return json({ now, identical: JSON.stringify(a) === JSON.stringify(b), new_count: a.length, old_count: b.length,
+      only_in_new: a.filter((x: string) => !b.includes(x)), only_in_old: b.filter((x: string) => !a.includes(x)) });
   }
 
-  const suite = action === "handler_suite" ? "handler" : action === "full_suite" ? "full" : "sender";
-  const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
+  // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
+  // A run with only one part (e.g. action "sender_suite") finishes in one call.
+  const part: "sender" | "conversation" = body.part === "conversation" ? "conversation" : "sender";
+  const offset = Number.isInteger(body.offset) ? body.offset : 0;
+  const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 3, 6);
+  let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
+  if (!runId) {
+    const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : "full";
+    const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
+    runId = run!.id;
+  }
+  const { data: runRow } = await admin.from("test_runs").select("suite, notes").eq("id", runId).single();
+  const suite = runRow?.suite ?? "full";
+
   let results: Result[] = [];
   let fatal: string | null = null;
   try {
     await resetTestData();
-    if (suite !== "handler") { await seedSenderFixtures(); results = await runSenderSuite(); }
-    if (suite !== "sender") results = results.concat(await runHandlerSuite());
+    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(); }
+    else results = await runHandlerSlice(offset, limit);
   } catch (e) {
     fatal = (e as Error).message;
   } finally {
     await resetTestData();
   }
-  if (fatal) results.push({ scenario: "Suite setup", category: "setup", status: "fail", reply: null, reason: fatal });
-  if (results.length) {
-    await admin.from("test_run_results").insert(results.map((r) => ({ run_id: run!.id, ...r, details: r.details ?? null })));
-  }
-  const passed = results.filter((r) => r.status === "pass").length;
-  const failed = results.filter((r) => r.status === "fail").length;
-  const flaky = results.filter((r) => r.status === "flaky").length;
+  if (fatal) results.push({ scenario: `Suite setup (${part} ${offset})`, category: "setup", status: "fail", reply: null, reason: fatal });
+  if (results.length) await admin.from("test_run_results").insert(results.map((r) => ({ run_id: runId, ...r, details: r.details ?? null })));
+
+  let next: { part: string; offset: number } | null = null;
+  if (part === "sender" && suite !== "sender") next = { part: "conversation", offset: 0 };
+  if (part === "conversation" && offset + limit < HANDLER_CASES.length) next = { part: "conversation", offset: offset + limit };
+
+  // Recount everything stored for this run; accumulate AI usage in notes.
+  const { data: all } = await admin.from("test_run_results").select("status").eq("run_id", runId);
+  const passed = (all ?? []).filter((r) => r.status === "pass").length;
+  const failed = (all ?? []).filter((r) => r.status === "fail").length;
+  const flaky = (all ?? []).filter((r) => r.status === "flaky").length;
+  let prev = { input: 0, output: 0, calls: 0 };
+  try { prev = JSON.parse(runRow?.notes ?? "{}").usage ?? prev; } catch { /* first chunk */ }
+  const usage = { input: prev.input + usageTotals.input, output: prev.output + usageTotals.output, calls: prev.calls + usageTotals.calls };
+  const costUsd = Math.round(((usage.input * 3 + usage.output * 15) / 1e6) * 100) / 100; // Sonnet 4.6 list price
   await admin.from("test_runs").update({
-    finished_at: new Date().toISOString(), total: results.length, passed, failed, flaky,
-    status: failed ? "failed" : "passed", notes: `${suite} suite (dry run, no sends)`,
-  }).eq("id", run!.id);
-  return json({ run_id: run!.id, total: results.length, passed, failed, flaky, results });
+    finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
+    status: next ? "running" : failed ? "failed" : "passed",
+    notes: JSON.stringify({ usage, cost_usd: costUsd, scenarios: { sender: SENDER_CASES.length + 2, conversation: HANDLER_CASES.length } }),
+  }).eq("id", runId);
+  return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
 });
