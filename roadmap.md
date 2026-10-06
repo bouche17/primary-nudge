@@ -14,3 +14,4 @@
 - [ ] Process rule in project memory
 - [ ] Full run + report
 - [ ] Delete temporary legacy-reminders-dryrun function once Matt confirms
+- [x] Fix: Monty acting on old history (grounding, multi-round tools, future-action guard) + 3 handler regression tests

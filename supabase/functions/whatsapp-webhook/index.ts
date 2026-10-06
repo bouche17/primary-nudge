@@ -1,4 +1,11 @@
-import { blockIfTestPhone } from "../_shared/testGuard.ts";
+import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+// Per-request test context. Only ever set by the secret-gated test entry point,
+// scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
+interface TestCtx { now: Date; toolCalls: Array<{ name: string; input: unknown; ok: boolean; action: string; text: string }> }
+const testStore = new AsyncLocalStorage<TestCtx>();
+const nowD = (): Date => new Date((testStore.getStore()?.now ?? new Date()).getTime());
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as encodeBase64 } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
@@ -118,6 +125,7 @@ interface MontyContext {
 interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
+  at?: string; // ISO timestamp the message was sent
 }
 
 // ── Context loader ────────────────────────────────────────────────────────────
@@ -180,7 +188,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
   }));
 
   // Load upcoming school events (next 14 days)
-  const now = new Date();
+  const now = nowD();
   const twoWeeksAhead = new Date(now);
   twoWeeksAhead.setDate(twoWeeksAhead.getDate() + 14);
 
@@ -248,7 +256,7 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
   const isOnboarding = onboardingStatus === "new" || onboardingStatus === "collecting";
 
   // Saved packed lunch plans for this and next UK week
-  const ukTodayIso = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukTodayIso = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
   const ukNoon = new Date(ukTodayIso + "T12:00:00Z");
   const dow = ukNoon.getUTCDay();
   const thisMon = new Date(ukNoon);
@@ -350,7 +358,7 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 ` : "";
 
   // ── Authoritative UK date anchors ──
-  const nowDate = new Date();
+  const nowDate = nowD();
   const ukTime = nowDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
   const ukIso = (d: Date) => d.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
   const ukLong = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/London" });
@@ -391,6 +399,13 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 - Next 7 days:
 ${next7}
 Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.
+
+## Only act on the parent's NEWEST message (critical)
+- The chat history is CONTEXT ONLY. Every earlier request in it has ALREADY been handled. Never save, re-save, re-announce or reply about an earlier request again.
+- Each earlier message is labelled with when it was sent, e.g. "[earlier message — sent Tue 30 Sep, 08:12]". A "tomorrow" in an old message means the day after THAT date, not after today. Never copy these labels into your reply.
+- The parent's new message is the final one, marked "=== NEW MESSAGE ===". Only save things that message asks for (or that it answers, if you had just asked the parent a question).
+- Your reply must only talk about what the new message asked. Don't mention other children or older items from history.
+- If the new message asks for several things, call a save tool for EACH of them before replying. You can call tools over several steps — never write "let me save…" or "I'll now save…": do the save, then say what was saved.
 
 ## Your personality
 - Warm and encouraging, like a knowledgeable friend — never corporate, never stiff
@@ -437,7 +452,7 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
-Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Use the current UK time above: if it's after 6pm and the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
+Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly and don't work it out yourself. For other items, use the current UK time above: only if it's after 6pm AND the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
 
 ## Packed lunches already saved
 ${lunchPlansSummary}
@@ -794,6 +809,35 @@ async function enforceHonestReply(reply: string, results: ToolResult[], phone: s
   return reply;
 }
 
+/** Exact, code-computed reminder timing for a dated item, so the reply never guesses. */
+function reminderTimingFor(dateIso: string): string {
+  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukHour = Number(nowD().toLocaleTimeString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Europe/London" }));
+  const fmt = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+  const eve = new Date(`${dateIso}T12:00:00Z`); eve.setUTCDate(eve.getUTCDate() - 1);
+  const eveIso = eve.toISOString().slice(0, 10);
+  const evePassed = eveIso < ukToday || (eveIso === ukToday && ukHour >= 18);
+  const mornPassed = dateIso < ukToday || (dateIso === ukToday && ukHour >= 7);
+  if (mornPassed) return "TIMING: both reminders for this have already gone out — tell the parent it's saved but no further reminder will be sent.";
+  if (evePassed) return `TIMING: the evening reminder has already passed; the parent will get the morning reminder at 7am on ${fmt(dateIso)}.`;
+  return `TIMING: the parent will get an evening reminder at 6pm on ${fmt(eveIso)} and a morning reminder at 7am on ${fmt(dateIso)}. Describe exactly this.`;
+}
+
+/** Timing of the first upcoming reminder for a weekly item, computed in code. */
+function nextWeeklyTiming(day: string, when: string): string {
+  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const base = new Date(`${ukToday}T12:00:00Z`);
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(base); d.setUTCDate(base.getUTCDate() + i);
+    if (d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" }) !== day) continue;
+    const t = reminderTimingFor(d.toISOString().slice(0, 10));
+    if (t.includes("already gone out")) continue; // look at next week's occurrence
+    if (when === "morning") return `TIMING: the first reminder is at 7am on ${d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}, then every week.`;
+    return t.replace("TIMING:", "TIMING (first occurrence, then every week):");
+  }
+  return "";
+}
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
@@ -896,7 +940,8 @@ async function executeTool(
     return okResult(
       verb === "Updated" ? "updated" : "saved",
       `${verb}: ${toolArgs.child_name} — ${toolArgs.title} on ${toolArgs.day_of_week}`,
-      `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`,
+      `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}` +
+        (toolArgs.recurrence_interval === 2 ? "" : `. ${nextWeeklyTiming(toolArgs.day_of_week, toolArgs.reminder_time)}`),
     );
   }
 
@@ -1038,7 +1083,7 @@ async function executeTool(
     const parts: string[] = [];
     const names = savedFor.filter((n) => n !== "general");
     if (savedFor.length > 0) {
-      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`);
+      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}. ${reminderTimingFor(toolArgs.date)}`);
     }
     if (alreadySavedFor.length > 0) {
       parts.push(`ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`);
@@ -1084,7 +1129,7 @@ async function executeTool(
     if (!weekStart) {
       const ukDateStr = new Intl.DateTimeFormat("en-CA", {
         timeZone: "Europe/London", year: "numeric", month: "2-digit", day: "2-digit",
-      }).format(new Date());
+      }).format(nowD());
       const ukNoon = new Date(`${ukDateStr}T12:00:00Z`);
       const dow = ukNoon.getUTCDay(); // 0=Sun
       const offset = dow === 6 ? 2 : dow === 0 ? 1 : 1 - dow;
@@ -1173,7 +1218,80 @@ async function executeTool(
   return failResult(`Unknown tool ${toolName}`, "unknown_tool");
 }
 
+// ── History framing: old messages are dated context, the new one is marked ──
+function historyLabel(at?: string): string {
+  if (!at) return "[earlier message]";
+  const d = new Date(at);
+  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "Europe/London" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
+  return `[earlier message — sent ${day}, ${time}]`;
+}
+function buildClaudeMessages(history: ConversationMessage[], incoming: string): any[] {
+  const msgs: any[] = history.map((m) => ({ role: m.role, content: `${historyLabel(m.at)} ${m.content}` }));
+  const nowLabel = historyLabel(nowD().toISOString()).replace("earlier message — sent", "sent now");
+  const current = `=== NEW MESSAGE === ${nowLabel}\nEverything above is earlier history that has already been handled. Act ONLY on this message:\n\n${incoming}`;
+  // Claude requires alternating roles; merge if the last history item is also from the user.
+  if (msgs.length && msgs[msgs.length - 1].role === "user") {
+    msgs[msgs.length - 1] = { role: "user", content: `${msgs[msgs.length - 1].content}\n\n${current}` };
+  } else msgs.push({ role: "user", content: current });
+  while (msgs.length && msgs[0].role !== "user") msgs.shift();
+  return msgs;
+}
+
+// ── Grounding: every save must come from the parent's latest message ──
+const SAVE_TOOLS = new Set(["save_child_reminder", "save_parent_note", "save_weekly_lunch_plan"]);
+function stemWords(text: string): string[] {
+  return (text || "").toLowerCase().replace(/'s\b/g, "").split(/[^a-z]+/).filter((w) => w.length >= 2);
+}
+/** Returns null if grounded, else the reason it isn't. */
+function checkGrounding(toolName: string, args: any, grounding: string, childNames: string[]): string | null {
+  const g = stemWords(grounding);
+  const gSet = new Set(g);
+  const names = childNames.map((n) => n.toLowerCase());
+  const child = (args?.child_name || "").toString().toLowerCase();
+  const namesInMsg = names.filter((n) => gSet.has(n));
+  if (child && namesInMsg.length > 0 && !namesInMsg.includes(child)) {
+    return `child "${args.child_name}" isn't mentioned (message mentions ${namesInMsg.join(", ")})`;
+  }
+  if (toolName === "save_weekly_lunch_plan") {
+    return /\b(lunch|lunches|dinner|dinners|packed)\b/i.test(grounding) ? null : "no lunch/dinner mentioned";
+  }
+  const item = toolName === "save_parent_note" ? args?.summary : args?.title;
+  const keys = [...itemTokens(item || "", childNames)];
+  if (keys.length === 0) return null;
+  const hit = keys.some((k) => g.some((w) => {
+    const a = w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
+    if (a === k) return true;
+    const n = Math.min(a.length, k.length);
+    return n >= 4 && a.slice(0, 4) === k.slice(0, 4);
+  }));
+  return hit ? null : `none of "${keys.join(", ")}" appear in the parent's latest message`;
+}
+
+const FUTURE_ACTION = /\b(let me|i'?ll|i will|i'?m going to|going to|now)\s+(just\s+)?(save|add|set|note|pop|put|log|update|sort|get (that|it|this))\b|\b(now|currently)\s+saving\b|\bsaving (that|it|this|now)\b/i;
+
+async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: string, path: string): Promise<string> {
+  if (reply && FUTURE_ACTION.test(reply)) {
+    if (results.length === 0) {
+      await logDedupDecision({ phone, childName: null, tool: `reply_guard_${path}`, newItem: "(no tool calls)", decision: "future_action_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+      return "Sorry — I haven't saved anything yet. Could you send that to me again? 🙏";
+    }
+    return await replaceReply(reply, results, phone, path, "future_action_claim_blocked");
+  }
+  return await enforceHonestReply(reply, results, phone, path);
+}
+
 // ── AI reply generator ────────────────────────────────────────────────────────
+
+const MAX_TOOL_ROUNDS = 5;
+
+async function callClaude(body: Record<string, unknown>) {
+  return await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
 
 async function generateReply(
   incomingMessage: string,
@@ -1182,49 +1300,26 @@ async function generateReply(
   phone: string
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(context);
+  const model = "claude-sonnet-4-6";
+  const messages = buildClaudeMessages(history, incomingMessage);
 
-  // Claude API uses messages without system role — system is a top-level param
-  // Convert history to Claude format (user/assistant only)
-  const messages = [
-    ...history.map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
-    { role: "user", content: incomingMessage },
-  ];
+  // Grounding text: the new message, plus Monty's last reply only if it asked a question
+  // (so "Jude" answering "which child?" still counts).
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  let grounding = incomingMessage;
+  if (lastAssistant && /\?/.test(lastAssistant.content)) grounding += "\n" + lastAssistant.content;
+  const childNames = context.children.map((c) => c.first_name);
 
-  // First API call to Claude
-  const model1 = "claude-sonnet-4-6";
-  console.log("[Claude] Calling model:", model1);
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: model1,
-      max_tokens: 500,
-      system: systemPrompt,
-      messages,
-      tools,
-    }),
-  });
-
-  const rawText1 = await response.text();
-  console.log("[Claude] Raw response text (first call):", rawText1);
-
-  if (!response.ok) {
-    console.error("Claude API error:", response.status, rawText1);
-    await logClaudeFailure(phone, response.status, rawText1, "Claude API - initial reply");
+  const res = await callClaude({ model, max_tokens: 500, system: systemPrompt, messages, tools });
+  const rawText1 = await res.text();
+  console.log("[Claude] Raw response text (round 1):", rawText1);
+  if (!res.ok) {
+    await logClaudeFailure(phone, res.status, rawText1, "Claude API - initial reply");
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
-
   let data = JSON.parse(rawText1);
 
-  // Guard: the model may not claim "already saved" without a database check.
-  // If it did so without calling a tool, force a tool call so the check runs in code.
+  // Guard: no "already saved" without a database check — force a tool call.
   if (data.stop_reason !== "tool_use") {
     const firstText = data.content?.find((b: any) => b.type === "text")?.text || "";
     if (ALREADY_CLAIM.test(firstText)) {
@@ -1232,90 +1327,98 @@ async function generateReply(
         phone, childName: null, tool: "reply_guard", newItem: incomingMessage.slice(0, 300),
         decision: "unverified_claim_blocked", match: { table: "model_reply", id: "no match", text: firstText.slice(0, 300) },
       });
-      const retry = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({
-          model: model1,
-          max_tokens: 500,
-          system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked; the tool checks the database for duplicates.",
-          messages,
-          tools,
-          tool_choice: { type: "any" },
-        }),
+      const retry = await callClaude({
+        model, max_tokens: 500, messages, tools, tool_choice: { type: "any" },
+        system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
       });
-      if (retry.ok) {
-        data = await retry.json();
-      } else {
+      if (!retry.ok) {
         await logClaudeFailure(phone, retry.status, await retry.text(), "Claude API - already-claim retry");
         return "Sorry, I couldn't save that just now — could you send it again? 😊";
       }
+      data = await retry.json();
     }
   }
 
-  // Claude returns stop_reason "tool_use" when it wants to call a tool
-  if (data.stop_reason === "tool_use") {
-    const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
-    const toolResults = [];
-    const structuredResults: ToolResult[] = [];
-
-    for (const toolBlock of toolUseBlocks) {
-      const toolName = toolBlock.name;
-      const toolArgs = toolBlock.input;
-      console.log(`Executing tool: ${toolName}`, toolArgs);
-
-      const result = await executeTool(toolName, toolArgs, context, phone);
-      console.log(`Tool result:`, JSON.stringify(result));
-      structuredResults.push(result);
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolBlock.id,
-        content: result.text,
-      });
+  const structuredResults: ToolResult[] = [];
+  const convo = [...messages];
+  let round = 1;
+  while (data.stop_reason === "tool_use") {
+    const toolResults: any[] = [];
+    for (const block of data.content.filter((b: any) => b.type === "tool_use")) {
+      let result: ToolResult;
+      const why = SAVE_TOOLS.has(block.name) ? checkGrounding(block.name, block.input, grounding, childNames) : null;
+      if (why) {
+        result = { ok: false, action: "not_saved", failed: false, summary: "",
+          text: `NOT SAVED: not mentioned in the parent's latest message (${why}). Earlier requests in the history were already handled — do not save them again, and don't mention them in your reply.` };
+        await logDedupDecision({
+          phone, childName: block.input?.child_name ?? null, tool: block.name, date: block.input?.date ?? null,
+          newItem: JSON.stringify(block.input).slice(0, 500), decision: "ungrounded_save_blocked",
+          match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) },
+        });
+      } else {
+        result = await executeTool(block.name, block.input, context, phone);
+        structuredResults.push(result);
+      }
+      console.log(`Tool ${block.name} →`, JSON.stringify(result));
+      testStore.getStore()?.toolCalls.push({ name: block.name, input: block.input, ok: result.ok, action: why ? "ungrounded_blocked" : result.action, text: result.text });
+      toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result.text });
     }
+    convo.push({ role: "assistant", content: data.content }, { role: "user", content: toolResults });
 
-    // Second API call with tool results to get final conversational reply
-    const model2 = "claude-sonnet-4-6";
-    console.log("[Claude] Calling model (follow-up):", model2);
-    const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: model2,
-        max_tokens: 400,
-        system: systemPrompt,
-        messages: [
-          ...messages,
-          { role: "assistant", content: data.content },
-          { role: "user", content: toolResults },
-        ],
-      }),
-    });
-
-    const rawFollowUp = await followUpResponse.text();
-    console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
-
-    if (!followUpResponse.ok) {
-      console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
-      await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
+    if (round >= MAX_TOOL_ROUNDS) {
+      return await replaceReply("", structuredResults, phone, "text", "max_tool_rounds_replaced");
+    }
+    round++;
+    const failNext = (testStore.getStore() as any)?.failFollowup === true;
+    const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
+      await callClaude({ model, max_tokens: 500, system: systemPrompt, messages: convo, tools });
+    const raw = await next.text();
+    console.log(`[Claude] Raw response text (round ${round}):`, raw);
+    if (!next.ok) {
+      await logClaudeFailure(phone, next.status, raw, "Claude API - tool follow-up");
       return await replaceReply("", structuredResults, phone, "text", "followup_failed_replaced");
     }
-
-    let followUpData: any = null;
-    try { followUpData = JSON.parse(rawFollowUp); } catch { /* fall through */ }
-    const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
-    return await enforceHonestReply(textBlock?.text?.trim() || "", structuredResults, phone, "text");
+    try { data = JSON.parse(raw); } catch { return await replaceReply("", structuredResults, phone, "text", "followup_unparseable_replaced"); }
   }
 
-  // No tool use — just return the text response
-  const textBlock = data.content?.find((b: any) => b.type === "text");
-  return textBlock?.text?.trim() ||
-    "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
+  if (structuredResults.length === 0 && round === 1) {
+    if (text && FUTURE_ACTION.test(text)) return await enforceTurnHonesty(text, [], phone, "text");
+    return text || "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  }
+  return await enforceTurnHonesty(text, structuredResults, phone, "text");
+}
+
+// ── Test entry point ──────────────────────────────────────────────────────────
+async function handleTestEntry(req: Request, rawBody: string): Promise<Response> {
+  const j = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  let b: any = {};
+  try { b = JSON.parse(rawBody || "{}"); } catch { /* empty */ }
+  const phone = typeof b.phone === "string" ? b.phone : "";
+  const scenario = typeof b.scenario === "string" ? b.scenario.slice(0, 200) : null;
+  if (!(await validTestSecret(req.headers.get("x-monty-test-secret")))) {
+    await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone ? `…${phone.slice(-4)}` : null, scenario, allowed: false, reason: "bad secret" });
+    return j({ error: "unauthorised" }, 401);
+  }
+  if (!(await isTestPhone(phone))) {
+    await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: `…${phone.slice(-4)}`, scenario, allowed: false, reason: "not a test number" });
+    return j({ error: "phone is not on the test allowlist" }, 403);
+  }
+  const dryRun = b.dry_run !== false; // defaults true; this path never calls Twilio either way
+  await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone, scenario, allowed: true, reason: dryRun ? "dry_run" : "dry_run(forced)" });
+  const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
+  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true };
+  return await testStore.run(store, async () => {
+    const context = await loadParentContext(phone);
+    if (!context) return j({ error: "no test family for this phone" }, 400);
+    const history: ConversationMessage[] = Array.isArray(b.history)
+      ? b.history.filter((m: any) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .map((m: any) => ({ role: m.role, content: m.content, at: m.at }))
+      : [];
+    const message = String(b.message || "");
+    const reply = await generateReply(message, history, context, phone);
+    return j({ reply, tool_calls: store.toolCalls, now: now.toISOString(), dry_run: true, twilio_called: false });
+  });
 }
 
 // ── Conversation helpers ──────────────────────────────────────────────────────
@@ -1341,7 +1444,7 @@ async function getOrCreateConversation(phone: string): Promise<string> {
 async function getRecentHistory(conversationId: string, limit = 10): Promise<ConversationMessage[]> {
   const { data: messages } = await supabase
     .from("messages")
-    .select("direction, content")
+    .select("direction, content, created_at")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -1351,6 +1454,7 @@ async function getRecentHistory(conversationId: string, limit = 10): Promise<Con
     .map((m: any) => ({
       role: m.direction === "inbound" ? "user" : "assistant",
       content: m.content,
+      at: m.created_at,
     }));
 }
 
@@ -1494,7 +1598,7 @@ async function handleImageMessage(
       .map((c) => `${c.first_name} (${c.year_group || "unknown year"})`)
       .join(", ");
     console.log("Children with year groups:", childrenWithYearGroups);
-    const nowDate = new Date();
+    const nowDate = nowD();
     const today = nowDate.toISOString().split("T")[0];
     const todayHuman = nowDate.toLocaleDateString("en-GB", {
       weekday: "long",
@@ -1885,6 +1989,11 @@ Deno.serve(async (req: Request) => {
   try {
     const body = await req.text();
     const params = new URLSearchParams(body);
+
+    // ── Locked test entry point (never Twilio, test numbers only, audited) ──
+    if (req.headers.has("x-monty-test-secret")) {
+      return await handleTestEntry(req, body);
+    }
 
     // ── Twilio Signature Validation ──────────────────────────────────────
     const twilioWebhookUrl = Deno.env.get("TWILIO_WEBHOOK_URL");
