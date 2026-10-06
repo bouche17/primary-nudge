@@ -180,6 +180,116 @@ async function runSenderSuite(): Promise<Result[]> {
   return results;
 }
 
+// ── Handler scenarios (real AI, dry run, never Twilio) ──
+
+async function seedHandlerFixtures() {
+  const parentId = await ensureTestUser(FAMILY_A_PHONE);
+  const { error } = await admin.from("children").insert([
+    { parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Jude", year_group: "Year 1" },
+    { parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Harry", year_group: "Year 3" },
+  ]);
+  if (error) throw new Error(`seed children failed: ${error.message}`);
+}
+
+async function familyRows() {
+  const ids = await testUserIds();
+  const { data: kids } = await admin.from("children").select("id, first_name").in("parent_id", ids);
+  const kidIds = (kids ?? []).map((k) => k.id);
+  const [notes, rems, lunches] = await Promise.all([
+    admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", FAMILY_A_PHONE),
+    kidIds.length ? admin.from("child_reminders").select("child_id, title, day_of_week").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
+    kidIds.length ? admin.from("weekly_lunch_plans").select("child_id, packed_lunch_days, week_start").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
+  ]);
+  const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name;
+  return {
+    notes: (notes.data ?? []).map((n: any) => ({ child: n.child_name, summary: n.summary, dates: (n.extracted_dates ?? []).map((d: any) => d.date) })),
+    reminders: (rems.data ?? []).map((r: any) => ({ child: nameOf(r.child_id), title: r.title, day: r.day_of_week })),
+    lunches: (lunches.data ?? []).map((l: any) => ({ child: nameOf(l.child_id), days: l.packed_lunch_days, week: l.week_start })),
+  };
+}
+
+type Rows = Awaited<ReturnType<typeof familyRows>>;
+interface HandlerCase {
+  name: string; now: string; message: string;
+  history?: { role: "user" | "assistant"; content: string; at: string }[];
+  check: (rows: Rows, reply: string) => string | null;
+}
+
+const OLD_GYM_HISTORY = [
+  { role: "user" as const, content: "Harry has gymnastics at 8am tomorrow morning", at: "2026-09-30T07:40:00Z" },
+  { role: "assistant" as const, content: "Saved: Harry has gymnastics at 8am on Thursday 1 October ✅", at: "2026-09-30T07:40:10Z" },
+  { role: "user" as const, content: "Jude needs a packed lunch on Friday", at: "2026-09-30T07:41:00Z" },
+  { role: "assistant" as const, content: "Saved: packed lunch for Jude on Friday ✅", at: "2026-09-30T07:41:10Z" },
+];
+const MON_EVENING = "2026-10-05T18:17:00Z"; // Mon 5 Oct, 19:17 BST
+
+const HANDLER_CASES: HandlerCase[] = [
+  {
+    name: "Old 'gymnastics tomorrow' in history + unrelated new message → nothing re-saved",
+    now: MON_EVENING, history: OLD_GYM_HISTORY, message: "Thanks Monty, that's brilliant",
+    check: (r, reply) => {
+      const n = r.notes.length + r.reminders.length + r.lunches.length;
+      if (n) return `expected no saves, got ${JSON.stringify(r)}`;
+      if (/gymnastic/i.test(reply)) return "reply mentions old gymnastics request";
+      return null;
+    },
+  },
+  {
+    name: "'Jude needs a PE kit just for this Wednesday' on a Monday (with old history) → one Jude note for Wed",
+    now: MON_EVENING, history: OLD_GYM_HISTORY, message: "Jude needs a PE kit just for this Wednesday",
+    check: (r, reply) => {
+      if (r.reminders.length || r.lunches.length) return `unexpected reminder/lunch rows: ${JSON.stringify(r)}`;
+      if (r.notes.length !== 1) return `expected 1 note, got ${r.notes.length}: ${JSON.stringify(r.notes)}`;
+      const n = r.notes[0];
+      if (n.child !== "Jude") return `note child ${n.child}, expected Jude`;
+      if (!n.dates.includes("2026-10-07")) return `note dated ${n.dates}, expected 2026-10-07`;
+      if (!/pe/i.test(n.summary)) return `note summary "${n.summary}" missing PE`;
+      if (/gymnastic|packed lunch/i.test(reply)) return "reply mentions old requests";
+      if (/let me|i'll save|now saving/i.test(reply)) return "reply announces a future action";
+      return null;
+    },
+  },
+  {
+    name: "Message needing two saves → both saved, reply confirms both",
+    now: MON_EVENING, message: "Harry has swimming every Monday, and Jude needs his recorder this Friday",
+    check: (r, reply) => {
+      const swim = r.reminders.filter((x) => x.child === "Harry" && /swim/i.test(x.title) && x.day === "Monday");
+      const rec = r.notes.filter((x) => x.child === "Jude" && /recorder/i.test(x.summary) && x.dates.includes("2026-10-09"));
+      if (swim.length !== 1) return `expected 1 Harry swimming Monday reminder, rows: ${JSON.stringify(r.reminders)}`;
+      if (rec.length !== 1) return `expected 1 Jude recorder note on 2026-10-09, rows: ${JSON.stringify(r.notes)}`;
+      if (!/swim/i.test(reply) || !/recorder/i.test(reply)) return "reply doesn't confirm both";
+      return null;
+    },
+  },
+];
+
+async function runHandlerCase(c: HandlerCase): Promise<{ reason: string | null; reply: string | null; details: unknown }> {
+  await resetTestData();
+  await seedHandlerFixtures();
+  const { status, data } = await callFn("whatsapp-webhook", {
+    scenario: c.name, phone: FAMILY_A_PHONE, message: c.message, now: c.now, history: c.history ?? [], dry_run: true,
+  });
+  const reply: string = data.reply ?? "";
+  const rows = await familyRows();
+  const reason = status !== 200 ? `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`
+    : data.twilio_called !== false ? "Twilio was not confirmed off" : c.check(rows, reply);
+  return { reason, reply, details: { rows, tool_calls: data.tool_calls } };
+}
+
+async function runHandlerSuite(): Promise<Result[]> {
+  const out: Result[] = [];
+  for (const c of HANDLER_CASES) {
+    let r = await runHandlerCase(c);
+    let status: Result["status"] = r.reason ? "fail" : "pass";
+    if (r.reason) { // retry once; a pass on retry is flaky, not pass
+      const r2 = await runHandlerCase(c);
+      if (!r2.reason) { status = "flaky"; r = { ...r2, reason: `first attempt failed: ${r.reason}` }; }
+    }
+    out.push({ scenario: c.name, category: "handler", status, reply: r.reply, reason: r.reason, details: r.details });
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const adminId = await requireAdmin(req);
@@ -204,14 +314,14 @@ Deno.serve(async (req) => {
       messages: neu.data.messages, status: { new: neu.status, old: old.status } });
   }
 
-  // sender_suite
-  const { data: run } = await admin.from("test_runs").insert({ suite: "sender", triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
+  const suite = action === "handler_suite" ? "handler" : action === "full_suite" ? "full" : "sender";
+  const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
   let results: Result[] = [];
   let fatal: string | null = null;
   try {
     await resetTestData();
-    await seedSenderFixtures();
-    results = await runSenderSuite();
+    if (suite !== "handler") { await seedSenderFixtures(); results = await runSenderSuite(); }
+    if (suite !== "sender") results = results.concat(await runHandlerSuite());
   } catch (e) {
     fatal = (e as Error).message;
   } finally {
@@ -226,7 +336,7 @@ Deno.serve(async (req) => {
   const flaky = results.filter((r) => r.status === "flaky").length;
   await admin.from("test_runs").update({
     finished_at: new Date().toISOString(), total: results.length, passed, failed, flaky,
-    status: failed ? "failed" : "passed", notes: "Stage 1: reminder sender suite (no AI calls, no sends)",
+    status: failed ? "failed" : "passed", notes: `${suite} suite (dry run, no sends)`,
   }).eq("id", run!.id);
   return json({ run_id: run!.id, total: results.length, passed, failed, flaky, results });
 });
