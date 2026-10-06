@@ -3,6 +3,7 @@ import { evaluateClaudeAlerts } from "../_shared/alerts.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
+import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -2059,6 +2060,26 @@ async function handleOptIntent(phone: string, message: string, alertSend?: (t: s
   return null;
 }
 
+// ── Invented-contact guard: runs on EVERY outgoing reply (text, photo, clarification) ──
+async function applyContactGuard(reply: string, phone: string, message: string, context: MontyContext | null): Promise<string> {
+  const schoolIds = [...new Set((context?.children ?? []).map((c) => c.school_id).filter(Boolean))];
+  const stored: string[] = [];
+  if (schoolIds.length) {
+    const [{ data: schools }, { data: feeds }] = await Promise.all([
+      supabase.from("schools").select("address").in("id", schoolIds),
+      supabase.from("school_calendar_feeds").select("feed_url").in("school_id", schoolIds),
+    ]);
+    for (const x of schools ?? []) if (x.address) stored.push(x.address);
+    for (const f of feeds ?? []) if (f.feed_url) stored.push(f.feed_url);
+  }
+  const g = guardContacts(reply, buildAllowlist(stored, message));
+  if (g.blocked.length) {
+    await logDedupDecision({ phone, childName: null, tool: "reply_guard_contacts", newItem: g.blocked.map((b) => `${b.kind}:${b.raw}`).join(", ").slice(0, 500),
+      decision: "invented_contact_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+  }
+  return g.reply;
+}
+
 // ── Test entry point ──────────────────────────────────────────────────────────
 async function handleTestEntry(req: Request, rawBody: string): Promise<Response> {
   const j = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -2092,8 +2113,10 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     const message = String(b.message || "");
     const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
     await saveMessage(conversationId, "inbound", message);
-    const reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
+    let reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
       : await handleTextMessage(phone, message, context, conversationId);
+    if (typeof b.inject_reply === "string") reply = `${reply} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
+    reply = await applyContactGuard(reply, phone, message, context);
     await saveMessage(conversationId, "outbound", reply);
     return j({ reply, tool_calls: store.toolCalls, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
@@ -2754,6 +2777,8 @@ Deno.serve(async (req: Request) => {
     } else {
       reply = await handleTextMessage(from, incomingMessage, context, conversationId);
     }
+
+    reply = await applyContactGuard(reply, from, incomingMessage, context);
 
     // Save and send reply
     await saveMessage(conversationId, "outbound", reply);
