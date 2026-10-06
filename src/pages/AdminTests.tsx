@@ -62,15 +62,17 @@ const AdminTests = () => {
   };
 
   const [progress, setProgress] = useState<string>("");
-  const runSuite = async () => {
-    setRunning(true);
+  const [runningKind, setRunningKind] = useState<"quick" | "full" | null>(null);
+  const runSuite = async (kind: "quick" | "full") => {
+    setRunning(true); setRunningKind(kind);
+    const action = kind === "quick" ? "quick_suite" : "full_suite";
     // The runner works in chunks (sender tests, then a few conversation tests per call).
-    let body: Record<string, unknown> = { action: "full_suite", part: "sender" };
+    let body: Record<string, unknown> = { action, part: "sender" };
     let last: any = null;
     for (let i = 0; i < 40; i++) {
       const { data, error } = await supabase.functions.invoke("monty-test-runner", { body });
       if (error) {
-        setRunning(false); setProgress("");
+        setRunning(false); setRunningKind(null); setProgress("");
         toast({ title: "Test run stopped", description: error.message, variant: "destructive" });
         loadRuns();
         return;
@@ -80,9 +82,9 @@ const AdminTests = () => {
       setRefresh((n) => n + 1);
       setProgress(`${data.total} done · ${data.failed} failing`);
       if (!data.next) break;
-      body = { action: "full_suite", run_id: data.run_id, ...data.next };
+      body = { action, run_id: data.run_id, ...data.next };
     }
-    setRunning(false); setProgress("");
+    setRunning(false); setRunningKind(null); setProgress("");
     toast({ title: `Run finished: ${last.passed}/${last.total} passed`, description: `${last.failed} failing · ${last.flaky} flaky · about $${last.cost_usd} of AI` });
     loadRuns();
   };
@@ -112,12 +114,18 @@ const AdminTests = () => {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-heading font-bold text-foreground">Monty test suite</h1>
-            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages. A full run takes a few minutes.</p>
+            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages. Quick suite after every change; full suite runs every Sunday at 8pm and before big changes.</p>
           </div>
-          <Button onClick={runSuite} disabled={running} className="rounded-full">
-            {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-            {running ? `Running… ${progress}` : "Run full suite"}
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => runSuite("quick")} disabled={running} variant="outline" className="rounded-full">
+              {runningKind === "quick" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+              {runningKind === "quick" ? `Running… ${progress}` : "Run quick suite"}
+            </Button>
+            <Button onClick={() => runSuite("full")} disabled={running} className="rounded-full">
+              {runningKind === "full" ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+              {runningKind === "full" ? `Running… ${progress}` : "Run full suite"}
+            </Button>
+          </div>
         </div>
 
         <div className="grid md:grid-cols-[240px_1fr] gap-6">

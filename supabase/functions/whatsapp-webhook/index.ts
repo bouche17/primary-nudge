@@ -94,9 +94,12 @@ async function logClaudeFailure(
 const OUTAGE_TEXT = "Sorry, I'm having trouble right now and haven't saved that. Could you send it again in a little while? 🙏";
 const OUTAGE_PHOTO = "Sorry, I'm having trouble reading photos right now and haven't saved anything from it. Could you send it again in a little while? 🙏";
 /** Honest outage reply; the item is recorded so it can be retried or reviewed later. */
-async function outageReply(phone: string, kind: "text" | "photo", content: string, error: string): Promise<string> {
+async function outageReply(phone: string, kind: "text" | "photo", content: string, error: string,
+  d: { status?: number | null; body?: string | null; step?: string; elapsedMs?: number } = {}): Promise<string> {
   try {
-    await supabase.from("failed_inbound").insert({ phone_number: phone, message_type: kind, content: content.slice(0, 4000), error: error.slice(0, 1000) });
+    console.error(`[outage] step=${d.step ?? "?"} status=${d.status ?? "-"} elapsed=${d.elapsedMs ?? "-"}ms error=${error.slice(0, 300)}`);
+    await supabase.from("failed_inbound").insert({ phone_number: phone, message_type: kind, content: content.slice(0, 4000), error: error.slice(0, 1000),
+      status_code: d.status ?? null, error_body: d.body ? d.body.slice(0, 4000) : null, step: d.step ?? null, elapsed_ms: d.elapsedMs ?? null, is_test: !!testStore.getStore() });
   } catch (e) { console.error("Failed to record failed inbound:", e); }
   return kind === "photo" ? OUTAGE_PHOTO : OUTAGE_TEXT;
 }
@@ -1732,6 +1735,7 @@ async function generateReply(
   context: MontyContext,
   phone: string
 ): Promise<string> {
+  const t0Reply = Date.now();
   const systemPrompt = buildSystemPrompt(context);
   const model = montyClaudeModel();
   const messages = buildClaudeMessages(history, incomingMessage);
@@ -1744,12 +1748,12 @@ async function generateReply(
   const childNames = context.children.map((c) => c.first_name);
   (context as any).__grounding = grounding;
 
-  const res = await callClaude({ model, max_tokens: 500, system: systemPrompt, messages, tools });
+  const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools });
   const rawText1 = await res.text();
   console.log("[Claude] Raw response text (round 1):", rawText1);
   if (!res.ok) {
     await logClaudeFailure(phone, res.status, rawText1, "Claude API - initial reply");
-    return await outageReply(phone, "text", incomingMessage, `${res.status} ${rawText1.slice(0, 500)}`);
+    return await outageReply(phone, "text", incomingMessage, `${res.status} ${rawText1.slice(0, 500)}`, { status: res.status, body: rawText1, step: "initial_reply", elapsedMs: Date.now() - t0Reply });
   }
   let data = JSON.parse(rawText1);
 
@@ -1762,13 +1766,13 @@ async function generateReply(
         decision: "unverified_claim_blocked", match: { table: "model_reply", id: "no match", text: firstText.slice(0, 300) },
       });
       const retry = await callClaude({
-        model, max_tokens: 500, messages, tools, tool_choice: { type: "any" },
+        model, max_tokens: 2000, messages, tools, tool_choice: { type: "any" },
         system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
       });
       if (!retry.ok) {
         const rt = await retry.text();
         await logClaudeFailure(phone, retry.status, rt, "Claude API - already-claim retry");
-        return await outageReply(phone, "text", incomingMessage, `${retry.status} ${rt.slice(0, 500)}`);
+        return await outageReply(phone, "text", incomingMessage, `${retry.status} ${rt.slice(0, 500)}`, { status: retry.status, body: rt, step: "already_claim_retry", elapsedMs: Date.now() - t0Reply });
       }
       data = await retry.json();
     }
@@ -1867,7 +1871,7 @@ async function generateReply(
     round++;
     const failNext = (testStore.getStore() as any)?.failFollowup === true;
     const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
-      await callClaude({ model, max_tokens: 500, system: systemPrompt, messages: convo, tools });
+      await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages: convo, tools });
     const raw = await next.text();
     console.log(`[Claude] Raw response text (round ${round}):`, raw);
     if (!next.ok) {
@@ -1903,7 +1907,7 @@ async function generateReply(
   let reply: string;
   if (structuredResults.length === 0 && round === 1) {
     reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text", incomingMessage)
-      : text || await outageReply(phone, "text", incomingMessage, "empty AI reply");
+      : text || await outageReply(phone, "text", incomingMessage, "empty AI reply", { status: 200, body: JSON.stringify(data).slice(0, 4000), step: `empty_reply_round_${round}`, elapsedMs: Date.now() - t0Reply });
   } else {
     reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
   }
@@ -2410,7 +2414,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       },
       body: JSON.stringify({
         model: visionModel,
-        max_tokens: 500,
+        max_tokens: 2000,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
         tools,
@@ -2540,7 +2544,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         },
         body: JSON.stringify({
           model: visionFollowModel,
-          max_tokens: 400,
+          max_tokens: 2000,
           system: systemPrompt + childHint,
           messages: [
             { role: "user", content: userContent },
