@@ -5,7 +5,7 @@ import { useAdmin } from "@/hooks/use-admin";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Play, Loader2 } from "lucide-react";
+import { ArrowLeft, Play, Loader2, AlertTriangle } from "lucide-react";
 
 interface Run {
   id: string; started_at: string; finished_at: string | null; suite: string;
@@ -42,6 +42,24 @@ const AdminTests = () => {
       .then(({ data }) => setResults((data as unknown as Result[]) ?? []));
   }, [selected, refresh]);
 
+  const [alerts, setAlerts] = useState<{ id: string; created_at: string; message: string; alert_type: string }[]>([]);
+  const loadAlerts = useCallback(async () => {
+    const since = new Date(Date.now() - 3600_000).toISOString();
+    const { data } = await supabase.from("ops_alerts" as any).select("id, created_at, message, alert_type")
+      .eq("is_test", false).is("resolved_at", null).gt("created_at", since).order("created_at", { ascending: false });
+    setAlerts((data as any) ?? []);
+  }, []);
+  useEffect(() => {
+    if (!isAdmin) return;
+    loadAlerts();
+    const t = setInterval(loadAlerts, 60_000);
+    return () => clearInterval(t);
+  }, [isAdmin, loadAlerts]);
+  const resolveAlerts = async () => {
+    await supabase.from("ops_alerts" as any).update({ resolved_at: new Date().toISOString() }).in("id", alerts.map((a) => a.id));
+    loadAlerts();
+  };
+
   const [progress, setProgress] = useState<string>("");
   const runSuite = async () => {
     setRunning(true);
@@ -77,6 +95,19 @@ const AdminTests = () => {
         <Link to="/dashboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="w-4 h-4" /> Dashboard
         </Link>
+        {alerts.length > 0 && (
+          <div role="alert" className="rounded-2xl border border-destructive bg-destructive text-destructive-foreground p-4 space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2 font-semibold"><AlertTriangle className="w-5 h-5" /> Monty is failing for real parents</div>
+              <Button size="sm" variant="secondary" className="rounded-full" onClick={resolveAlerts}>Mark resolved</Button>
+            </div>
+            {alerts.map((a) => (
+              <p key={a.id} className="text-sm">
+                {new Date(a.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} — {a.message}
+              </p>
+            ))}
+          </div>
+        )}
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-heading font-bold text-foreground">Monty test suite</h1>
