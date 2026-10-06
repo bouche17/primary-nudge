@@ -186,6 +186,7 @@ async function runAlertTests(): Promise<Result[]> {
     out.push({ scenario: "3 failed WhatsApp deliveries to real parents within an hour → one alert", category: "alerts", status: r2 ? "fail" : "pass", reply: sends[0] ?? null, reason: r2 });
 
     // Delivery-status endpoint: signed request is recorded, unsigned/invalid are 403.
+    await cleanup(); // no simulated rows may exist while the real endpoint runs its alert check
     {
       const base = `${SUPABASE_URL}/functions/v1/twilio-status-callback?source=monty-test`;
       const sid = `SMtest${Date.now()}`;

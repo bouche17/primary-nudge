@@ -89,7 +89,7 @@ export async function evaluateDeliveryAlerts(o: AlertOpts = {}) {
   const now = o.now ?? new Date();
   let q = svc().from("message_send_failures").select("phone_number, error_body, created_at")
     .like("context", "Async delivery failure%").gt("created_at", new Date(now.getTime() - 3600_000).toISOString()).order("created_at");
-  if (o.functionName) q = q.eq("function_name", o.functionName);
+  q = o.functionName ? q.eq("function_name", o.functionName) : q.neq("function_name", "alert-sim-test"); // simulated rows never trigger real alerts
   const { data } = await q;
   const rows = await realOnly(data ?? []);
   if (rows.length < 3) return [];
