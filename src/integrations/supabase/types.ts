@@ -257,6 +257,36 @@ export type Database = {
           },
         ]
       }
+      failed_inbound: {
+        Row: {
+          content: string | null
+          created_at: string
+          error: string | null
+          id: string
+          message_type: string
+          phone_number: string
+          status: string
+        }
+        Insert: {
+          content?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          message_type: string
+          phone_number: string
+          status?: string
+        }
+        Update: {
+          content?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          message_type?: string
+          phone_number?: string
+          status?: string
+        }
+        Relationships: []
+      }
       invite_tokens: {
         Row: {
           created_at: string | null
@@ -408,6 +438,39 @@ export type Database = {
           },
         ]
       }
+      message_delivery_status: {
+        Row: {
+          created_at: string
+          error_code: string | null
+          error_message: string | null
+          id: string
+          message_sid: string
+          phone_number: string | null
+          source: string | null
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          message_sid: string
+          phone_number?: string | null
+          source?: string | null
+          status: string
+        }
+        Update: {
+          created_at?: string
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          message_sid?: string
+          phone_number?: string | null
+          source?: string | null
+          status?: string
+        }
+        Relationships: []
+      }
       message_send_failures: {
         Row: {
           context: string | null
@@ -538,6 +601,51 @@ export type Database = {
           status?: string
           updated_at?: string | null
           user_id?: string | null
+        }
+        Relationships: []
+      }
+      ops_alerts: {
+        Row: {
+          affected_parents: number
+          alert_type: string
+          channel: string | null
+          created_at: string
+          delivered: boolean
+          failure_count: number
+          first_error: string | null
+          id: string
+          is_test: boolean
+          likely_fix: string | null
+          message: string
+          resolved_at: string | null
+        }
+        Insert: {
+          affected_parents?: number
+          alert_type: string
+          channel?: string | null
+          created_at?: string
+          delivered?: boolean
+          failure_count?: number
+          first_error?: string | null
+          id?: string
+          is_test?: boolean
+          likely_fix?: string | null
+          message: string
+          resolved_at?: string | null
+        }
+        Update: {
+          affected_parents?: number
+          alert_type?: string
+          channel?: string | null
+          created_at?: string
+          delivered?: boolean
+          failure_count?: number
+          first_error?: string | null
+          id?: string
+          is_test?: boolean
+          likely_fix?: string | null
+          message?: string
+          resolved_at?: string | null
         }
         Relationships: []
       }
