@@ -1359,6 +1359,38 @@ async function generateReply(
   return await enforceTurnHonesty(text, structuredResults, phone, "text");
 }
 
+// ── Test entry point ──────────────────────────────────────────────────────────
+async function handleTestEntry(req: Request, rawBody: string): Promise<Response> {
+  const j = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  let b: any = {};
+  try { b = JSON.parse(rawBody || "{}"); } catch { /* empty */ }
+  const phone = typeof b.phone === "string" ? b.phone : "";
+  const scenario = typeof b.scenario === "string" ? b.scenario.slice(0, 200) : null;
+  if (!(await validTestSecret(req.headers.get("x-monty-test-secret")))) {
+    await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone ? `…${phone.slice(-4)}` : null, scenario, allowed: false, reason: "bad secret" });
+    return j({ error: "unauthorised" }, 401);
+  }
+  if (!(await isTestPhone(phone))) {
+    await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: `…${phone.slice(-4)}`, scenario, allowed: false, reason: "not a test number" });
+    return j({ error: "phone is not on the test allowlist" }, 403);
+  }
+  const dryRun = b.dry_run !== false; // defaults true; this path never calls Twilio either way
+  await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone, scenario, allowed: true, reason: dryRun ? "dry_run" : "dry_run(forced)" });
+  const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
+  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true };
+  return await testStore.run(store, async () => {
+    const context = await loadParentContext(phone);
+    if (!context) return j({ error: "no test family for this phone" }, 400);
+    const history: ConversationMessage[] = Array.isArray(b.history)
+      ? b.history.filter((m: any) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .map((m: any) => ({ role: m.role, content: m.content, at: m.at }))
+      : [];
+    const message = String(b.message || "");
+    const reply = await generateReply(message, history, context, phone);
+    return j({ reply, tool_calls: store.toolCalls, now: now.toISOString(), dry_run: true, twilio_called: false });
+  });
+}
+
 // ── Conversation helpers ──────────────────────────────────────────────────────
 
 async function getOrCreateConversation(phone: string): Promise<string> {
@@ -1927,6 +1959,11 @@ Deno.serve(async (req: Request) => {
   try {
     const body = await req.text();
     const params = new URLSearchParams(body);
+
+    // ── Locked test entry point (never Twilio, test numbers only, audited) ──
+    if (req.headers.has("x-monty-test-secret")) {
+      return await handleTestEntry(req, body);
+    }
 
     // ── Twilio Signature Validation ──────────────────────────────────────
     const twilioWebhookUrl = Deno.env.get("TWILIO_WEBHOOK_URL");
