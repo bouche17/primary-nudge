@@ -258,7 +258,7 @@ async function runOptOutTests(): Promise<Result[]> {
       (al ?? []).length !== 1 && "no deletion_request alert row", !(await isOptedOut(ph)) && "sends not paused", ((await morning()).data.messages ?? []).length !== 0 && "reminders still built");
     out.push({ scenario: "Deletion request → Matt alerted once (stubbed), sends paused", category: "opt-out", status: r3 ? "fail" : "pass", reply: `${del.data.reply ?? ""}\nALERT: ${(del.data.alert_sends ?? [])[0] ?? ""}`, reason: r3 });
 
-    const yes = ["stop", "STOP", "Stop.", "unsubscribe", "stop messages", "Stop messaging me", "remove me", "don't message me", "opt out", "delete my account", "delete my data", "How do I stop messages?", "please stop"];
+    const yes = ["remove my data", "Remove my details", "delete me", "Delete everything", "I want my data deleted", "stop", "STOP", "Stop.", "unsubscribe", "stop messages", "Stop messaging me", "remove me", "don't message me", "opt out", "delete my account", "delete my data", "How do I stop messages?", "please stop"];
     const no = ["the bus stop moved", "Harry needs to stop at the shop after school", "Can you stop the PE kit reminder?", "stop the swimming reminder for Jude", "When does after-school club start?", "Jude's football starts again next week", "remove the PE kit reminder", "delete the swimming reminder"];
     const wrongYes = yes.filter((m) => !detectOptIntent(m)), wrongNo = no.filter((m) => detectOptIntent(m));
     const r4 = firstFail(wrongYes.length > 0 && `missed: ${wrongYes.join(" | ")}`, wrongNo.length > 0 && `false opt-out: ${wrongNo.join(" | ")}`);
@@ -336,8 +336,49 @@ async function runDeleteParentTests(): Promise<Result[]> {
   return out;
 }
 
+// ── Invented contact details + plain-update fallback ──
+async function runContactTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const ph = FAMILY_A_PHONE;
+  const say = (message: string, scenario: string, extra: Record<string, unknown> = {}) => callFn("whatsapp-webhook", { phone: ph, message, scenario, ...extra });
+  const track = (d: any) => { if (d?.usage) { usageTotals.input += d.usage.input || 0; usageTotals.output += d.usage.output || 0; usageTotals.calls += d.usage.calls || 0; } };
+  const emails = (t: string) => (t.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []).map((e) => e.toLowerCase());
+  try {
+    const a = await say("What's Monty's email address? I have a question about my data", "contact: Monty email"); track(a.data);
+    const ra = a.data.reply || "";
+    const r1 = firstFail(!ra.includes("hello@heymonty.co.uk") && "no hello@heymonty.co.uk", emails(ra).some((e) => e !== "hello@heymonty.co.uk") && `other email: ${emails(ra).join(", ")}`);
+    out.push({ scenario: "Asking for Monty's contact email → hello@heymonty.co.uk only", category: "contacts", status: r1 ? "fail" : "pass", reply: ra, reason: r1 });
+
+    const since = new Date().toISOString();
+    const b = await say("Thanks Monty", "contact: forced invented details", { inject_reply: "Email help@monty.school, visit www.monty.school or call the office on 01625 123456." }); track(b.data);
+    const rb = b.data.reply || "";
+    const { data: logs } = await admin.from("dedup_decisions").select("new_item").eq("phone_number", ph).eq("decision", "invented_contact_blocked").gte("created_at", since);
+    const r2 = firstFail(/monty\.school|01625 123456/.test(rb) && "invented detail reached the parent", !/don't have that contact detail/.test(rb) && "no honest replacement",
+      !rb.includes("hello@heymonty.co.uk") && "honest version lacks hello@heymonty.co.uk", (logs ?? []).length !== 1 && `block logs: ${(logs ?? []).length}`);
+    out.push({ scenario: "Forced invented email/URL/phone in a reply → blocked, replaced, logged invented_contact_blocked", category: "contacts", status: r2 ? "fail" : "pass", reply: rb, reason: r2, details: { logged: logs?.[0]?.new_item } });
+
+    const c = await say("Remove my data", "contact: remove my data");
+    const r3 = firstFail(c.data.reply !== OPT_REPLIES.delete && `reply: ${c.data.reply}`, !(c.data.reply || "").includes("hello@heymonty.co.uk") && "no support email", (c.data.alert_sends ?? []).length !== 1 && "Matt not alerted", !(await isOptedOut(ph)) && "sends not paused");
+    out.push({ scenario: "'Remove my data' → deletion flow in code (reply + alert + paused)", category: "contacts", status: r3 ? "fail" : "pass", reply: c.data.reply ?? null, reason: r3 });
+    await optIn(ph); await admin.from("ops_alerts").delete().eq("is_test", true);
+
+    const d = await say("What's the school office phone number?", "contact: school phone not stored"); track(d.data);
+    const rd = d.data.reply || "";
+    const r4 = firstFail(/\d{4,}[\s-]?\d{3,}/.test(rd) && "gave a phone number", !/(don'?t|do not) have|haven'?t got/i.test(rd) && "no honest 'I don't have that'");
+    out.push({ scenario: "School phone when none is stored → honest 'I don't have that'", category: "contacts", status: r4 ? "fail" : "pass", reply: rd, reason: r4 });
+
+    const e = await say("the bus stop moved to Elm Road", "fallback: plain update"); track(e.data);
+    const re = e.data.reply || "";
+    const r5 = firstFail(/haven'?t saved|send (that|it) (to me )?again/i.test(re) && "got the 'haven't saved' fallback", !re.trim() && "empty reply");
+    out.push({ scenario: "Plain update with nothing to save → normal short reply, not 'haven't saved'", category: "contacts", status: r5 ? "fail" : "pass", reply: re, reason: r5 });
+  } catch (err) {
+    out.push({ scenario: "Contact tests", category: "contacts", status: "fail", reply: null, reason: (err as Error).message });
+  } finally { await optIn(ph); }
+  return out;
+}
+
 async function runSenderSuite(): Promise<Result[]> {
-  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests()), ...(await runDeleteParentTests())];
+  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests()), ...(await runContactTests()), ...(await runDeleteParentTests())];
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
       scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],

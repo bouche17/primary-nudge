@@ -3,6 +3,7 @@ import { evaluateClaudeAlerts } from "../_shared/alerts.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
+import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -410,8 +411,12 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 
   return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
 
+## Contact details (never invent any)
+- Monty's ONLY contact details: email hello@heymonty.co.uk, website heymonty.co.uk. Never give any other email, website, domain or phone number for Monty.
+- For a school, only give contact details shown to you in this prompt for that school. You don't have school phone numbers or emails, so if asked say you don't have them and suggest the school's own website or office. Never guess or make up an email, website or phone number for anyone.
+
 ## Stopping messages (never say you can't)
-- Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
+- Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". Questions about their data: hello@heymonty.co.uk. If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
 
 ## Right now (authoritative — trust this over anything in the chat history)
 - Current UK time: ${ukTime}
@@ -1358,11 +1363,17 @@ function checkGrounding(toolName: string, args: any, grounding: string, childNam
 
 const FUTURE_ACTION = /\b(let me|i'?ll|i will|i'?m going to|going to|now)\s+(just\s+)?(save|add|set|note|pop|put|log|update|sort|get (that|it|this))\b|\b(now|currently)\s+saving\b|\bsaving (that|it|this|now)\b/i;
 
-async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: string, path: string): Promise<string> {
+// Does the parent's latest message actually ask Monty to save/remember something?
+const SAVE_REQUEST = /\b(remind|reminder|don'?t forget|remember|add|save|note|put|book|needs?|bring|take|wear|kit|bag|packed lunch|lunch|dinner|trip|club|every (mon|tue|wed|thu|fri|sat|sun)|on (mon|tue|wed|thu|fri|sat|sun)|tomorrow|next week|this (mon|tue|wed|thu|fri|week))/i;
+
+async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: string, path: string, message?: string): Promise<string> {
   if (reply && FUTURE_ACTION.test(reply)) {
     if (results.length === 0) {
       await logDedupDecision({ phone, childName: null, tool: `reply_guard_${path}`, newItem: "(no tool calls)", decision: "future_action_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
-      return "Sorry — I haven't saved anything yet. Could you send that to me again? 🙏";
+      // Only say "haven't saved" when the parent asked to save something; plain updates/chat get a normal short reply.
+      if (message === undefined || SAVE_REQUEST.test(message)) return "Sorry — I haven't saved anything yet. Could you send that to me again? 🙏";
+      const kept = reply.split(/(?<=[.!?])\s+|\n+/).filter((x) => x.trim() && !FUTURE_ACTION.test(x)).join(" ").trim();
+      return kept || "Thanks for letting me know 👍";
     }
     return await replaceReply(reply, results, phone, path, "future_action_claim_blocked");
   }
@@ -1891,7 +1902,7 @@ async function generateReply(
   }
   let reply: string;
   if (structuredResults.length === 0 && round === 1) {
-    reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text")
+    reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text", incomingMessage)
       : text || await outageReply(phone, "text", incomingMessage, "empty AI reply");
   } else {
     reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
@@ -2049,6 +2060,26 @@ async function handleOptIntent(phone: string, message: string, alertSend?: (t: s
   return null;
 }
 
+// ── Invented-contact guard: runs on EVERY outgoing reply (text, photo, clarification) ──
+async function applyContactGuard(reply: string, phone: string, message: string, context: MontyContext | null): Promise<string> {
+  const schoolIds = [...new Set((context?.children ?? []).map((c) => c.school_id).filter(Boolean))];
+  const stored: string[] = [];
+  if (schoolIds.length) {
+    const [{ data: schools }, { data: feeds }] = await Promise.all([
+      supabase.from("schools").select("address").in("id", schoolIds),
+      supabase.from("school_calendar_feeds").select("feed_url").in("school_id", schoolIds),
+    ]);
+    for (const x of schools ?? []) if (x.address) stored.push(x.address);
+    for (const f of feeds ?? []) if (f.feed_url) stored.push(f.feed_url);
+  }
+  const g = guardContacts(reply, buildAllowlist(stored, message));
+  if (g.blocked.length) {
+    await logDedupDecision({ phone, childName: null, tool: "reply_guard_contacts", newItem: g.blocked.map((b) => `${b.kind}:${b.raw}`).join(", ").slice(0, 500),
+      decision: "invented_contact_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+  }
+  return g.reply;
+}
+
 // ── Test entry point ──────────────────────────────────────────────────────────
 async function handleTestEntry(req: Request, rawBody: string): Promise<Response> {
   const j = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -2082,8 +2113,10 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     const message = String(b.message || "");
     const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
     await saveMessage(conversationId, "inbound", message);
-    const reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
+    let reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
       : await handleTextMessage(phone, message, context, conversationId);
+    if (typeof b.inject_reply === "string") reply = `${reply} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
+    reply = await applyContactGuard(reply, phone, message, context);
     await saveMessage(conversationId, "outbound", reply);
     return j({ reply, tool_calls: store.toolCalls, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
@@ -2744,6 +2777,8 @@ Deno.serve(async (req: Request) => {
     } else {
       reply = await handleTextMessage(from, incomingMessage, context, conversationId);
     }
+
+    reply = await applyContactGuard(reply, from, incomingMessage, context);
 
     // Save and send reply
     await saveMessage(conversationId, "outbound", reply);
