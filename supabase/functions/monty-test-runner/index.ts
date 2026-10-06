@@ -210,6 +210,7 @@ interface Rows {
   reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
   lunches: { child: string; days: string[]; week: string }[];
   pending: unknown;
+  inactive: number;
 }
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
@@ -266,17 +267,19 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
   const { data: kids } = await admin.from("children").select("id, first_name").in("parent_id", ids);
   const kidIds = (kids ?? []).map((k) => k.id);
   const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name ?? "?";
-  const [notes, rems, lunches, convo] = await Promise.all([
+  const [notes, rems, lunches, convo, inact] = await Promise.all([
     admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", f.phone),
     kidIds.length ? admin.from("child_reminders").select("child_id, title, day_of_week, recurrence_interval, anchor_date").eq("active", true).in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     kidIds.length ? admin.from("weekly_lunch_plans").select("child_id, packed_lunch_days, week_start").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     admin.from("conversations").select("context").eq("phone_number", f.phone).maybeSingle(),
+    kidIds.length ? admin.from("child_reminders").select("id", { count: "exact", head: true }).eq("active", false).in("child_id", kidIds) : Promise.resolve({ count: 0 } as any),
   ]);
   return {
     notes: (notes.data ?? []).map((n: any) => ({ child: n.child_name, summary: n.summary ?? "", dates: (n.extracted_dates ?? []).map((d: any) => d.date) })),
     reminders: (rems.data ?? []).map((r: any) => ({ child: nameOf(r.child_id), title: r.title, day: r.day_of_week, interval: r.recurrence_interval, anchor: r.anchor_date })),
     lunches: (lunches.data ?? []).map((l: any) => ({ child: nameOf(l.child_id), days: [...(l.packed_lunch_days ?? [])].sort(), week: l.week_start })),
     pending: (convo.data as any)?.context?.pending_action ?? null,
+    inactive: (inact as any).count ?? 0,
   };
 }
 
@@ -319,7 +322,7 @@ const HANDLER_CASES: HandlerCase[] = [
     seed: { history: OLD_GYM_HISTORY }, steps: [{ message: PE_WED }],
     check: ([r], [reply]) => firstFail(oneJudePeWed(r), /gymnastic|packed lunch/i.test(reply) && "reply mentions old requests",
       /let me|i'll save|now saving/i.test(reply) && "reply announces a future action",
-      !/tuesday|tomorrow (evening|at 6)|6pm tomorrow/i.test(reply) && "reply doesn't mention Tuesday's 6pm reminder") },
+      /remind you/i.test(reply) && "confirmation explains reminder timing") },
   { name: "Real history replay (Matt, 29 Sep–5 Oct) → PE kit Wednesday saves exactly one Jude note", family: "A", now: MON,
     seed: { realHistory: { from: "2026-09-29T00:00:00Z", to: "2026-10-05T18:17:30Z" } }, steps: [{ message: PE_WED }],
     check: ([r], [reply]) => firstFail(oneJudePeWed(r), /gymnastic|packed lunch/i.test(reply) && "reply mentions old requests") },
@@ -351,16 +354,41 @@ const HANDLER_CASES: HandlerCase[] = [
   { name: "Same day, different activity → both kept", family: "A", now: MON,
     seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry has football club on Tuesdays too" }],
     check: ([r]) => firstFail(remFor(r, "Harry", "Tuesday", /football/i).length !== 1 && "no football", remFor(r, "Harry", "Tuesday", /pe/i).length !== 1 && `PE changed: ${JSON.stringify(r.reminders)}`) },
-  { name: "Moving a reminder to another day", family: "A", now: MON,
-    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry's PE kit day has moved from Tuesday to Wednesday" }],
-    check: ([r]) => firstFail(remFor(r, "Harry", "Wednesday", /pe/i).length !== 1 && `no Wednesday PE: ${JSON.stringify(r.reminders)}`, remFor(r, "Harry", "Tuesday", /pe/i).length > 0 && "Tuesday PE still active") },
+  ...[1, 2, 3, 4, 5].map((n): HandlerCase => ({ name: `PE kit moved Tuesday→Wednesday (repeat ${n}/5)`, family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry's PE kit has moved from Tuesday to Wednesday" }],
+    check: ([r], [reply]) => firstFail(remFor(r, "Harry", "Wednesday", /pe/i).length !== 1 && `no Wednesday PE: ${JSON.stringify(r.reminders)}`,
+      remFor(r, "Harry", "Tuesday", /pe/i).length > 0 && "Tuesday PE still active", r.reminders.length !== 1 && `extra rows: ${JSON.stringify(r.reminders)}`,
+      r.inactive > 0 && "old row deactivated instead of moved (second row created)", !/harry/i.test(reply) || !/wednesday/i.test(reply) ? `reply: "${reply}"` : null) })),
+  { name: "'Harry's PE is now on Wednesdays instead' (no old day named) → the one PE reminder moves", family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }, { child: "Harry", title: "Swimming kit", day: "Friday" }] },
+    steps: [{ message: "Harry's PE is now on Wednesdays instead" }],
+    check: ([r]) => firstFail(remFor(r, "Harry", "Wednesday", /pe/i).length !== 1 && `rows: ${JSON.stringify(r.reminders)}`, remFor(r, "Harry", "Tuesday", /pe/i).length > 0 && "Tuesday still active",
+      r.reminders.length !== 2 && `row count: ${JSON.stringify(r.reminders)}`, r.inactive > 0 && "second row created", remFor(r, "Harry", "Friday", /swim/i).length !== 1 && "swimming touched") },
+  { name: "Move with two matching reminders (PE Tue + Thu) → asks which, nothing changed", family: "A", now: MON,
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }, { child: "Harry", title: "PE kit", day: "Thursday" }] },
+    steps: [{ message: "Harry's PE has moved to Wednesday" }],
+    check: ([r], [q]) => firstFail(!(asks(q) && /tuesday/i.test(q) && /thursday/i.test(q)) && `didn't ask naming both: "${q}"`,
+      remFor(r, "Harry", "Wednesday", /pe/i).length > 0 && "moved without asking", r.reminders.length !== 2 && `rows: ${JSON.stringify(r.reminders)}`) },
   // ── which child / clarification ──
   { name: "No child named, 2 children → asks which child, then 'Jude' saves for Jude", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude" }, { message: "every week" }],
-    check: ([r1, r2, r3], [q, q2, a]) => firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`, !(asks(q) && /jude/i.test(q) && /harry/i.test(q)) && "didn't ask with both names",
-      total(r2) > 0 && "saved before one-off/weekly was answered", !/every thursday/i.test(q2) && `didn't ask one-off or weekly: "${q2}"`,
+    check: ([r1, r2, r3], [q, q2, a]) => firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`, !(asks(q) && /jude/i.test(q) && /harry/i.test(q) && /every thursday/i.test(q)) && `didn't ask child + one-off/weekly together: "${q}"`,
+      total(r2) > 0 && "saved before one-off/weekly was answered", !/every thursday/i.test(q2) && `didn't ask one-off or weekly: "${q2}"`, /harry/i.test(q2) && "re-asked which child",
       remFor(r3, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly not saved: ${JSON.stringify(r3)}`, peThu(r3, "Harry") > 0 && "also saved for Harry",
       !/jude/i.test(a) && "confirmation doesn't name Jude", r3.pending !== null && "pending not cleared") },
+  { name: "Combined question, full answer 'Jude, every week' → one Jude weekly reminder", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude, every week" }],
+    check: ([r1, r2], [q, a]) => firstFail(total(r1) > 0 && "saved before asking", !(/jude/i.test(q) && /harry/i.test(q) && /every thursday/i.test(q)) && `not one combined question: "${q}"`,
+      remFor(r2, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly missing: ${JSON.stringify(r2)}`, peThu(r2, "Harry") > 0 && "saved for Harry", r2.notes.length > 0 && "dated note saved too",
+      asks(a) && `asked again: "${a}"`, r2.pending !== null && "pending not cleared") },
+  { name: "Combined question, partial answer 'every week' → asks only which child, then 'Harry' saves", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "every week" }, { message: "Harry" }],
+    check: ([, r2, r3], [, q2, a]) => firstFail(total(r2) > 0 && `saved with no child: ${JSON.stringify(r2)}`, !(asks(q2) && /harry/i.test(q2) && /jude/i.test(q2)) && `didn't ask which child: "${q2}"`,
+      /every thursday|just/i.test(q2) && "re-asked one-off/weekly", remFor(r3, "Harry", "Thursday", /pe/i).length !== 1 && `Harry weekly missing: ${JSON.stringify(r3)}`,
+      peThu(r3, "Jude") > 0 && "saved for Jude", asks(a) && `asked again: "${a}"`) },
+  { name: "Combined question, 'both, every week' → weekly for both", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, { message: "both, every week" }],
+    check: ([, r2]) => firstFail(remFor(r2, "Jude", "Thursday", /pe/i).length !== 1 && `Jude: ${JSON.stringify(r2)}`, remFor(r2, "Harry", "Thursday", /pe/i).length !== 1 && "Harry missing", r2.notes.length > 0 && "dated notes saved") },
   { name: "Reply 'both' to which-child → saved for both", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "both" }, { message: "just this once" }],
     check: (rs) => {
@@ -483,12 +511,16 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
     replies.push(data.reply ?? ""); calls.push(data.tool_calls);
     after.push(await familyRows(c.family));
   }
+  const kidNames = FAMILIES[c.family].kids.map((k) => k.name);
+  const confirmations = replies.map((r, i) => ({ r, asked: c.steps[i].message.includes("?") }))
+    .filter((x) => /saved ✅|has moved to/i.test(x.r) && !/sorry|couldn'?t/i.test(x.r));
+  const badConf = confirmations.find((x) => !x.asked && (x.r.includes("\n") || x.r.length > 120 || !kidNames.some((n) => x.r.includes(n)) || /remind you/i.test(x.r)));
   const sys = replies.find((r) => SYSTEM_WORDS.test(r));
   const pron = replies.find((r) => /\b(he|she|his|her|him)\b/i.test(r));
   const empty = replies.findIndex((r) => !r.trim());
-  const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : c.check(after, replies);
+  const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : badConf ? `confirmation not one short line naming the child: "${badConf.r}"` : c.check(after, replies);
   const reply = c.steps.length > 1 ? c.steps.map((s, i) => `Parent: ${s.message}\nMonty: ${replies[i]}`).join("\n") : replies[0];
-  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
+  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
 const usageTotals = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
@@ -519,7 +551,7 @@ Deno.serve(async (req) => {
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
   const part: "sender" | "conversation" = body.part === "conversation" ? "conversation" : "sender";
   const offset = Number.isInteger(body.offset) ? body.offset : 0;
-  const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 3, 6);
+  const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
   if (!runId) {
     const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : "full";
@@ -546,6 +578,17 @@ Deno.serve(async (req) => {
   let next: { part: string; offset: number } | null = null;
   if (part === "sender" && suite !== "sender") next = { part: "conversation", offset: 0 };
   if (part === "conversation" && offset + limit < HANDLER_CASES.length) next = { part: "conversation", offset: offset + limit };
+
+  // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.
+  if (!next && suite !== "sender") {
+    const { data: conv } = await admin.from("test_run_results").select("scenario, details").eq("run_id", runId).eq("category", "conversation");
+    const allNames = Object.values(FAMILIES).flatMap((f) => f.kids.map((k) => k.name));
+    const confs = (conv ?? []).flatMap((r: any) => ((r.details?.confirmations ?? []) as string[]).map((t) => ({ s: r.scenario, t })));
+    const bad = confs.filter((x) => x.t.includes("\n") || x.t.length > 120 || !allNames.some((n) => x.t.includes(n)) || /remind you/i.test(x.t));
+    await admin.from("test_run_results").insert({ run_id: runId, scenario: `Every confirmation in the suite is one line, under 120 characters, names the child (${confs.length} checked)`,
+      category: "conversation", status: bad.length || !confs.length ? "fail" : "pass", reply: confs.slice(0, 6).map((x) => x.t).join("\n"),
+      reason: bad.length ? bad.slice(0, 3).map((x) => `${x.s}: "${x.t}"`).join(" | ") : confs.length ? null : "no confirmations found" });
+  }
 
   // Recount everything stored for this run; accumulate AI usage in notes.
   const { data: all } = await admin.from("test_run_results").select("status").eq("run_id", runId);
