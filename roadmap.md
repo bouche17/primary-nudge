@@ -13,6 +13,6 @@
 - [x] Forced-failure tests, flaky handling
 - [x] Process rule in project memory
 - [x] Full run + report
-- [ ] Delete temporary legacy-reminders-dryrun function once Matt confirms
+- [x] Delete temporary legacy-reminders-dryrun function
 - [x] Fix: Monty acting on old history (grounding, multi-round tools, future-action guard) + 3 handler regression tests
-- [ ] Pronoun one-off ('she needs her swim bag tomorrow') saved as weekly on 'yes' — needs Matt's call
+- [x] One-off vs weekly rules + names-not-pronouns (approved by Matt)
