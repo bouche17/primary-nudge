@@ -289,31 +289,49 @@ export type Database = {
       }
       failed_inbound: {
         Row: {
+          archived_at: string | null
           content: string | null
           created_at: string
+          elapsed_ms: number | null
           error: string | null
+          error_body: string | null
           id: string
+          is_test: boolean
           message_type: string
           phone_number: string
           status: string
+          status_code: number | null
+          step: string | null
         }
         Insert: {
+          archived_at?: string | null
           content?: string | null
           created_at?: string
+          elapsed_ms?: number | null
           error?: string | null
+          error_body?: string | null
           id?: string
+          is_test?: boolean
           message_type: string
           phone_number: string
           status?: string
+          status_code?: number | null
+          step?: string | null
         }
         Update: {
+          archived_at?: string | null
           content?: string | null
           created_at?: string
+          elapsed_ms?: number | null
           error?: string | null
+          error_body?: string | null
           id?: string
+          is_test?: boolean
           message_type?: string
           phone_number?: string
           status?: string
+          status_code?: number | null
+          step?: string | null
         }
         Relationships: []
       }
@@ -1300,6 +1318,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      queue_suite_chunk: { Args: { _body: Json }; Returns: number }
       rollover_year_groups: { Args: never; Returns: undefined }
       test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }

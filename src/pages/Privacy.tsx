@@ -75,8 +75,8 @@ const Privacy = () => {
             <h2 className="font-heading font-bold text-xl text-foreground">Contact</h2>
             <p className="text-muted-foreground leading-relaxed">
               If you have any questions about this privacy policy or your data, please contact us at{" "}
-              <a href="mailto:privacy@monty.app" className="text-primary underline hover:no-underline">
-                privacy@monty.app
+              <a href="mailto:hello@heymonty.co.uk" className="text-primary underline hover:no-underline">
+                hello@heymonty.co.uk
               </a>.
             </p>
           </section>

@@ -5,7 +5,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
-import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
+import { evaluateClaudeAlerts, evaluateDeliveryAlerts, sendAlertWhatsApp } from "../_shared/alerts.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -82,7 +82,8 @@ async function resetTestData() {
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
-    await admin.from("failed_inbound").delete().in("phone_number", allow);
+    // Archived, never deleted: keeps the real error (status, body, step, timing) for diagnosis.
+    await admin.from("failed_inbound").update({ archived_at: new Date().toISOString() }).in("phone_number", allow).is("archived_at", null);
     await admin.from("message_send_failures").delete().in("phone_number", allow).eq("function_name", "whatsapp-webhook");
     const { data: convos } = await admin.from("conversations").select("id").in("phone_number", allow);
     const convoIds = (convos ?? []).map((c) => c.id);
@@ -221,7 +222,7 @@ async function runAlertTests(): Promise<Result[]> {
 }
 
 // ── Opt-out (STOP/START/delete) — no AI, nothing sent, alert stubbed ──
-async function runOptOutTests(): Promise<Result[]> {
+async function runOptOutTests(quick = false): Promise<Result[]> {
   const out: Result[] = [];
   const ph = FAMILY_A_PHONE;
   const say = (message: string, scenario: string) => callFn("whatsapp-webhook", { phone: ph, message, scenario });
@@ -264,6 +265,7 @@ async function runOptOutTests(): Promise<Result[]> {
     const r4 = firstFail(wrongYes.length > 0 && `missed: ${wrongYes.join(" | ")}`, wrongNo.length > 0 && `false opt-out: ${wrongNo.join(" | ")}`);
     out.push({ scenario: `Opt-out matching: ${yes.length} opt-out phrasings caught, ${no.length} ordinary 'stop'/'delete' messages ignored`, category: "opt-out", status: r4 ? "fail" : "pass", reply: null, reason: r4 });
     await optIn(ph);
+    if (quick) return out; // quick suite skips the AI-backed 'bus stop' check
     const bus = await say("the bus stop moved to Elm Road", "opt-out: bus stop (no AI expected? goes to AI)");
     const r5 = firstFail(await isOptedOut(ph) && "bus stop message opted the parent out", bus.data.opt === true && "handled as opt-out");
     out.push({ scenario: "'the bus stop moved' through Monty does NOT opt out", category: "opt-out", status: r5 ? "fail" : "pass", reply: bus.data.reply ?? null, reason: r5, details: { usage: bus.data.usage } });
@@ -337,17 +339,19 @@ async function runDeleteParentTests(): Promise<Result[]> {
 }
 
 // ── Invented contact details + plain-update fallback ──
-async function runContactTests(): Promise<Result[]> {
+async function runContactTests(quick = false): Promise<Result[]> {
   const out: Result[] = [];
   const ph = FAMILY_A_PHONE;
   const say = (message: string, scenario: string, extra: Record<string, unknown> = {}) => callFn("whatsapp-webhook", { phone: ph, message, scenario, ...extra });
   const track = (d: any) => { if (d?.usage) { usageTotals.input += d.usage.input || 0; usageTotals.output += d.usage.output || 0; usageTotals.calls += d.usage.calls || 0; } };
   const emails = (t: string) => (t.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []).map((e) => e.toLowerCase());
   try {
+    if (!quick) {
     const a = await say("What's Monty's email address? I have a question about my data", "contact: Monty email"); track(a.data);
     const ra = a.data.reply || "";
     const r1 = firstFail(!ra.includes("hello@heymonty.co.uk") && "no hello@heymonty.co.uk", emails(ra).some((e) => e !== "hello@heymonty.co.uk") && `other email: ${emails(ra).join(", ")}`);
     out.push({ scenario: "Asking for Monty's contact email → hello@heymonty.co.uk only", category: "contacts", status: r1 ? "fail" : "pass", reply: ra, reason: r1 });
+    }
 
     const since = new Date().toISOString();
     const b = await say("Thanks Monty", "contact: forced invented details", { inject_reply: "Email help@monty.school, visit www.monty.school or call the office on 01625 123456." }); track(b.data);
@@ -357,6 +361,7 @@ async function runContactTests(): Promise<Result[]> {
       !rb.includes("hello@heymonty.co.uk") && "honest version lacks hello@heymonty.co.uk", (logs ?? []).length !== 1 && `block logs: ${(logs ?? []).length}`);
     out.push({ scenario: "Forced invented email/URL/phone in a reply → blocked, replaced, logged invented_contact_blocked", category: "contacts", status: r2 ? "fail" : "pass", reply: rb, reason: r2, details: { logged: logs?.[0]?.new_item } });
 
+    if (quick) return out;
     const c = await say("Remove my data", "contact: remove my data");
     const r3 = firstFail(c.data.reply !== OPT_REPLIES.delete && `reply: ${c.data.reply}`, !(c.data.reply || "").includes("hello@heymonty.co.uk") && "no support email", (c.data.alert_sends ?? []).length !== 1 && "Matt not alerted", !(await isOptedOut(ph)) && "sends not paused");
     out.push({ scenario: "'Remove my data' → deletion flow in code (reply + alert + paused)", category: "contacts", status: r3 ? "fail" : "pass", reply: c.data.reply ?? null, reason: r3 });
@@ -377,8 +382,8 @@ async function runContactTests(): Promise<Result[]> {
   return out;
 }
 
-async function runSenderSuite(): Promise<Result[]> {
-  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests()), ...(await runContactTests()), ...(await runDeleteParentTests())];
+async function runSenderSuite(quick = false): Promise<Result[]> {
+  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick)), ...(await runContactTests(quick)), ...(await runDeleteParentTests())];
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
       scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],
@@ -508,7 +513,7 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
     kidIds.length ? admin.from("weekly_lunch_plans").select("child_id, packed_lunch_days, week_start").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     admin.from("conversations").select("context").eq("phone_number", f.phone).maybeSingle(),
     kidIds.length ? admin.from("child_reminders").select("id", { count: "exact", head: true }).eq("active", false).in("child_id", kidIds) : Promise.resolve({ count: 0 } as any),
-    admin.from("failed_inbound").select("id", { count: "exact", head: true }).eq("phone_number", f.phone),
+    admin.from("failed_inbound").select("id", { count: "exact", head: true }).eq("phone_number", f.phone).is("archived_at", null),
   ]);
   const convoRow = await admin.from("conversations").select("id").eq("phone_number", f.phone).maybeSingle();
   const inb = convoRow.data ? await admin.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", convoRow.data.id).eq("direction", "inbound") : { count: 0 } as any;
@@ -736,6 +741,26 @@ const HANDLER_CASES: HandlerCase[] = [
       r.failedInbound !== 1 && `failed item not recorded (${r.failedInbound})`, r.inbound < 1 && "inbound message not stored") },
 ];
 
+// Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
+const QUICK_NAMES = [
+  "New weekly reminder",
+  "'Harry needs PE kit just this Wednesday' → dated note, no question",
+  "No child named, 2 children → asks which child, then 'Jude' saves for Jude",
+  "No match: 'Harry needs his swim bag tomorrow' → asks just tomorrow or every Tuesday; 'just tomorrow' → one dated note",
+  "Existing weekly swimming (Tue) + 'Jude needs his swim bag tomorrow' on Monday → already on the list",
+  "Old 'gymnastics tomorrow' in history + unrelated new message → nothing re-saved",
+  "'Harry's PE is now on Wednesdays instead' (no old day named) → the one PE reminder moves",
+  "General question → nothing saved, no success claim",
+  "Forced database failure → warm, specific 'couldn't save', nothing written",
+  "'He needs his recorder Friday' (Jude & Harry) → reply uses no he/she/his/her",
+];
+function casesFor(suite: string): HandlerCase[] {
+  if (suite !== "quick") return HANDLER_CASES;
+  const list = HANDLER_CASES.filter((c) => QUICK_NAMES.includes(c.name));
+  if (list.length !== QUICK_NAMES.length) throw new Error(`quick suite: ${QUICK_NAMES.length - list.length} scenario names not found`);
+  return list;
+}
+
 type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number; ms: number; truncated: number; turns: number; model?: string } };
 async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   await resetTestData();
@@ -768,9 +793,9 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
 }
 
 const usageTotals = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
-async function runHandlerSlice(offset: number, limit: number): Promise<Result[]> {
+async function runHandlerSlice(offset: number, limit: number, cases: HandlerCase[] = HANDLER_CASES): Promise<Result[]> {
   const out: Result[] = [];
-  for (const c of HANDLER_CASES.slice(offset, offset + limit)) {
+  for (const c of cases.slice(offset, offset + limit)) {
     let r = await runHandlerCase(c);
     let status: Result["status"] = r.reason ? "fail" : "pass";
     const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.calls += u.calls; usageTotals.ms += u.ms; usageTotals.truncated += u.truncated; usageTotals.turns += u.turns; if (u.model) usageTotals.model = u.model; };
@@ -790,6 +815,18 @@ Deno.serve(async (req) => {
   if (!adminId) return json({ error: "Admin only" }, 403);
   const body = await req.json().catch(() => ({}));
   const action = body.action ?? "full_suite";
+  // Diagnosis helper: run one scenario N times (no retry), return outcomes + any recorded outage errors.
+  if (action === "repeat_case") {
+    const c = HANDLER_CASES.find((x) => x.name === body.scenario);
+    if (!c) return json({ error: "unknown scenario" }, 400);
+    const start = new Date().toISOString(); const runs: unknown[] = [];
+    for (let i = 0; i < Math.min(Number(body.times) || 1, 3); i++) {
+      const r = await runHandlerCase(c); runs.push({ ok: !r.reason, reason: r.reason, reply: r.reply, ms: r.usage.ms, calls: r.usage.calls, truncated: r.usage.truncated });
+    }
+    await resetTestData();
+    const { data: fails } = await admin.from("failed_inbound").select("created_at, step, status_code, elapsed_ms, error, error_body").eq("phone_number", FAMILIES[c.family].phone).gte("created_at", start);
+    return json({ runs, outages: fails });
+  }
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
@@ -798,7 +835,7 @@ Deno.serve(async (req) => {
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
   if (!runId) {
-    const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : "full";
+    const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : action === "quick_suite" ? "quick" : "full";
     const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
     runId = run!.id;
   }
@@ -809,8 +846,8 @@ Deno.serve(async (req) => {
   let fatal: string | null = null;
   try {
     await resetTestData();
-    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(); }
-    else results = await runHandlerSlice(offset, limit);
+    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick"); }
+    else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
   } finally {
@@ -821,7 +858,7 @@ Deno.serve(async (req) => {
 
   let next: { part: string; offset: number } | null = null;
   if (part === "sender" && suite !== "sender") next = { part: "conversation", offset: 0 };
-  if (part === "conversation" && offset + limit < HANDLER_CASES.length) next = { part: "conversation", offset: offset + limit };
+  if (part === "conversation" && offset + limit < casesFor(suite).length) next = { part: "conversation", offset: offset + limit };
 
   // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.
   if (!next && suite !== "sender") {
@@ -848,7 +885,21 @@ Deno.serve(async (req) => {
   await admin.from("test_runs").update({
     finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
     status: next ? "running" : failed ? "failed" : "passed",
-    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: HANDLER_CASES.length } }),
+    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined }),
   }).eq("id", runId);
+
+  // Unattended (scheduled) runs: queue the next chunk from the database with a fresh single-use token;
+  // on the last chunk alert Matt only if anything failed or was flaky.
+  if (body.chain === true) {
+    if (next) {
+      const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
+      if (error) { console.error("[runner] chain failed:", error.message); await sendAlertWhatsApp(`Monty alert: the weekly test run stopped part-way (${error.message}). Run it from /admin/tests.`); }
+    } else if (failed || flaky) {
+      const { data: bad } = await admin.from("test_run_results").select("scenario, status").eq("run_id", runId).neq("status", "pass").limit(5);
+      const msg = `Monty alert: weekly test run - ${failed} failing, ${flaky} flaky out of ${(all ?? []).length}. ${(bad ?? []).map((b) => `${b.status}: ${b.scenario}`).join("; ").slice(0, 600)}. Details on /admin/tests.`;
+      const res = await sendAlertWhatsApp(msg).catch(() => ({ ok: false, channel: "error" }));
+      await admin.from("ops_alerts").insert({ alert_type: "weekly_suite", affected_parents: 0, failure_count: failed + flaky, message: msg, likely_fix: "Open /admin/tests", is_test: false, delivered: res.ok, channel: res.channel });
+    }
+  }
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
 });
