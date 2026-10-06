@@ -1,3 +1,4 @@
+import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -88,7 +89,7 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: montyClaudeModel(),
       max_tokens: 1000,
       messages: [{ role: "user", content: prompt }],
     }),

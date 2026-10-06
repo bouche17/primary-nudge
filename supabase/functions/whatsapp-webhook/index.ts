@@ -1,3 +1,4 @@
+import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -1629,14 +1630,17 @@ async function runSave(tool: string, args: any, context: MontyContext, phone: st
 const MAX_TOOL_ROUNDS = 5;
 
 async function callClaude(body: Record<string, unknown>) {
+  const t0 = Date.now();
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+  const ms = Date.now() - t0;
+  console.log(`[Claude] ${body.model} ${r.status} in ${ms}ms`);
   const st: any = testStore.getStore();
   if (st && r.ok) {
-    try { const u = (await r.clone().json()).usage; st.usage = st.usage || { input: 0, output: 0, calls: 0 }; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
+    try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
   }
   return r;
 }
@@ -1648,7 +1652,7 @@ async function generateReply(
   phone: string
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(context);
-  const model = "claude-sonnet-4-6";
+  const model = montyClaudeModel();
   const messages = buildClaudeMessages(history, incomingMessage);
 
   // Grounding text: the new message, plus Monty's last reply only if it asked a question
@@ -2161,7 +2165,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       } as any);
     }
 
-    const visionModel = "claude-sonnet-4-6";
+    const visionModel = montyClaudeModel();
     console.log("[Claude] Calling model (vision):", visionModel);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -2291,7 +2295,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         : "";
 
       // Get final reply after saving
-      const visionFollowModel = "claude-sonnet-4-6";
+      const visionFollowModel = montyClaudeModel();
       console.log("[Claude] Calling model (vision follow-up):", visionFollowModel);
       const followUp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
