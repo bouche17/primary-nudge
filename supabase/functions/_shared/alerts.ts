@@ -103,7 +103,8 @@ export async function evaluateDeliveryAlerts(o: AlertOpts = {}) {
 /** Free-form WhatsApp inside Matt's 24h window, otherwise the approved single-variable template. */
 export async function sendAlertWhatsApp(text: string): Promise<{ ok: boolean; channel: string }> {
   const to = ALERT_PHONE();
-  if (await blockIfTestPhone(to, "ops-alert")) return { ok: false, channel: "blocked_test_number" };
+  // Matt's own alerts are the only send allowed past an opt-out.
+  if (await blockIfTestPhone(to, "ops-alert", { allowOptedOut: true })) return { ok: false, channel: "blocked_test_number" };
   const sid = Deno.env.get("TWILIO_ACCOUNT_SID")!, tok = Deno.env.get("TWILIO_AUTH_TOKEN")!, from = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
   const { data: convo } = await svc().from("conversations").select("id").eq("phone_number", to).maybeSingle();
   let inWindow = false;

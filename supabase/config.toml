@@ -30,3 +30,5 @@ verify_jwt = false
 verify_jwt = false
 [functions.monty-test-runner]
 verify_jwt = false
+[functions.delete-parent]
+verify_jwt = false

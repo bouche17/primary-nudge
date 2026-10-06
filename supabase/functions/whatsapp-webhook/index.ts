@@ -1,6 +1,8 @@
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { evaluateClaudeAlerts } from "../_shared/alerts.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
+import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -407,6 +409,9 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
   const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
 
   return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
+
+## Stopping messages (never say you can't)
+- Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
 
 ## Right now (authoritative — trust this over anything in the chat history)
 - Current UK time: ${ukTime}
@@ -2026,6 +2031,24 @@ async function handleTextMessage(from: string, incomingMessage: string, context:
   return nameNotPronoun(reply, context.children.map((c) => c.first_name));
 }
 
+// ── Opt-out / opt-in, decided in code BEFORE the AI ─────────────────────────
+// Returns the reply (sent even though the number is opted out) or null to carry on normally.
+async function handleOptIntent(phone: string, message: string, alertSend?: (t: string) => Promise<{ ok: boolean; channel: string }>, isTest = false): Promise<string | null> {
+  const intent = detectOptIntent(message);
+  if (intent === "start") { await optIn(phone); return OPT_REPLIES.start; }
+  if (intent === "stop") { await optOut(phone, "stop"); return OPT_REPLIES.stop; }
+  if (intent === "delete") {
+    await optOut(phone, "delete");
+    const text = `Monty alert: deletion request. ${phone} asked Monty to delete their account and data ("${message.slice(0, 80)}"). Their messages are already stopped. Use Delete parent on /admin/tests to preview and delete everything.`;
+    const { data: row } = await supabase.from("ops_alerts").insert({ alert_type: "deletion_request", affected_parents: 1, failure_count: 0, message: text, likely_fix: "Run Delete parent for this number", is_test: isTest }).select("id").single();
+    const res = await (alertSend ?? sendAlertWhatsApp)(text).catch(() => ({ ok: false, channel: "error" }));
+    if (row) await supabase.from("ops_alerts").update({ delivered: res.ok, channel: res.channel }).eq("id", row.id);
+    return OPT_REPLIES.delete;
+  }
+  if (await isOptedOut(phone)) return OPT_REPLIES.paused; // opted out: no AI, no saves, just how to resume
+  return null;
+}
+
 // ── Test entry point ──────────────────────────────────────────────────────────
 async function handleTestEntry(req: Request, rawBody: string): Promise<Response> {
   const j = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -2046,6 +2069,14 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
   const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true };
   return await testStore.run(store, async () => {
+    const message0 = String(b.message || "");
+    const alertSends: string[] = [];
+    const optReply = await handleOptIntent(phone, message0, async (t) => { alertSends.push(t); return { ok: true, channel: "stub" }; }, true);
+    if (optReply) {
+      const cid = await getOrCreateConversation(phone);
+      await saveMessage(cid, "inbound", message0); await saveMessage(cid, "outbound", optReply);
+      return j({ reply: optReply, tool_calls: [], opt: true, alert_sends: alertSends, usage: { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
+    }
     const context = await loadParentContext(phone);
     if (!context) return j({ error: "no test family for this phone" }, 400);
     const message = String(b.message || "");
@@ -2110,8 +2141,8 @@ async function saveMessage(
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
-async function sendWhatsApp(to: string, body: string): Promise<boolean> {
-  if (await blockIfTestPhone(to, "whatsapp-webhook")) return true;
+async function sendWhatsApp(to: string, body: string, optReply = false): Promise<boolean> {
+  if (await blockIfTestPhone(to, "whatsapp-webhook", { allowOptedOut: optReply })) return true;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
@@ -2670,6 +2701,16 @@ Deno.serve(async (req: Request) => {
     }
 
     console.log(`Inbound from ${from}: "${incomingMessage}" (media: ${numMedia})`);
+
+    // Opt-out / opt-in handled in code before anything else (UK GDPR/PECR, WhatsApp policy).
+    const optReply = await handleOptIntent(from, incomingMessage);
+    if (optReply) {
+      const cid = await getOrCreateConversation(from);
+      await saveMessage(cid, "inbound", incomingMessage || "[image]");
+      await saveMessage(cid, "outbound", optReply);
+      await sendWhatsApp(from, optReply, true);
+      return new Response(`<?xml version="1.0" encoding="UTF-8"?><Response></Response>`, { headers: { ...corsHeaders, "Content-Type": "text/xml" } });
+    }
 
     // Load context and conversation in parallel
     const [context, conversationId] = await Promise.all([

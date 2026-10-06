@@ -2,6 +2,7 @@
 // - Test phone numbers can NEVER receive a real WhatsApp message.
 // - Test entry points require MONTY_TEST_SECRET (constant-time compare) and are audited.
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isOptedOut } from "./optOut.ts";
 
 // Hard rule independent of the database: the reserved fake range is always test.
 const HARD_TEST_RANGE = /^\+4470000000\d\d$/;
@@ -29,10 +30,19 @@ export async function isTestPhone(phone: string | null | undefined): Promise<boo
   return (await getTestPhones()).has(p);
 }
 
-/** Call at the top of every Twilio send. Returns true if the send must be skipped. */
-export async function blockIfTestPhone(to: string, source: string): Promise<boolean> {
-  if (await isTestPhone(to)) {
-    console.log(`[testGuard] ${source}: blocked real send to test number …${to.slice(-4)}`);
+/** Why a send must be skipped (opted-out first, then test numbers), or null if it may go ahead.
+ *  allowOptedOut: only for Matt's own alerts and the direct reply to the parent's STOP/START/paused message. */
+export async function sendBlockReason(to: string, opts: { allowOptedOut?: boolean } = {}): Promise<"opted_out" | "test_number" | null> {
+  if (!opts.allowOptedOut && (await isOptedOut(to))) return "opted_out";
+  if (await isTestPhone(to)) return "test_number";
+  return null;
+}
+
+/** Call at the top of every Twilio send. Returns true if the send must be skipped (test number or opted out). */
+export async function blockIfTestPhone(to: string, source: string, opts: { allowOptedOut?: boolean } = {}): Promise<boolean> {
+  const why = await sendBlockReason(to, opts);
+  if (why) {
+    console.log(`[testGuard] ${source}: blocked send to …${to.slice(-4)} (${why})`);
     return true;
   }
   return false;

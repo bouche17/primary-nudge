@@ -3,7 +3,8 @@
 // Never sends WhatsApp messages: all sender calls go through the secret-gated dry-run/stub entry point.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
-import { getTestPhones } from "../_shared/testGuard.ts";
+import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
+import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -219,8 +220,124 @@ async function runAlertTests(): Promise<Result[]> {
   return out;
 }
 
+// ── Opt-out (STOP/START/delete) — no AI, nothing sent, alert stubbed ──
+async function runOptOutTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const ph = FAMILY_A_PHONE;
+  const say = (message: string, scenario: string) => callFn("whatsapp-webhook", { phone: ph, message, scenario });
+  const morning = () => callFn("send-reminders", { scenario: "opt-out check", period: "morning", now: "2026-10-06T06:00:00Z", scope: "test", only_phones: [ph] });
+  const cleanup = async () => { await optIn(ph); await admin.from("ops_alerts").delete().eq("is_test", true); };
+  await cleanup();
+  try {
+    const notesBefore = (await admin.from("parent_notes").select("*", { count: "exact", head: true }).eq("phone_number", ph)).count ?? 0;
+    const base = await morning();
+    const baseN = (base.data.messages ?? []).length;
+    const stop = await say("STOP", "opt-out: STOP");
+    const opted = await isOptedOut(ph);
+    const block = await sendBlockReason(ph);
+    const alertPath = await sendBlockReason(ph, { allowOptedOut: true });
+    const after = await morning();
+    const afterN = (after.data.messages ?? []).length;
+    const normal = await say("Harry needs his PE kit on Thursday", "opt-out: ordinary message while stopped");
+    const { count: notes } = await admin.from("parent_notes").select("*", { count: "exact", head: true }).eq("phone_number", ph);
+    const r1 = firstFail(stop.data.reply !== OPT_REPLIES.stop && `reply: ${stop.data.reply}`, !opted && "not on opted-out list",
+      block !== "opted_out" && `every sender's guard says ${block}`, alertPath !== "test_number" && "alert path misclassified",
+      baseN < 1 && "baseline produced no reminder", afterN !== 0 && `reminders still built: ${afterN}`,
+      normal.data.reply !== OPT_REPLIES.paused && `stopped parent got AI reply: ${normal.data.reply}`, (notes ?? 0) !== notesBefore && "saved while stopped");
+    out.push({ scenario: "STOP → recorded, every sender skips the number, reminders not built, no AI while stopped", category: "opt-out", status: r1 ? "fail" : "pass", reply: stop.data.reply ?? null, reason: r1, details: { baseline_msgs: baseN, after_msgs: afterN, guard: block } });
+
+    const start = await say("start", "opt-out: START");
+    const back = await morning();
+    const r2 = firstFail(start.data.reply !== OPT_REPLIES.start && `reply: ${start.data.reply}`, await isOptedOut(ph) && "still opted out",
+      (back.data.messages ?? []).length !== baseN && `reminders after START: ${(back.data.messages ?? []).length}, want ${baseN}`, (await sendBlockReason(ph)) !== "test_number" && "guard still blocks as opted out");
+    out.push({ scenario: "START → opt-out removed, reminders resume", category: "opt-out", status: r2 ? "fail" : "pass", reply: start.data.reply ?? null, reason: r2 });
+
+    const del = await say("Please delete my data", "opt-out: deletion request");
+    const { data: al } = await admin.from("ops_alerts").select("alert_type, message").eq("is_test", true).eq("alert_type", "deletion_request");
+    const r3 = firstFail(del.data.reply !== OPT_REPLIES.delete && `reply: ${del.data.reply}`, (del.data.alert_sends ?? []).length !== 1 && `alerts sent: ${(del.data.alert_sends ?? []).length}`,
+      (al ?? []).length !== 1 && "no deletion_request alert row", !(await isOptedOut(ph)) && "sends not paused", ((await morning()).data.messages ?? []).length !== 0 && "reminders still built");
+    out.push({ scenario: "Deletion request → Matt alerted once (stubbed), sends paused", category: "opt-out", status: r3 ? "fail" : "pass", reply: `${del.data.reply ?? ""}\nALERT: ${(del.data.alert_sends ?? [])[0] ?? ""}`, reason: r3 });
+
+    const yes = ["stop", "STOP", "Stop.", "unsubscribe", "stop messages", "Stop messaging me", "remove me", "don't message me", "opt out", "delete my account", "delete my data", "How do I stop messages?", "please stop"];
+    const no = ["the bus stop moved", "Harry needs to stop at the shop after school", "Can you stop the PE kit reminder?", "stop the swimming reminder for Jude", "When does after-school club start?", "Jude's football starts again next week", "remove the PE kit reminder", "delete the swimming reminder"];
+    const wrongYes = yes.filter((m) => !detectOptIntent(m)), wrongNo = no.filter((m) => detectOptIntent(m));
+    const r4 = firstFail(wrongYes.length > 0 && `missed: ${wrongYes.join(" | ")}`, wrongNo.length > 0 && `false opt-out: ${wrongNo.join(" | ")}`);
+    out.push({ scenario: `Opt-out matching: ${yes.length} opt-out phrasings caught, ${no.length} ordinary 'stop'/'delete' messages ignored`, category: "opt-out", status: r4 ? "fail" : "pass", reply: null, reason: r4 });
+    await optIn(ph);
+    const bus = await say("the bus stop moved to Elm Road", "opt-out: bus stop (no AI expected? goes to AI)");
+    const r5 = firstFail(await isOptedOut(ph) && "bus stop message opted the parent out", bus.data.opt === true && "handled as opt-out");
+    out.push({ scenario: "'the bus stop moved' through Monty does NOT opt out", category: "opt-out", status: r5 ? "fail" : "pass", reply: bus.data.reply ?? null, reason: r5, details: { usage: bus.data.usage } });
+    if (bus.data.usage) { usageTotals.input += bus.data.usage.input || 0; usageTotals.output += bus.data.usage.output || 0; usageTotals.calls += bus.data.usage.calls || 0; }
+  } finally { await cleanup(); }
+  return out;
+}
+
+// ── Delete parent on disposable test families (no Twilio) ──
+async function callDeleteParent(body: unknown) {
+  const tok = crypto.randomUUID() + crypto.randomUUID();
+  await admin.from("test_runner_tokens").insert({ token_hash: await sha256Hex(tok), expires_at: new Date(Date.now() + 120_000).toISOString() });
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-parent`, { method: "POST", headers: { "Content-Type": "application/json", "x-runner-token": tok, apikey: SERVICE_KEY }, body: JSON.stringify(body) });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+async function runDeleteParentTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const SOLO = "+447000000099", A = "+447000000098", B = "+447000000097";
+  const wipe = async (phone: string) => { // leftovers from a failed earlier run
+    const { data: p } = await admin.from("profiles").select("user_id").eq("phone_number", phone).maybeSingle();
+    if (p) await callDeleteParent({ phone, confirm: true, twilio: false });
+  };
+  for (const p of [SOLO, A, B]) await wipe(p);
+  try {
+    // Solo parent: everything goes.
+    const uid = await ensureTestUser(SOLO);
+    const { data: kid } = await admin.from("children").insert({ parent_id: uid, school_id: TEST_SCHOOL_ID, first_name: "Testkid", year_group: "Year 2" }).select("id").single();
+    await admin.from("child_reminders").insert({ child_id: kid!.id, parent_id: uid, title: "PE kit", emoji: "👟", day_of_week: "Tuesday", reminder_time: "both", active: true, recurrence_interval: 1 });
+    await admin.from("parent_notes").insert({ phone_number: SOLO, raw_content: "x", summary: "Testkid trip", source_type: "whatsapp", child_name: "Testkid" });
+    await admin.from("consent_records").insert({ user_id: uid, consent_type: "terms" });
+    await admin.from("onboarding_state").insert({ phone_number: SOLO, status: "complete", user_id: uid });
+    const { data: c } = await admin.from("conversations").insert({ phone_number: SOLO, current_step: "active" }).select("id").single();
+    await admin.from("messages").insert([{ conversation_id: c!.id, direction: "inbound", content: "hi" }, { conversation_id: c!.id, direction: "outbound", content: "hello" }]);
+    const pv = await callDeleteParent({ phone: SOLO, twilio: false });
+    const del = await callDeleteParent({ phone: SOLO, confirm: true, twilio: false });
+    const { data: still } = await admin.auth.admin.getUserById(uid);
+    const left = (await admin.from("children").select("id").eq("id", kid!.id)).data?.length ?? 0;
+    const want = { profiles: 1, children: 1, "child_reminders (children deleted)": 1, parent_notes: 1, consent_records: 1, messages: 2, conversations: 1 };
+    const miss = Object.entries(want).filter(([k, n]) => pv.data.rows?.[k] !== n || del.data.rows?.[k] !== n).map(([k]) => k);
+    const r1 = firstFail(pv.status !== 200 && `preview ${pv.status} ${JSON.stringify(pv.data)}`, del.status !== 200 && `delete ${del.status} ${JSON.stringify(del.data)}`,
+      miss.length > 0 && `counts wrong for ${miss.join(", ")}`, !!still?.user && "auth user still exists", left > 0 && "child still exists");
+    out.push({ scenario: "Delete parent (solo test family): preview counts = deleted counts, auth user gone", category: "deletion", status: r1 ? "fail" : "pass",
+      reply: `preview ${JSON.stringify(pv.data.rows)}\ndeleted ${JSON.stringify(del.data.rows)} auth_deleted=${del.data.auth_user_deleted}`, reason: r1 });
+
+    // Two-parent family: delete A, keep the shared child + reminders with B.
+    const a = await ensureTestUser(A), bId = await ensureTestUser(B);
+    await admin.from("linked_accounts").insert({ primary_user_id: a, linked_user_id: bId, status: "accepted" });
+    const { data: k2 } = await admin.from("children").insert({ parent_id: a, school_id: TEST_SCHOOL_ID, first_name: "Sharedkid", year_group: "Year 3" }).select("id").single();
+    await admin.from("child_reminders").insert([1, 2].map((i) => ({ child_id: k2!.id, parent_id: a, title: `Club ${i}`, emoji: "📌", day_of_week: "Monday", reminder_time: "both", active: true, recurrence_interval: 1 })));
+    await admin.from("weekly_lunch_plans").insert({ child_id: k2!.id, parent_id: a, week_start: "2026-10-05", packed_lunch_days: ["Monday"] });
+    const pv2 = await callDeleteParent({ phone: A, twilio: false });
+    const del2 = await callDeleteParent({ phone: A, confirm: true, twilio: false });
+    const { data: kidNow } = await admin.from("children").select("parent_id").eq("id", k2!.id).maybeSingle();
+    const { data: rems } = await admin.from("child_reminders").select("parent_id").eq("child_id", k2!.id);
+    const { data: lp } = await admin.from("weekly_lunch_plans").select("parent_id").eq("child_id", k2!.id);
+    const { data: bProf } = await admin.from("profiles").select("user_id").eq("user_id", bId);
+    const r2 = firstFail(del2.status !== 200 && `delete ${del2.status} ${JSON.stringify(del2.data)}`, kidNow?.parent_id !== bId && "shared child not kept with partner",
+      (rems ?? []).length !== 2 || (rems ?? []).some((r) => r.parent_id !== bId) ? "reminders not reassigned to partner" : null,
+      (lp ?? []).length !== 1 || lp![0].parent_id !== bId ? "lunch plan not reassigned" : null, (bProf ?? []).length !== 1 && "partner's profile deleted",
+      pv2.data.has_partner !== true && "preview didn't see the partner");
+    out.push({ scenario: "Delete parent with linked partner: shared child + reminders + lunch plan reassigned to partner, partner untouched", category: "deletion", status: r2 ? "fail" : "pass",
+      reply: `preview ${JSON.stringify(pv2.data.rows)}\ndeleted ${JSON.stringify(del2.data.rows)}`, reason: r2 });
+    const { data: audit } = await admin.from("deletion_audit").select("phone_hash, row_counts").order("created_at", { ascending: false }).limit(2);
+    const r3 = firstFail((audit ?? []).length !== 2 && "audit rows missing", JSON.stringify(audit).includes("+44") && "audit contains a phone number",
+      (audit ?? []).some((x) => !/^[0-9a-f]{64}$/.test(x.phone_hash || "")) && "phone not hashed");
+    out.push({ scenario: "Deletion audit row has hashed phone + counts only, no personal data", category: "deletion", status: r3 ? "fail" : "pass", reply: JSON.stringify(audit?.[0] ?? null), reason: r3 });
+  } catch (e) {
+    out.push({ scenario: "Delete parent tests", category: "deletion", status: "fail", reply: null, reason: (e as Error).message });
+  } finally { for (const p of [B, SOLO, A]) await wipe(p); }
+  return out;
+}
+
 async function runSenderSuite(): Promise<Result[]> {
-  const results: Result[] = [...(await runAlertTests())];
+  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests()), ...(await runDeleteParentTests())];
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
       scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],
