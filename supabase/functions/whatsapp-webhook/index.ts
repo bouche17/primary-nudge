@@ -1612,6 +1612,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   // Anything else (a "no", or a change of topic) → drop the pending item, don't re-ask.
   await setPendingAction(phone, null);
   if (targets === null) {
+    (context as any).__droppedPending = true;
     await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
     return null;
   }
@@ -1879,6 +1880,12 @@ async function generateReply(
   // "Already on the list" must be said plainly, naming the existing reminder.
   if (structuredResults.some((r) => r.action === "no_change" && r.label) && !/already/i.test(reply)) {
     reply = await replaceReply(reply, structuredResults, phone, "text", "already_on_list_rebuilt");
+  }
+  // Parent moved on from our question → don't ask it again in this reply.
+  if ((context as any).__droppedPending && !pending) {
+    const kept = (reply.match(/[^.!?\n]+[.!?]*\s*/g) || [] as string[]).filter((x: string) =>
+      !(/\?/.test(x) && /\b(is that|was that|which|who)\b/i.test(x) && childNames.filter((n) => x.includes(n)).length >= 1));
+    if (kept.length) reply = kept.join("").trim();
   }
   // Short confirmations: any successful save → one code-built line (+ one answer sentence only if the parent asked a question).
   const saves = structuredResults.filter((r) => r.ok && r.action !== "no_change");
