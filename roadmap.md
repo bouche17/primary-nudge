@@ -24,3 +24,6 @@
 - [x] Twilio status callback: public + signature-checked, statuses recorded
 - [x] Alerts to Matt (Claude failures, failed deliveries) + /admin/tests banner
 - [x] Honest outage replies + failed_inbound record
+- [x] Opt-out (STOP/START/delete request) in code, all senders skip opted-out numbers
+- [x] Admin delete-parent (preview, full delete, family reassignment, Twilio logs, audit)
+- [x] Leftover clean-up for deleted accounts; Twilio logs for +447904702768 deleted

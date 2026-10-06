@@ -228,6 +228,36 @@ export type Database = {
         }
         Relationships: []
       }
+      deletion_audit: {
+        Row: {
+          auth_user_deleted: boolean
+          created_at: string
+          id: string
+          kind: string
+          phone_hash: string | null
+          row_counts: Json
+          twilio_deleted: number
+        }
+        Insert: {
+          auth_user_deleted?: boolean
+          created_at?: string
+          id?: string
+          kind?: string
+          phone_hash?: string | null
+          row_counts?: Json
+          twilio_deleted?: number
+        }
+        Update: {
+          auth_user_deleted?: boolean
+          created_at?: string
+          id?: string
+          kind?: string
+          phone_hash?: string | null
+          row_counts?: Json
+          twilio_deleted?: number
+        }
+        Relationships: []
+      }
       event_exclusions: {
         Row: {
           child_id: string
@@ -646,6 +676,27 @@ export type Database = {
           likely_fix?: string | null
           message?: string
           resolved_at?: string | null
+        }
+        Relationships: []
+      }
+      opted_out_numbers: {
+        Row: {
+          opted_out_at: string
+          phone_number: string
+          reason: string
+          source: string | null
+        }
+        Insert: {
+          opted_out_at?: string
+          phone_number: string
+          reason?: string
+          source?: string | null
+        }
+        Update: {
+          opted_out_at?: string
+          phone_number?: string
+          reason?: string
+          source?: string | null
         }
         Relationships: []
       }

@@ -1,4 +1,5 @@
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { filterOptedOut } from "../_shared/optOut.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -378,7 +379,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
   }
 
   for (const [familyId, familyChildren] of childrenByFamily) {
-    const familyPhones = Array.from(phonesByFamily.get(familyId) || []);
+    const familyPhones = await filterOptedOut(Array.from(phonesByFamily.get(familyId) || [])); // STOP'd numbers never get reminders
     if (familyPhones.length === 0) continue;
 
     // Test families are excluded from every real run; included only for the test suite.

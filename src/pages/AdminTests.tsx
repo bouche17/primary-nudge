@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Play, Loader2, AlertTriangle } from "lucide-react";
+import DeleteParentPanel from "@/components/DeleteParentPanel";
 
 interface Run {
   id: string; started_at: string; finished_at: string | null; suite: string;
@@ -173,6 +174,7 @@ const AdminTests = () => {
             </table>
           </div>
         </div>
+        <DeleteParentPanel />
       </div>
     </div>
   );
