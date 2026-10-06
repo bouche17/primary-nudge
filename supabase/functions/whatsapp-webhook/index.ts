@@ -1480,7 +1480,7 @@ async function decideSave(tool: string, args: any, sourceText: string, context: 
         text: `ALREADY_SAVED: this is already on the list as a weekly reminder — ${label}. Nothing new saved. Tell the parent: "That's already on the list: ${label} 👍"` } };
     }
   }
-  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${title}`, date, ...(childName ? { child_name: childName } : {}) } };
+  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${/^[A-Z]{2}/.test(title) ? title : title.charAt(0).toLowerCase() + title.slice(1)}`, date, ...(childName ? { child_name: childName } : {}) } };
   const asWeekly = { tool: "save_child_reminder", args: { child_name: childName, title, emoji: args.emoji || "📌", day_of_week: day, reminder_time: args.reminder_time || "both", recurrence_interval: 1 } };
   const clause = clauseFor(sourceText, itemText, childName, childNames);
   if (/\b(every other|fortnight(ly)?|alternate)\b/i.test(clause)) {
@@ -1795,6 +1795,12 @@ async function generateReply(
     if (p.kind === "frequency") {
       // One-off vs weekly is always asked in the same clear words.
       return await replaceReply(text, structuredResults, phone, "text", "frequency_question", p.question);
+    }
+    if (CHILD_PRONOUN.test(reply) && p.proposed?.length) {
+      // Never ask "is she Rosa?" — ask about the item, by name.
+      reply = whichChildQuestion(childNames, p.proposed, friendlyLabel(p.items[0].tool, { ...p.items[0].args, child_name: p.proposed[0] }));
+      p.question = reply; await setPendingAction(phone, p);
+      return reply;
     }
     if (!reply || !reply.includes("?") || SYSTEM_WORDS.test(reply) || FUTURE_ACTION.test(reply) ||
         (!structuredResults.some((r) => r.ok) && SUCCESS_CLAIM.test(reply))) {
