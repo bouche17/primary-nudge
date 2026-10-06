@@ -27,3 +27,4 @@
 - [x] Opt-out (STOP/START/delete request) in code, all senders skip opted-out numbers
 - [x] Admin delete-parent (preview, full delete, family reassignment, Twilio logs, audit)
 - [x] Leftover clean-up for deleted accounts; Twilio logs for +447904702768 deleted
+- [x] Invented-contact guard, Monty's real contact details, extra deletion phrases, plain-update fallback fix
