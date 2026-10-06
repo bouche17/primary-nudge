@@ -4,6 +4,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones } from "../_shared/testGuard.ts";
+import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -80,6 +81,8 @@ async function resetTestData() {
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
+    await admin.from("failed_inbound").delete().in("phone_number", allow);
+    await admin.from("message_send_failures").delete().in("phone_number", allow).eq("function_name", "whatsapp-webhook");
     const { data: convos } = await admin.from("conversations").select("id").in("phone_number", allow);
     const convoIds = (convos ?? []).map((c) => c.id);
     if (convoIds.length) {
@@ -144,8 +147,57 @@ const SENDER_CASES: SenderCase[] = [
 
 type Result = { scenario: string; category: string; status: "pass" | "fail" | "flaky"; reply: string | null; reason: string | null; details?: unknown };
 
+// Simulated alert bursts from fake NON-test numbers. Rows are tagged with a test-only function_name,
+// the alert send is stubbed (nothing leaves the system) and everything is deleted afterwards.
+const SIM_FN = "alert-sim-test";
+const SIM_PHONES = ["+447999000101", "+447999000102", "+447999000103", "+447999000104"];
+async function runAlertTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const cleanup = async () => {
+    await admin.from("message_send_failures").delete().eq("function_name", SIM_FN);
+    await admin.from("ops_alerts").delete().eq("is_test", true);
+  };
+  await cleanup();
+  try {
+    const sends: string[] = [];
+    const stub = async (t: string) => { sends.push(t); return { ok: true, channel: "stub" }; };
+    const credit = JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } });
+    const counts: number[] = [];
+    for (const ph of SIM_PHONES) {
+      await admin.from("message_send_failures").insert({ function_name: SIM_FN, phone_number: ph, status_code: 400, error_body: credit, context: "Claude API - initial reply" });
+      await evaluateClaudeAlerts({ functionName: SIM_FN, isTest: true, send: stub });
+      counts.push(sends.length);
+    }
+    const { data: rows } = await admin.from("ops_alerts").select("alert_type, affected_parents, message").eq("is_test", true);
+    const reason = firstFail(JSON.stringify(counts) !== "[0,0,1,1]" && `alerts after each failure: ${JSON.stringify(counts)} (want [0,0,1,1])`,
+      (rows ?? []).length !== 1 && `ops_alerts rows: ${(rows ?? []).length}`, !/console\.anthropic\.com/.test(sends[0] || "") && "alert lacks the fix",
+      !/3 parents affected/.test(sends[0] || "") && "alert lacks the affected-parent count");
+    out.push({ scenario: "3 simulated credit failures from a non-test family → exactly one alert (4th throttled)", category: "alerts", status: reason ? "fail" : "pass", reply: sends[0] ?? null, reason });
+
+    await cleanup(); sends.length = 0;
+    const dCounts: number[] = [];
+    for (const ph of SIM_PHONES.slice(0, 3)) {
+      await admin.from("message_send_failures").insert({ function_name: SIM_FN, phone_number: ph, status_code: null,
+        error_body: JSON.stringify({ MessageStatus: "undelivered", ErrorCode: "63016", ErrorMessage: null }), context: "Async delivery failure (Twilio status callback), MessageSid: SMsim" });
+      await evaluateDeliveryAlerts({ functionName: SIM_FN, isTest: true, send: stub });
+      dCounts.push(sends.length);
+    }
+    const r2 = firstFail(JSON.stringify(dCounts) !== "[0,0,1]" && `alerts: ${JSON.stringify(dCounts)}`, !/24-hour window/.test(sends[0] || "") && "no likely fix");
+    out.push({ scenario: "3 failed WhatsApp deliveries to real parents within an hour → one alert", category: "alerts", status: r2 ? "fail" : "pass", reply: sends[0] ?? null, reason: r2 });
+
+    // Test numbers never count.
+    await cleanup(); sends.length = 0;
+    for (const ph of ["+447000000001", "+447000000002", "+447000000003"]) {
+      await admin.from("message_send_failures").insert({ function_name: SIM_FN, phone_number: ph, status_code: 400, error_body: credit, context: "Claude API - initial reply" });
+    }
+    await evaluateClaudeAlerts({ functionName: SIM_FN, isTest: true, send: stub });
+    out.push({ scenario: "Credit failures from test numbers never trigger an alert", category: "alerts", status: sends.length ? "fail" : "pass", reply: null, reason: sends.length ? "alerted on test numbers" : null });
+  } finally { await cleanup(); }
+  return out;
+}
+
 async function runSenderSuite(): Promise<Result[]> {
-  const results: Result[] = [];
+  const results: Result[] = [...(await runAlertTests())];
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
       scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],
@@ -204,13 +256,15 @@ interface Seed {
   history?: Msg[];
   realHistory?: { from: string; to: string };
 }
-interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean }
+interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean }
 interface Rows {
   notes: { child: string | null; summary: string; dates: string[] }[];
   reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
   lunches: { child: string; days: string[]; week: string }[];
   pending: unknown;
   inactive: number;
+  failedInbound: number;
+  inbound: number;
 }
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
@@ -267,19 +321,24 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
   const { data: kids } = await admin.from("children").select("id, first_name").in("parent_id", ids);
   const kidIds = (kids ?? []).map((k) => k.id);
   const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name ?? "?";
-  const [notes, rems, lunches, convo, inact] = await Promise.all([
+  const [notes, rems, lunches, convo, inact, fin] = await Promise.all([
     admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", f.phone),
     kidIds.length ? admin.from("child_reminders").select("child_id, title, day_of_week, recurrence_interval, anchor_date").eq("active", true).in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     kidIds.length ? admin.from("weekly_lunch_plans").select("child_id, packed_lunch_days, week_start").in("child_id", kidIds) : Promise.resolve({ data: [] as any[] }),
     admin.from("conversations").select("context").eq("phone_number", f.phone).maybeSingle(),
     kidIds.length ? admin.from("child_reminders").select("id", { count: "exact", head: true }).eq("active", false).in("child_id", kidIds) : Promise.resolve({ count: 0 } as any),
+    admin.from("failed_inbound").select("id", { count: "exact", head: true }).eq("phone_number", f.phone),
   ]);
+  const convoRow = await admin.from("conversations").select("id").eq("phone_number", f.phone).maybeSingle();
+  const inb = convoRow.data ? await admin.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", convoRow.data.id).eq("direction", "inbound") : { count: 0 } as any;
   return {
     notes: (notes.data ?? []).map((n: any) => ({ child: n.child_name, summary: n.summary ?? "", dates: (n.extracted_dates ?? []).map((d: any) => d.date) })),
     reminders: (rems.data ?? []).map((r: any) => ({ child: nameOf(r.child_id), title: r.title, day: r.day_of_week, interval: r.recurrence_interval, anchor: r.anchor_date })),
     lunches: (lunches.data ?? []).map((l: any) => ({ child: nameOf(l.child_id), days: [...(l.packed_lunch_days ?? [])].sort(), week: l.week_start })),
     pending: (convo.data as any)?.context?.pending_action ?? null,
     inactive: (inact as any).count ?? 0,
+    failedInbound: (fin as any).count ?? 0,
+    inbound: (inb as any).count ?? 0,
   };
 }
 
@@ -489,7 +548,11 @@ const HANDLER_CASES: HandlerCase[] = [
     check: ([r], [reply]) => firstFail(total(r) > 0 && `rows written: ${JSON.stringify(r)}`, !/sorry|couldn'?t/i.test(reply) && "not apologetic",
       !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific (Jude's PE kit)", /\b(saved|done)\b(?!.*couldn)/i.test(reply) && !/couldn'?t save/i.test(reply) && "claims a save") },
   { name: "Forced AI follow-up failure → code-built honest confirmation", family: "A", now: MON, steps: [{ message: PE_WED, fail_followup: true }],
-    check: ([r], [reply]) => firstFail(oneJudePeWed(r), !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific", !claimsSaved(reply) && "doesn't confirm the save") },
+    check: ([r], [reply]) => firstFail(oneJudePeWed(r), !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific", !/^Got it, .+ is saved ✅$/.test(reply) && `not the short code-built line: "${reply}"`) },
+  { name: "Forced Claude failure (credit run out) → honest outage reply, nothing saved, message kept", family: "A", now: MON, steps: [{ message: PE_WED, fail_claude: true }],
+    check: ([r], [reply]) => firstFail(total(r) > 0 && `rows written: ${JSON.stringify(r)}`,
+      reply !== "Sorry, I'm having trouble right now and haven't saved that. Could you send it again in a little while? 🙏" && `reply: "${reply}"`,
+      r.failedInbound !== 1 && `failed item not recorded (${r.failedInbound})`, r.inbound < 1 && "inbound message not stored") },
 ];
 
 type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number; ms: number; truncated: number; turns: number; model?: string } };
@@ -502,7 +565,7 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   for (const step of c.steps) {
     const { status, data } = await callFn("whatsapp-webhook", {
       scenario: c.name, phone: FAMILIES[c.family].phone, message: step.message, now: step.now ?? c.now,
-      fail_db: step.fail_db === true, fail_followup: step.fail_followup === true, dry_run: true,
+      fail_db: step.fail_db === true, fail_followup: step.fail_followup === true, fail_claude: step.fail_claude === true, dry_run: true,
     });
     if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
     if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
