@@ -1,4 +1,5 @@
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
+import { evaluateClaudeAlerts } from "../_shared/alerts.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -81,6 +82,20 @@ async function logClaudeFailure(
   } catch (logError) {
     console.error("Failed to log Claude API failure:", logError);
   }
+  // Alert Matt on bursts from real parents (test numbers and test runs never count).
+  if (!testStore.getStore()) {
+    try { if (!(await isTestPhone(phone))) await evaluateClaudeAlerts(); } catch (e) { console.error("Alert check failed:", e); }
+  }
+}
+
+const OUTAGE_TEXT = "Sorry, I'm having trouble right now and haven't saved that. Could you send it again in a little while? 🙏";
+const OUTAGE_PHOTO = "Sorry, I'm having trouble reading photos right now and haven't saved anything from it. Could you send it again in a little while? 🙏";
+/** Honest outage reply; the item is recorded so it can be retried or reviewed later. */
+async function outageReply(phone: string, kind: "text" | "photo", content: string, error: string): Promise<string> {
+  try {
+    await supabase.from("failed_inbound").insert({ phone_number: phone, message_type: kind, content: content.slice(0, 4000), error: error.slice(0, 1000) });
+  } catch (e) { console.error("Failed to record failed inbound:", e); }
+  return kind === "photo" ? OUTAGE_PHOTO : OUTAGE_TEXT;
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1678,6 +1693,9 @@ const MAX_TOOL_ROUNDS = 5;
 
 async function callClaude(body: Record<string, unknown>) {
   const t0 = Date.now();
+  if ((testStore.getStore() as any)?.failClaude === true) {
+    return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. (forced test failure)" } }), { status: 400 });
+  }
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
@@ -1715,7 +1733,7 @@ async function generateReply(
   console.log("[Claude] Raw response text (round 1):", rawText1);
   if (!res.ok) {
     await logClaudeFailure(phone, res.status, rawText1, "Claude API - initial reply");
-    return "Sorry, I had a little hiccup there! Try again in a moment 😊";
+    return await outageReply(phone, "text", incomingMessage, `${res.status} ${rawText1.slice(0, 500)}`);
   }
   let data = JSON.parse(rawText1);
 
@@ -1732,8 +1750,9 @@ async function generateReply(
         system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
       });
       if (!retry.ok) {
-        await logClaudeFailure(phone, retry.status, await retry.text(), "Claude API - already-claim retry");
-        return "Sorry, I couldn't save that just now — could you send it again? 😊";
+        const rt = await retry.text();
+        await logClaudeFailure(phone, retry.status, rt, "Claude API - already-claim retry");
+        return await outageReply(phone, "text", incomingMessage, `${retry.status} ${rt.slice(0, 500)}`);
       }
       data = await retry.json();
     }
@@ -1868,7 +1887,7 @@ async function generateReply(
   let reply: string;
   if (structuredResults.length === 0 && round === 1) {
     reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text")
-      : text || "Sorry, I had a little hiccup there! Try again in a moment 😊";
+      : text || await outageReply(phone, "text", incomingMessage, "empty AI reply");
   } else {
     reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
   }
@@ -2025,7 +2044,7 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const dryRun = b.dry_run !== false; // defaults true; this path never calls Twilio either way
   await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone, scenario, allowed: true, reason: dryRun ? "dry_run" : "dry_run(forced)" });
   const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
-  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true };
+  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true };
   return await testStore.run(store, async () => {
     const context = await loadParentContext(phone);
     if (!context) return j({ error: "no test family for this phone" }, 400);
@@ -2199,7 +2218,7 @@ async function handleImageMessage(
 
     if (!imageRes.ok) {
       console.error("Failed to fetch image:", imageRes.status);
-      return "I couldn't read that image — could you try forwarding it again, or copy and paste the text instead? 😊";
+      return await outageReply(phone, "photo", mediaUrl, "image download failed");
     }
 
     const imageBuffer = await imageRes.arrayBuffer();
@@ -2340,7 +2359,7 @@ If the image is unclear or unreadable, ask them to try again.`;
     if (!response.ok) {
       console.error("Claude vision error:", response.status, rawVisionText);
       await logClaudeFailure(phone, response.status, rawVisionText, "Claude API - vision");
-      return "I had trouble reading that image. Could you try forwarding it again? 😊";
+      return await outageReply(phone, "photo", mediaUrl, `${response.status} ${rawVisionText.slice(0, 500)}`);
     }
 
     const data = JSON.parse(rawVisionText);
@@ -2489,7 +2508,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       stack: err?.stack,
       errorString: JSON.stringify(err, Object.getOwnPropertyNames(err ?? {})),
     });
-    return "I had trouble reading that image. Could you try forwarding the text instead? 😊";
+    return await outageReply(phone, "photo", mediaUrl, String(err?.message || err));
   }
 }
 
