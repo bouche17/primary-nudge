@@ -9,3 +9,4 @@
 - Test runs are chunked (`part`: sender, then conversation slices with `offset`) so each call stays under the edge time limit — why: ~36 AI scenarios take several minutes.
 - One-off vs weekly is decided in code (`decideSave` in whatsapp-webhook): already covered by an active weekly reminder → nothing saved, "already on the list"; recurring words → weekly reminder; one-off signals → dated note; otherwise ask "just <day>, or every <weekday>?" via a `frequency` pending action — why: the model silently turned one-offs into weekly reminders.
 - Children are always named in replies and stored summaries (`nameNotPronoun` on every reply, plus a prompt rule) — why: Monty doesn't know genders and must never guess.
+- Every Claude call reads its model from `montyClaudeModel()` in `supabase/functions/_shared/claudeModel.ts` (env `MONTY_CLAUDE_MODEL`, code default) — why: switching or rolling back the model is one setting change.
