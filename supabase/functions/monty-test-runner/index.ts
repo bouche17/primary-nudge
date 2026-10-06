@@ -185,6 +185,28 @@ async function runAlertTests(): Promise<Result[]> {
     const r2 = firstFail(JSON.stringify(dCounts) !== "[0,0,1]" && `alerts: ${JSON.stringify(dCounts)}`, !/24-hour window/.test(sends[0] || "") && "no likely fix");
     out.push({ scenario: "3 failed WhatsApp deliveries to real parents within an hour → one alert", category: "alerts", status: r2 ? "fail" : "pass", reply: sends[0] ?? null, reason: r2 });
 
+    // Delivery-status endpoint: signed request is recorded, unsigned/invalid are 403.
+    {
+      const base = `${SUPABASE_URL}/functions/v1/twilio-status-callback?source=monty-test`;
+      const sid = `SMtest${Date.now()}`;
+      const form: Record<string, string> = { MessageSid: sid, MessageStatus: "undelivered", To: "whatsapp:+447000000001", ErrorCode: "63016", ErrorMessage: "test" };
+      let data = base; for (const k of Object.keys(form).sort()) data += k + form[k];
+      const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(Deno.env.get("TWILIO_AUTH_TOKEN")!), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+      const sig = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data)))));
+      const post = (h: Record<string, string>) => fetch(base, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", ...h }, body: new URLSearchParams(form).toString() });
+      const signed = await post({ "X-Twilio-Signature": sig }); await signed.text();
+      const unsigned = await post({}); await unsigned.text();
+      const bad = await post({ "X-Twilio-Signature": "bm90LXZhbGlk" }); await bad.text();
+      const { data: rec } = await admin.from("message_delivery_status").select("status, error_code").eq("message_sid", sid);
+      const { data: fail } = await admin.from("message_send_failures").select("id").like("context", `%${sid}%`);
+      await admin.from("message_delivery_status").delete().eq("message_sid", sid);
+      await admin.from("message_send_failures").delete().like("context", `%${sid}%`);
+      const r3 = firstFail(signed.status !== 200 && `signed → ${signed.status}`, unsigned.status !== 403 && `unsigned → ${unsigned.status}`, bad.status !== 403 && `bad signature → ${bad.status}`,
+        !(rec?.length === 1 && rec[0].status === "undelivered" && rec[0].error_code === "63016") && `status not recorded: ${JSON.stringify(rec)}`, fail?.length !== 1 && "failure not logged");
+      out.push({ scenario: "Twilio status callback: signed → recorded (200), unsigned/invalid → 403", category: "safety", status: r3 ? "fail" : "pass",
+        reply: `signed ${signed.status}, unsigned ${unsigned.status}, bad signature ${bad.status}, recorded ${JSON.stringify(rec)}`, reason: r3 });
+    }
+
     // Test numbers never count.
     await cleanup(); sends.length = 0;
     for (const ph of ["+447000000001", "+447000000002", "+447000000003"]) {
