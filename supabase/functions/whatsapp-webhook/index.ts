@@ -452,7 +452,7 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
-Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. For notes, the tool result includes a TIMING line — repeat that timing exactly and don't work it out yourself. For other items, use the current UK time above: only if it's after 6pm AND the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
+Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly and don't work it out yourself. For other items, use the current UK time above: only if it's after 6pm AND the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
 
 ## Packed lunches already saved
 ${lunchPlansSummary}
@@ -823,6 +823,21 @@ function reminderTimingFor(dateIso: string): string {
   return `TIMING: the parent will get an evening reminder at 6pm on ${fmt(eveIso)} and a morning reminder at 7am on ${fmt(dateIso)}. Describe exactly this.`;
 }
 
+/** Timing of the first upcoming reminder for a weekly item, computed in code. */
+function nextWeeklyTiming(day: string, when: string): string {
+  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const base = new Date(`${ukToday}T12:00:00Z`);
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(base); d.setUTCDate(base.getUTCDate() + i);
+    if (d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" }) !== day) continue;
+    const t = reminderTimingFor(d.toISOString().slice(0, 10));
+    if (t.includes("already gone out")) continue; // look at next week's occurrence
+    if (when === "morning") return `TIMING: the first reminder is at 7am on ${d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}, then every week.`;
+    return t.replace("TIMING:", "TIMING (first occurrence, then every week):");
+  }
+  return "";
+}
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
@@ -925,7 +940,8 @@ async function executeTool(
     return okResult(
       verb === "Updated" ? "updated" : "saved",
       `${verb}: ${toolArgs.child_name} — ${toolArgs.title} on ${toolArgs.day_of_week}`,
-      `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}`,
+      `${verb} reminder for ${toolArgs.child_name}: ${toolArgs.title} on ${toolArgs.day_of_week}` +
+        (toolArgs.recurrence_interval === 2 ? "" : `. ${nextWeeklyTiming(toolArgs.day_of_week, toolArgs.reminder_time)}`),
     );
   }
 

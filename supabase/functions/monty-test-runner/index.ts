@@ -246,7 +246,7 @@ const HANDLER_CASES: HandlerCase[] = [
       if (!/pe/i.test(n.summary)) return `note summary "${n.summary}" missing PE`;
       if (/gymnastic|packed lunch/i.test(reply)) return "reply mentions old requests";
       if (/let me|i'll save|now saving/i.test(reply)) return "reply announces a future action";
-      if (!/tuesday/i.test(reply)) return "reply doesn't say the evening reminder comes on Tuesday";
+      if (!/tuesday|tomorrow (evening|at 6)|6pm tomorrow/i.test(reply)) return "reply doesn't say the evening reminder comes on Tuesday";
       return null;
     },
   },
@@ -259,7 +259,7 @@ const HANDLER_CASES: HandlerCase[] = [
       if (swim.length !== 1) return `expected 1 Harry swimming Monday reminder, rows: ${JSON.stringify(r.reminders)}`;
       if (rec.length !== 1) return `expected 1 Jude recorder note on 2026-10-09, rows: ${JSON.stringify(r.notes)}`;
       if (!/swim/i.test(reply) || !/recorder/i.test(reply)) return "reply doesn't confirm both";
-      if (/(already|has) (gone|passed)/i.test(reply)) return "reply wrongly says a reminder has already gone";
+      if (/(already|has) (gone|passed)|won't get a reminder/i.test(reply)) return "reply wrongly says a reminder has already gone";
       return null;
     },
   },
