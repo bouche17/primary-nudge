@@ -16,3 +16,6 @@
 - [x] Delete temporary legacy-reminders-dryrun function
 - [x] Fix: Monty acting on old history (grounding, multi-round tools, future-action guard) + 3 handler regression tests
 - [x] One-off vs weekly rules + names-not-pronouns (approved by Matt)
+- [x] Shared MONTY_CLAUDE_MODEL setting + baseline run
+- [ ] Full suite on new model — blocked: Anthropic credit balance ran out (Matt to top up), last 6 conversation tests not yet run
+- [ ] Fix flaky "PE kit moved Tue→Wed" (queued)

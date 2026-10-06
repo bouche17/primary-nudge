@@ -464,12 +464,13 @@ const HANDLER_CASES: HandlerCase[] = [
     check: ([r], [reply]) => firstFail(oneJudePeWed(r), !(/jude/i.test(reply) && /pe/i.test(reply)) && "not specific", !claimsSaved(reply) && "doesn't confirm the save") },
 ];
 
-type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number } };
+type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number; ms: number; truncated: number; turns: number; model?: string } };
 async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   await resetTestData();
   await seedFamily(c.family, c.seed);
   const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = [];
-  const usage = { input: 0, output: 0, calls: 0 };
+  const usage: CaseOut["usage"] = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0 };
+  const turnMs: number[] = [];
   for (const step of c.steps) {
     const { status, data } = await callFn("whatsapp-webhook", {
       scenario: c.name, phone: FAMILIES[c.family].phone, message: step.message, now: step.now ?? c.now,
@@ -478,6 +479,7 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
     if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
     if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
     usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0;
+    usage.ms += data.usage?.ms ?? 0; usage.truncated += data.usage?.truncated ?? 0; if (data.usage?.calls) { usage.turns++; turnMs.push(data.usage.ms ?? 0); } if (data.usage?.model) usage.model = data.usage.model;
     replies.push(data.reply ?? ""); calls.push(data.tool_calls);
     after.push(await familyRows(c.family));
   }
@@ -486,16 +488,16 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const empty = replies.findIndex((r) => !r.trim());
   const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : c.check(after, replies);
   const reply = c.steps.length > 1 ? c.steps.map((s, i) => `Parent: ${s.message}\nMonty: ${replies[i]}`).join("\n") : replies[0];
-  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls }, usage };
+  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
-const usageTotals = { input: 0, output: 0, calls: 0 };
+const usageTotals = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
 async function runHandlerSlice(offset: number, limit: number): Promise<Result[]> {
   const out: Result[] = [];
   for (const c of HANDLER_CASES.slice(offset, offset + limit)) {
     let r = await runHandlerCase(c);
     let status: Result["status"] = r.reason ? "fail" : "pass";
-    const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.calls += u.calls; };
+    const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.calls += u.calls; usageTotals.ms += u.ms; usageTotals.truncated += u.truncated; usageTotals.turns += u.turns; if (u.model) usageTotals.model = u.model; };
     add(r.usage);
     if (r.reason) { // retry once; a pass on retry is "flaky", never "pass"
       const r2 = await runHandlerCase(c); add(r2.usage);
@@ -550,14 +552,16 @@ Deno.serve(async (req) => {
   const passed = (all ?? []).filter((r) => r.status === "pass").length;
   const failed = (all ?? []).filter((r) => r.status === "fail").length;
   const flaky = (all ?? []).filter((r) => r.status === "flaky").length;
-  let prev = { input: 0, output: 0, calls: 0 };
+  let prev: any = { input: 0, output: 0, calls: 0 };
   try { prev = JSON.parse(runRow?.notes ?? "{}").usage ?? prev; } catch { /* first chunk */ }
-  const usage = { input: prev.input + usageTotals.input, output: prev.output + usageTotals.output, calls: prev.calls + usageTotals.calls };
-  const costUsd = Math.round(((usage.input * 3 + usage.output * 15) / 1e6) * 100) / 100; // Sonnet 4.6 list price
+  const usage = { input: prev.input + usageTotals.input, output: prev.output + usageTotals.output, calls: prev.calls + usageTotals.calls,
+    ms: (prev.ms ?? 0) + usageTotals.ms, truncated: (prev.truncated ?? 0) + usageTotals.truncated, turns: (prev.turns ?? 0) + usageTotals.turns, model: usageTotals.model || prev.model || null };
+  const avgTurnMs = usage.turns ? Math.round(usage.ms / usage.turns) : null;
+  const costUsd = Math.round(((usage.input * 3 + usage.output * 15) / 1e6) * 100) / 100; // $3/$15 per M tokens (Sonnet list price)
   await admin.from("test_runs").update({
     finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
     status: next ? "running" : failed ? "failed" : "passed",
-    notes: JSON.stringify({ usage, cost_usd: costUsd, scenarios: { sender: SENDER_CASES.length + 2, conversation: HANDLER_CASES.length } }),
+    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: HANDLER_CASES.length } }),
   }).eq("id", runId);
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
 });
