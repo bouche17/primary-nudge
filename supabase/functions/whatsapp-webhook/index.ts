@@ -826,12 +826,7 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
   const already = results.filter((r) => r.ok && r.action === "no_change");
   const failed = results.filter((r) => r.failed);
   const parts: string[] = [];
-  if (saved.length) {
-    const labels = saved.map((r) => r.label || "that");
-    parts.push(`Done — saved ${labels.join(", and ")} ✅`);
-    const when = saved.length === 1 ? saved[0].when : "";
-    if (when) parts.push(when);
-  }
+  if (saved.length) parts.push(confirmationLine(saved));
   if (already.length) parts.push(`That's already on the list: ${already.map((r) => r.label || "that").join(" and ")} 👍`);
   if (failed.length) parts.push(`Sorry, I couldn't save ${failed.map((r) => r.label || "that").join(" or ")} just then — could you send it again? 🙏`);
   if (pendingQuestion) parts.push(pendingQuestion);
@@ -840,6 +835,13 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
     return "Sorry, I couldn't save that just then — could you send it again? 🙏";
   }
   return parts.join(" ");
+}
+
+/** "Got it, Jude's PE kit for Wednesday 7th is saved ✅" — one short line, built only from real save results. */
+function confirmationLine(saved: ToolResult[]): string {
+  const labels = [...new Set(saved.map((r) => r.label || "that"))];
+  const list = labels.length <= 1 ? labels.join("") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
+  return `Got it, ${list} ${labels.length > 1 ? "are" : "is"} saved ✅`;
 }
 
 /** Every reply replacement goes through here so it's always audited. */
@@ -1351,6 +1353,11 @@ async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: s
 const SYSTEM_WORDS = /NOT SAVED|POSSIBLE_DUPLICATE|ALREADY_SAVED|PENDING|TIMING|WAITING_FOR_PARENT|ASK_WHICH_CHILD|CONFIRM_STORED|\bungrounded\b|tool_result|recurrence_interval|anchor_date|child_name/i;
 const PLURAL_CHILDREN = /\b(both|both kids|the kids|all the kids|my kids|the children|all of them|all three|everyone|each of them)\b/i;
 const fmtLongDate = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+const fmtDayOrdinal = (iso: string) => {
+  const d = new Date(`${iso}T12:00:00Z`); const n = d.getUTCDate();
+  const suf = n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th";
+  return `${d.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" })} ${n}${suf}`;
+};
 const fmtShortDay = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
 
 /** "I'll remind you at 6pm on Tuesday and 7am on Wednesday." — only upcoming reminders, never negatives. */
@@ -1380,7 +1387,7 @@ function friendlyLabel(tool: string, args: any): string {
   const child = args?.child_name ? String(args.child_name) : "";
   if (tool === "save_parent_note") {
     const s = tidyItem(String(args?.summary || "that"), child);
-    return `${s}${/^\d{4}-\d{2}-\d{2}$/.test(args?.date || "") ? ` on ${fmtLongDate(args.date)}` : ""}`;
+    return `${s}${/^\d{4}-\d{2}-\d{2}$/.test(args?.date || "") ? ` for ${fmtDayOrdinal(args.date)}` : ""}`;
   }
   if (tool === "save_child_reminder") {
     const every = args?.recurrence_interval === 2 ? "every other" : "every";
@@ -1453,7 +1460,7 @@ type SaveDecision =
   | { kind: "existing"; result: ToolResult }
   | { kind: "ask"; items: Array<{ tool: string; args: any }>; question: string };
 
-async function decideSave(tool: string, args: any, sourceText: string, context: MontyContext): Promise<SaveDecision> {
+async function decideSave(tool: string, args: any, sourceText: string, context: MontyContext, freqOverride?: "once" | "weekly" | null): Promise<SaveDecision> {
   if (tool === "save_weekly_lunch_plan" || args?.recurrence_interval === 2) return { kind: "save", tool, args };
   const childNames = context.children.map((c) => c.first_name);
   const childName = args?.child_name ? String(args.child_name) : "";
@@ -1483,6 +1490,8 @@ async function decideSave(tool: string, args: any, sourceText: string, context: 
   }
   const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${/^[A-Z]{2}/.test(title) ? title : title.charAt(0).toLowerCase() + title.slice(1)}`, date, ...(childName ? { child_name: childName } : {}) } };
   const asWeekly = { tool: "save_child_reminder", args: { child_name: childName, title, emoji: args.emoji || "📌", day_of_week: day, reminder_time: args.reminder_time || "both", recurrence_interval: 1 } };
+  if (freqOverride === "weekly" && childName) return { kind: "save", ...asWeekly };
+  if (freqOverride === "once") return { kind: "save", ...asNote };
   const clause = clauseFor(sourceText, itemText, childName, childNames);
   if (/\b(every other|fortnight(ly)?|alternate)\b/i.test(clause)) {
     return { kind: "reject", result: failResult("NOT SAVED: this is fortnightly. Ask the parent when the next one is, then save with recurrence_interval=2 and that anchor_date.", "no_change") };
@@ -1495,6 +1504,31 @@ async function decideSave(tool: string, args: any, sourceText: string, context: 
   if (tool === "save_parent_note" && !BRING_WORDS.test(clause)) return { kind: "save", tool, args };
   if (!childName) return { kind: "save", tool, args };
   return { kind: "ask", items: [asNote, asWeekly], question: `${tidyItem(title, childName)} — just ${dayWordFor(date!)}, or every ${day}? 😊` };
+}
+
+/** "just on Thursday 8 October or every Thursday" when one-off vs weekly would need asking; null otherwise. */
+function frequencyQuestionPart(tool: string, args: any, sourceText: string, childNames: string[]): string | null {
+  if (tool === "save_weekly_lunch_plan" || args?.recurrence_interval === 2) return null;
+  let date: string | null = null, day: string | null = null;
+  if (tool === "save_parent_note") { if (!/^\d{4}-\d{2}-\d{2}$/.test(args?.date || "")) return null; date = args.date; day = weekdayOf(date!); }
+  else { if (!WEEKDAYS.includes(args?.day_of_week)) return null; day = args.day_of_week; date = nextDateFor(day!); }
+  const itemText = tool === "save_parent_note" ? String(args.summary || "") : String(args.title || "");
+  const clause = clauseFor(sourceText, itemText, "", childNames);
+  if (/\b(every other|fortnight(ly)?|alternate)\b/i.test(clause) || RECURRING_WORDS.test(clause) || ONE_OFF_WORDS.test(clause)) return null;
+  if (tool === "save_parent_note" && !BRING_WORDS.test(clause)) return null;
+  return `just ${dayWordFor(date!)} or every ${day}`;
+}
+function combinedQuestion(names: string[], freqPart: string): string {
+  const list = names.length <= 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+  return `Is that for ${list}, and ${freqPart}? 😊`;
+}
+const ONCE_REPLY = /\b(just|only|once|one-?off|this one|that day|this week|tomorrow|today)\b/i;
+const WEEKLY_REPLY = /\b(every|weekly|each|always|regular(ly)?)\b|\bevery week\b/i;
+function freqFromReply(message: string): "once" | "weekly" | null {
+  const w = WEEKLY_REPLY.test(message), o = ONCE_REPLY.test(message.replace(/\bevery week\b/i, ""));
+  if (w && !o) return "weekly";
+  if (o && !w) return "once";
+  return null;
 }
 
 // ── Children are always named, never "he/she/his/her" ──
@@ -1513,7 +1547,10 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency";
+  kind: "which_child" | "confirm" | "frequency" | "move";
+  ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
+  freq?: "once" | "weekly";            // frequency already answered (child still missing)
+  move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
   source_text?: string; // the parent's original message, for the one-off/weekly decision
   items: Array<{ tool: string; args: any }>;
   proposed: string[] | null; // proposed child names (for "yes")
@@ -1535,6 +1572,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   const p: PendingAction | null = row?.context?.pending_action ?? null;
   if (!row || !p) return null;
   if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
+  if (p.kind === "move") return await resolveMovePending(phone, p, message);
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -1563,9 +1601,18 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   else if (short && plural) targets = context.children.map((c) => c.first_name);
   else if (short && yes) targets = p.proposed ?? (p.kind === "confirm" ? [] : null);
 
+  const replyFreq = p.ask_frequency ? freqFromReply(message) : null;
+  const freq = replyFreq ?? p.freq ?? null;
+  // Only the frequency answered (no child yet) → keep it, ask just for the child.
+  if (targets === null && p.ask_frequency && replyFreq && short) {
+    const q = whichChildQuestion(context.children.map((c) => c.first_name), null, "");
+    await setPendingAction(phone, { ...p, freq: replyFreq, question: q, created_at: p.created_at });
+    return q;
+  }
   // Anything else (a "no", or a change of topic) → drop the pending item, don't re-ask.
   await setPendingAction(phone, null);
   if (targets === null) {
+    (context as any).__droppedPending = true;
     await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
     return null;
   }
@@ -1585,7 +1632,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     for (const child of childList) {
       const args = { ...item.args, ...(child ? { child_name: child } : {}) };
       if (item.tool === "save_parent_note" && !child) delete args.child_name;
-      const d = await decideSave(item.tool, args, p.source_text || "", context);
+      const d = await decideSave(item.tool, args, p.source_text || "", context, freq);
       if (d.kind === "existing") { results.push(d.result); continue; }
       if (d.kind === "reject") continue;
       if (d.kind === "ask") { asks.push({ child, d }); continue; }
@@ -1715,7 +1762,11 @@ async function generateReply(
         const items = (Array.isArray(input.items) ? input.items : []).filter((i: any) => SAVE_TOOLS.has(i?.tool) && i.args && typeof i.args === "object");
         let proposed = Array.isArray(input.proposed_children) ? input.proposed_children.filter((n: string) => childNames.includes(n)) : [];
         if (childNames.length > 1 && proposed.length === childNames.length) proposed = []; // "Harry, Jude or both?" isn't a proposal
-        if (items.length) addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, String(input.question || ""));
+        if (items.length) {
+          const fq = proposed.length || childNames.length < 2 ? null : frequencyQuestionPart(items[0].tool, items[0].args, incomingMessage, childNames);
+          addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, fq ? combinedQuestion(childNames, fq) : String(input.question || ""));
+          if (fq) pending!.ask_frequency = true;
+        }
         result = { ok: false, action: "pending", summary: "", text: items.length
           ? "CONFIRM_STORED: nothing saved yet. Reply with just your natural question to the parent; their answer will save it."
           : "Nothing stored — include the item(s) you'd save." };
@@ -1736,8 +1787,10 @@ async function generateReply(
         } else if (needsChild) {
           const proposed = child && childNames.includes(child) ? [child] : null;
           const args = { ...input }; if (!proposed) delete args.child_name;
-          const q = whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args));
+          const fq = proposed ? null : frequencyQuestionPart(block.name, args, incomingMessage, childNames);
+          const q = fq ? combinedQuestion(childNames, fq) : whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args));
           addPending(proposed ? "confirm" : "which_child", [{ tool: block.name, args }], proposed, q);
+          if (fq) pending!.ask_frequency = true;
           result = { ok: false, action: "pending", summary: "",
             text: `WAITING_FOR_PARENT: not saved yet — the child isn't clear. Stored for confirmation. Reply with just this question: "${q}"` };
           await logDedupDecision({ phone, childName: child || null, tool: block.name, newItem: JSON.stringify(input).slice(0, 500), decision: "child_unclear_asked", match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) } });
@@ -1796,8 +1849,8 @@ async function generateReply(
     await setPendingAction(phone, p);
     // The reply must ask the question; it may only confirm things that really saved.
     let reply = text;
-    if (p.kind === "frequency") {
-      // One-off vs weekly is always asked in the same clear words.
+    if (p.kind === "frequency" || p.ask_frequency) {
+      // One-off vs weekly (and, when combined, which child) is always asked in the same clear words.
       return await replaceReply(text, structuredResults, phone, "text", "frequency_question", p.question);
     }
     if (CHILD_PRONOUN.test(reply) && p.proposed?.length) {
@@ -1828,7 +1881,102 @@ async function generateReply(
   if (structuredResults.some((r) => r.action === "no_change" && r.label) && !/already/i.test(reply)) {
     reply = await replaceReply(reply, structuredResults, phone, "text", "already_on_list_rebuilt");
   }
+  // Parent moved on from our question → don't ask it again in this reply.
+  if ((context as any).__droppedPending && !pending) {
+    const kept = (reply.match(/[^.!?\n]+[.!?]*\s*/g) || [] as string[]).filter((x: string) =>
+      !(/\?/.test(x) && /\b(is that|was that|which|who)\b/i.test(x) && childNames.filter((n) => x.includes(n)).length >= 1));
+    if (kept.length) reply = kept.join("").trim();
+  }
+  // Short confirmations: any successful save → one code-built line (+ one answer sentence only if the parent asked a question).
+  const saves = structuredResults.filter((r) => r.ok && r.action !== "no_change");
+  if (saves.length && saves.every((r) => r.label)) {
+    let extra = "";
+    if (/\?/.test(incomingMessage)) {
+      const sentence = ((text.match(/[^.!?\n]+[.!?]?/g) || []) as string[]).map((x) => x.trim())
+        .find((x) => x.length > 3 && !SUCCESS_CLAIM.test(x) && !/remind you|✅/i.test(x) && !SYSTEM_WORDS.test(x));
+      if (sentence && sentence.length <= 140) extra = " " + sentence;
+    }
+    reply = buildHonestReply(structuredResults) + extra;
+  }
   return reply;
+}
+
+// ── Moving a weekly reminder to another day (decided in code, same row updated) ──
+const MOVE_WORDS = /\b(moved|moving|changed|changing|switched|switching)\b|\bnow\s+(on\s+)?(a\s+)?(mon|tues|wednes|thurs|fri|satur|sun)days?\b/i;
+const DAY_RE = /\b(mon|tues|wednes|thurs|fri|satur|sun)days?\b/gi;
+const dayName = (w: string) => WEEKDAYS.find((d) => d.toLowerCase().startsWith(w.toLowerCase().replace(/days?$/, ""))) ?? null;
+const MOVE_FILLER = new Set(["moved", "moving", "changed", "changing", "switched", "switching", "now", "instead", "from", "day", "days", "has", "have", "been", "go", "goe", "will", "be", "it", "its", "that"]);
+
+async function updateReminderDay(id: string, to: string): Promise<boolean> {
+  if ((testStore.getStore() as any)?.failDb === true) return false;
+  const { error } = await supabase.from("child_reminders").update({ day_of_week: to, active: true }).eq("id", id);
+  return !error;
+}
+function moveLabel(o: { child: string; title: string }, to: string, childNames: string[]) {
+  return `${tidyItem(o.title, o.child)} has moved to every ${to}`;
+}
+
+async function tryMoveReminder(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!MOVE_WORDS.test(message) || /\b(lunch|lunches|dinner|dinners)\b/i.test(message)) return null;
+  if (/\b(this week|just this|only this|this time|one-?off|next week only|for one week)\b/i.test(message)) return null; // a one-off change, not a permanent move
+  const days = [...message.matchAll(DAY_RE)].map((m) => dayName(m[0])).filter(Boolean) as string[];
+  if (!days.length) return null;
+  const toMatch = message.match(/\b(?:to|now(?:\s+on)?|on)\s+(?:a\s+)?((?:mon|tues|wednes|thurs|fri|satur|sun)days?)\b(?![^.]*\bto\b)/i);
+  const fromMatch = message.match(/\bfrom\s+((?:mon|tues|wednes|thurs|fri|satur|sun)days?)\b/i);
+  const to = toMatch ? dayName(toMatch[1])! : days[days.length - 1];
+  const from = fromMatch ? dayName(fromMatch[1]) : (days.length >= 2 ? days.find((d) => d !== to) ?? null : null);
+  const childNames = context.children.map((c) => c.first_name);
+  const named = context.children.filter((c) => new RegExp(`\\b${c.first_name}\\b`, "i").test(message));
+  const kids = named.length ? named : context.children;
+  const activity = activityTokens(message, childNames).filter((t) => !MOVE_FILLER.has(t) && !dayName(t));
+  if (!activity.length) return null;
+  const kidIds = kids.map((k) => k.id);
+  if (!kidIds.length) return null;
+  const { data: rems } = await supabase.from("child_reminders").select("id, child_id, title, day_of_week, recurrence_interval")
+    .in("child_id", kidIds).eq("active", true);
+  const nameOf = (id: string) => context.children.find((c) => c.id === id)?.first_name ?? "";
+  let options = (rems ?? []).filter((r: any) => sameActivity(r.title, activity.join(" "), childNames))
+    .map((r: any) => ({ id: r.id, child: nameOf(r.child_id), title: r.title, day: r.day_of_week }));
+  if (from) { const f = options.filter((o) => o.day === from); if (f.length) options = f; }
+  options = options.filter((o) => o.day !== to || options.length === 1);
+  await logDedupDecision({ phone, childName: named[0]?.first_name ?? null, tool: "move_reminder", newItem: message.slice(0, 300),
+    decision: options.length === 1 ? "move_matched" : options.length ? "move_ambiguous_asked" : "move_no_match_asked",
+    match: { table: "child_reminders", id: options.map((o) => o.id).join(",") || "no match", text: options.map((o) => `${o.child} ${o.title} ${o.day}`).join("; ") } });
+  if (options.length === 1) {
+    const o = options[0];
+    if (o.day === to) return `That's already on the list: ${tidyItem(o.title, o.child)} every ${to} 👍`;
+    const ok = await updateReminderDay(o.id, to);
+    testStore.getStore()?.toolCalls.push({ name: "move_reminder", input: { id: o.id, from: o.day, to }, ok, action: ok ? "updated" : "not_saved", text: "" });
+    if (!ok) return `Sorry, I couldn't move ${tidyItem(o.title, o.child)} to ${to} just then — could you send it again? 🙏`;
+    return `Got it, ${moveLabel(o, to, childNames)} ✅`;
+  }
+  if (options.length > 1) {
+    const labels = options.map((o) => `${tidyItem(o.title, o.child)} on ${o.day}`);
+    const q = `Which one should move to ${to} — ${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}? 😊`;
+    await setPendingAction(phone, { kind: "move", items: [], proposed: null, question: q, created_at: nowD().toISOString(), source_text: message, move: { to, options } });
+    return q;
+  }
+  // No matching weekly reminder: offer to add it as a new weekly one.
+  if (named.length !== 1) return null; // let the normal flow work out the child
+  const child = named[0].first_name;
+  const title = activity.join(" ").replace(/^\w/, (c) => c.toUpperCase());
+  const q = `I can't find a weekly ${title} reminder for ${child} — shall I add ${tidyItem(title, child)} every ${to}? 😊`;
+  await setPendingAction(phone, { kind: "confirm", items: [{ tool: "save_child_reminder", args: { child_name: child, title, emoji: "📌", day_of_week: to, reminder_time: "both", recurrence_interval: 1 } }],
+    proposed: [child], question: q, created_at: nowD().toISOString(), source_text: `${message} every ${to}` });
+  return q;
+}
+
+async function resolveMovePending(phone: string, p: PendingAction, message: string): Promise<string | null> {
+  const opts = p.move!.options;
+  const dayHits = [...message.matchAll(DAY_RE)].map((m) => dayName(m[0]));
+  let pick = opts.filter((o) => dayHits.includes(o.day));
+  if (pick.length !== 1) pick = opts.filter((o) => sameActivity(o.title, message, []) && new RegExp(`\\b${o.child}\\b`, "i").test(message));
+  await setPendingAction(phone, null);
+  if (pick.length !== 1) return null;
+  const o = pick[0];
+  const ok = await updateReminderDay(o.id, p.move!.to);
+  testStore.getStore()?.toolCalls.push({ name: "move_reminder", input: { id: o.id, from: o.day, to: p.move!.to }, ok, action: ok ? "updated" : "not_saved", text: "" });
+  return ok ? `Got it, ${moveLabel(o, p.move!.to, [])} ✅` : `Sorry, I couldn't move ${tidyItem(o.title, o.child)} just then — could you send it again? 🙏`;
 }
 
 // ── Text message flow (shared by the real webhook and the test entry point) ──
@@ -1839,6 +1987,9 @@ async function handleTextMessage(from: string, incomingMessage: string, context:
   // 2) Text items awaiting "which child?" / "do you mean…?"
   const resolved = await tryResolvePendingAction(from, incomingMessage, context);
   if (resolved) return resolved;
+  // 3) "X has moved to Wednesday" → move the existing weekly reminder in code
+  const moved = await tryMoveReminder(from, incomingMessage, context);
+  if (moved) return nameNotPronoun(moved, context.children.map((c) => c.first_name));
 
   let processedMessage = incomingMessage;
   if (context.children.length > 0) {
