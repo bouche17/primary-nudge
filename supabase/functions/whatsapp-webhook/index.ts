@@ -452,7 +452,7 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
-Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Use the current UK time above: if it's after 6pm and the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
+Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. For notes, the tool result includes a TIMING line — repeat that timing exactly and don't work it out yourself. For other items, use the current UK time above: only if it's after 6pm AND the item is for tomorrow, do NOT promise an evening reminder — say you'll remind them at 7am tomorrow (your confirmation now counts as tonight's heads-up). If it's for today and after 7am, say it's saved but today's reminders have already gone out.
 
 ## Packed lunches already saved
 ${lunchPlansSummary}
@@ -809,6 +809,20 @@ async function enforceHonestReply(reply: string, results: ToolResult[], phone: s
   return reply;
 }
 
+/** Exact, code-computed reminder timing for a dated item, so the reply never guesses. */
+function reminderTimingFor(dateIso: string): string {
+  const ukToday = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+  const ukHour = Number(nowD().toLocaleTimeString("en-GB", { hour: "2-digit", hour12: false, timeZone: "Europe/London" }));
+  const fmt = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
+  const eve = new Date(`${dateIso}T12:00:00Z`); eve.setUTCDate(eve.getUTCDate() - 1);
+  const eveIso = eve.toISOString().slice(0, 10);
+  const evePassed = eveIso < ukToday || (eveIso === ukToday && ukHour >= 18);
+  const mornPassed = dateIso < ukToday || (dateIso === ukToday && ukHour >= 7);
+  if (mornPassed) return "TIMING: both reminders for this have already gone out — tell the parent it's saved but no further reminder will be sent.";
+  if (evePassed) return `TIMING: the evening reminder has already passed; the parent will get the morning reminder at 7am on ${fmt(dateIso)}.`;
+  return `TIMING: the parent will get an evening reminder at 6pm on ${fmt(eveIso)} and a morning reminder at 7am on ${fmt(dateIso)}. Describe exactly this.`;
+}
+
 async function executeTool(
   toolName: string,
   toolArgs: any,
@@ -1053,7 +1067,7 @@ async function executeTool(
     const parts: string[] = [];
     const names = savedFor.filter((n) => n !== "general");
     if (savedFor.length > 0) {
-      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""} (reminders go out the evening before and the morning of)`);
+      parts.push(`Saved note: ${toolArgs.summary} on ${toolArgs.date}${names.length > 0 ? ` for ${names.join(" and ")}` : ""}. ${reminderTimingFor(toolArgs.date)}`);
     }
     if (alreadySavedFor.length > 0) {
       parts.push(`ALREADY_SAVED:${dupSummary || newSummary}:${noteDate}:${alreadySavedFor.join(" and ")}`);
