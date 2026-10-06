@@ -28,3 +28,4 @@
 - [x] Admin delete-parent (preview, full delete, family reassignment, Twilio logs, audit)
 - [x] Leftover clean-up for deleted accounts; Twilio logs for +447904702768 deleted
 - [x] Invented-contact guard, Monty's real contact details, extra deletion phrases, plain-update fallback fix
+- [x] Quick suite + button, weekly unattended full suite (cron 21), max_tokens outage fix, contact-address clean-up
