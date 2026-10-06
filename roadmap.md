@@ -21,3 +21,6 @@
 - [x] Fix flaky "PE kit moved Tue→Wed" (moves decided in code)
 - [x] Combined which-child + one-off/weekly question
 - [x] Short code-built confirmations
+- [x] Twilio status callback: public + signature-checked, statuses recorded
+- [x] Alerts to Matt (Claude failures, failed deliveries) + /admin/tests banner
+- [x] Honest outage replies + failed_inbound record
