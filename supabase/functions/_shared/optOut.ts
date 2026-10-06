@@ -15,6 +15,8 @@ export function detectOptIntent(raw: string): OptIntent {
   const post = "(?:\\s+(?:please|pls|thanks|thank you|now|monty))*";
   const del = new RegExp(`^${pre}(?:delete|erase|remove|wipe)\\s+(?:my|all my|our)\\s+(?:account|data|details|information|info|number)(?:\\s+and\\s+(?:data|account|details))?${post}$`);
   if (del.test(t)) return "delete";
+  const del2 = new RegExp(`^${pre}(?:delete me|delete everything|delete it all|erase me|i want my (?:data|account|details) (?:deleted|removed|erased)|please delete my (?:data|account|details)|i want (?:my data|everything) deleted)${post}$`);
+  if (del2.test(t)) return "delete";
   if (/^(?:start|start again|resume|unstop|restart|start messages|turn (?:reminders|messages) back on)(?:\s+please)?$/.test(t)) return "start";
   const stop = new RegExp(`^${pre}(?:stop|unsubscribe|opt out|optout|stop all|stop messages|stop messaging(?: me)?|stop texting(?: me)?|stop sending(?: me)?(?: messages| reminders)?|stop (?:all |the )?(?:messages|reminders|notifications)|stop (?:the |these )?messages from monty|remove me|take me off(?: the list)?|don't message me|dont message me|do not message me|don't text me|dont text me|no more messages|leave me alone)(?:\\s+(?:from monty|anymore|any more))?${post}$`);
   return stop.test(t) ? "stop" : null;
@@ -46,7 +48,7 @@ export async function optIn(phone: string) {
 
 export const OPT_REPLIES = {
   stop: "Done, I've stopped all messages from Monty. Reply START any time to turn them back on.",
-  delete: "Done, I've stopped all messages from Monty and passed your deletion request to the team. Your data will be deleted and we'll confirm when it's done.",
+  delete: "Done, I've stopped all messages from Monty and passed your deletion request to the team. Your data will be deleted and we'll confirm when it's done. If you have any questions, email hello@heymonty.co.uk.",
   start: "Welcome back, your reminders are switched back on ✅",
   paused: "Your Monty messages are switched off. Reply START any time to turn them back on.",
 };
