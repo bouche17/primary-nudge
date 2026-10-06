@@ -1188,7 +1188,80 @@ async function executeTool(
   return failResult(`Unknown tool ${toolName}`, "unknown_tool");
 }
 
+// ── History framing: old messages are dated context, the new one is marked ──
+function historyLabel(at?: string): string {
+  if (!at) return "[earlier message]";
+  const d = new Date(at);
+  const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "Europe/London" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
+  return `[earlier message — sent ${day}, ${time}]`;
+}
+function buildClaudeMessages(history: ConversationMessage[], incoming: string): any[] {
+  const msgs: any[] = history.map((m) => ({ role: m.role, content: `${historyLabel(m.at)} ${m.content}` }));
+  const nowLabel = historyLabel(nowD().toISOString()).replace("earlier message — sent", "sent now");
+  const current = `=== NEW MESSAGE === ${nowLabel}\nEverything above is earlier history that has already been handled. Act ONLY on this message:\n\n${incoming}`;
+  // Claude requires alternating roles; merge if the last history item is also from the user.
+  if (msgs.length && msgs[msgs.length - 1].role === "user") {
+    msgs[msgs.length - 1] = { role: "user", content: `${msgs[msgs.length - 1].content}\n\n${current}` };
+  } else msgs.push({ role: "user", content: current });
+  while (msgs.length && msgs[0].role !== "user") msgs.shift();
+  return msgs;
+}
+
+// ── Grounding: every save must come from the parent's latest message ──
+const SAVE_TOOLS = new Set(["save_child_reminder", "save_parent_note", "save_weekly_lunch_plan"]);
+function stemWords(text: string): string[] {
+  return (text || "").toLowerCase().replace(/'s\b/g, "").split(/[^a-z]+/).filter((w) => w.length >= 2);
+}
+/** Returns null if grounded, else the reason it isn't. */
+function checkGrounding(toolName: string, args: any, grounding: string, childNames: string[]): string | null {
+  const g = stemWords(grounding);
+  const gSet = new Set(g);
+  const names = childNames.map((n) => n.toLowerCase());
+  const child = (args?.child_name || "").toString().toLowerCase();
+  const namesInMsg = names.filter((n) => gSet.has(n));
+  if (child && namesInMsg.length > 0 && !namesInMsg.includes(child)) {
+    return `child "${args.child_name}" isn't mentioned (message mentions ${namesInMsg.join(", ")})`;
+  }
+  if (toolName === "save_weekly_lunch_plan") {
+    return /\b(lunch|lunches|dinner|dinners|packed)\b/i.test(grounding) ? null : "no lunch/dinner mentioned";
+  }
+  const item = toolName === "save_parent_note" ? args?.summary : args?.title;
+  const keys = [...itemTokens(item || "", childNames)];
+  if (keys.length === 0) return null;
+  const hit = keys.some((k) => g.some((w) => {
+    const a = w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w;
+    if (a === k) return true;
+    const n = Math.min(a.length, k.length);
+    return n >= 4 && a.slice(0, 4) === k.slice(0, 4);
+  }));
+  return hit ? null : `none of "${keys.join(", ")}" appear in the parent's latest message`;
+}
+
+const FUTURE_ACTION = /\b(let me|i'?ll|i will|i'?m going to|going to|now)\s+(just\s+)?(save|add|set|note|pop|put|log|update|sort|get (that|it|this))\b|\b(now|currently)\s+saving\b|\bsaving (that|it|this|now)\b/i;
+
+async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: string, path: string): Promise<string> {
+  if (reply && FUTURE_ACTION.test(reply)) {
+    if (results.length === 0) {
+      await logDedupDecision({ phone, childName: null, tool: `reply_guard_${path}`, newItem: "(no tool calls)", decision: "future_action_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+      return "Sorry — I haven't saved anything yet. Could you send that to me again? 🙏";
+    }
+    return await replaceReply(reply, results, phone, path, "future_action_claim_blocked");
+  }
+  return await enforceHonestReply(reply, results, phone, path);
+}
+
 // ── AI reply generator ────────────────────────────────────────────────────────
+
+const MAX_TOOL_ROUNDS = 5;
+
+async function callClaude(body: Record<string, unknown>) {
+  return await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
 
 async function generateReply(
   incomingMessage: string,
@@ -1197,49 +1270,26 @@ async function generateReply(
   phone: string
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(context);
+  const model = "claude-sonnet-4-6";
+  const messages = buildClaudeMessages(history, incomingMessage);
 
-  // Claude API uses messages without system role — system is a top-level param
-  // Convert history to Claude format (user/assistant only)
-  const messages = [
-    ...history.map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
-    { role: "user", content: incomingMessage },
-  ];
+  // Grounding text: the new message, plus Monty's last reply only if it asked a question
+  // (so "Jude" answering "which child?" still counts).
+  const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+  let grounding = incomingMessage;
+  if (lastAssistant && /\?/.test(lastAssistant.content)) grounding += "\n" + lastAssistant.content;
+  const childNames = context.children.map((c) => c.first_name);
 
-  // First API call to Claude
-  const model1 = "claude-sonnet-4-6";
-  console.log("[Claude] Calling model:", model1);
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: model1,
-      max_tokens: 500,
-      system: systemPrompt,
-      messages,
-      tools,
-    }),
-  });
-
-  const rawText1 = await response.text();
-  console.log("[Claude] Raw response text (first call):", rawText1);
-
-  if (!response.ok) {
-    console.error("Claude API error:", response.status, rawText1);
-    await logClaudeFailure(phone, response.status, rawText1, "Claude API - initial reply");
+  const res = await callClaude({ model, max_tokens: 500, system: systemPrompt, messages, tools });
+  const rawText1 = await res.text();
+  console.log("[Claude] Raw response text (round 1):", rawText1);
+  if (!res.ok) {
+    await logClaudeFailure(phone, res.status, rawText1, "Claude API - initial reply");
     return "Sorry, I had a little hiccup there! Try again in a moment 😊";
   }
-
   let data = JSON.parse(rawText1);
 
-  // Guard: the model may not claim "already saved" without a database check.
-  // If it did so without calling a tool, force a tool call so the check runs in code.
+  // Guard: no "already saved" without a database check — force a tool call.
   if (data.stop_reason !== "tool_use") {
     const firstText = data.content?.find((b: any) => b.type === "text")?.text || "";
     if (ALREADY_CLAIM.test(firstText)) {
@@ -1247,90 +1297,66 @@ async function generateReply(
         phone, childName: null, tool: "reply_guard", newItem: incomingMessage.slice(0, 300),
         decision: "unverified_claim_blocked", match: { table: "model_reply", id: "no match", text: firstText.slice(0, 300) },
       });
-      const retry = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({
-          model: model1,
-          max_tokens: 500,
-          system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked; the tool checks the database for duplicates.",
-          messages,
-          tools,
-          tool_choice: { type: "any" },
-        }),
+      const retry = await callClaude({
+        model, max_tokens: 500, messages, tools, tool_choice: { type: "any" },
+        system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
       });
-      if (retry.ok) {
-        data = await retry.json();
-      } else {
+      if (!retry.ok) {
         await logClaudeFailure(phone, retry.status, await retry.text(), "Claude API - already-claim retry");
         return "Sorry, I couldn't save that just now — could you send it again? 😊";
       }
+      data = await retry.json();
     }
   }
 
-  // Claude returns stop_reason "tool_use" when it wants to call a tool
-  if (data.stop_reason === "tool_use") {
-    const toolUseBlocks = data.content.filter((b: any) => b.type === "tool_use");
-    const toolResults = [];
-    const structuredResults: ToolResult[] = [];
-
-    for (const toolBlock of toolUseBlocks) {
-      const toolName = toolBlock.name;
-      const toolArgs = toolBlock.input;
-      console.log(`Executing tool: ${toolName}`, toolArgs);
-
-      const result = await executeTool(toolName, toolArgs, context, phone);
-      console.log(`Tool result:`, JSON.stringify(result));
-      structuredResults.push(result);
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolBlock.id,
-        content: result.text,
-      });
+  const structuredResults: ToolResult[] = [];
+  const convo = [...messages];
+  let round = 1;
+  while (data.stop_reason === "tool_use") {
+    const toolResults: any[] = [];
+    for (const block of data.content.filter((b: any) => b.type === "tool_use")) {
+      let result: ToolResult;
+      const why = SAVE_TOOLS.has(block.name) ? checkGrounding(block.name, block.input, grounding, childNames) : null;
+      if (why) {
+        result = { ok: false, action: "not_saved", failed: false, summary: "",
+          text: `NOT SAVED: not mentioned in the parent's latest message (${why}). Earlier requests in the history were already handled — do not save them again, and don't mention them in your reply.` };
+        await logDedupDecision({
+          phone, childName: block.input?.child_name ?? null, tool: block.name, date: block.input?.date ?? null,
+          newItem: JSON.stringify(block.input).slice(0, 500), decision: "ungrounded_save_blocked",
+          match: { table: "inbound_message", id: "no match", text: incomingMessage.slice(0, 500) },
+        });
+      } else {
+        result = await executeTool(block.name, block.input, context, phone);
+        structuredResults.push(result);
+      }
+      console.log(`Tool ${block.name} →`, JSON.stringify(result));
+      testStore.getStore()?.toolCalls.push({ name: block.name, input: block.input, ok: result.ok, action: why ? "ungrounded_blocked" : result.action, text: result.text });
+      toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result.text });
     }
+    convo.push({ role: "assistant", content: data.content }, { role: "user", content: toolResults });
 
-    // Second API call with tool results to get final conversational reply
-    const model2 = "claude-sonnet-4-6";
-    console.log("[Claude] Calling model (follow-up):", model2);
-    const followUpResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: model2,
-        max_tokens: 400,
-        system: systemPrompt,
-        messages: [
-          ...messages,
-          { role: "assistant", content: data.content },
-          { role: "user", content: toolResults },
-        ],
-      }),
-    });
-
-    const rawFollowUp = await followUpResponse.text();
-    console.log("[Claude] Raw response text (follow-up):", rawFollowUp);
-
-    if (!followUpResponse.ok) {
-      console.error("Claude follow-up error:", followUpResponse.status, rawFollowUp);
-      await logClaudeFailure(phone, followUpResponse.status, rawFollowUp, "Claude API - tool follow-up");
+    if (round >= MAX_TOOL_ROUNDS) {
+      return await replaceReply("", structuredResults, phone, "text", "max_tool_rounds_replaced");
+    }
+    round++;
+    const failNext = (testStore.getStore() as any)?.failFollowup === true;
+    const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
+      await callClaude({ model, max_tokens: 500, system: systemPrompt, messages: convo, tools });
+    const raw = await next.text();
+    console.log(`[Claude] Raw response text (round ${round}):`, raw);
+    if (!next.ok) {
+      await logClaudeFailure(phone, next.status, raw, "Claude API - tool follow-up");
       return await replaceReply("", structuredResults, phone, "text", "followup_failed_replaced");
     }
-
-    let followUpData: any = null;
-    try { followUpData = JSON.parse(rawFollowUp); } catch { /* fall through */ }
-    const textBlock = followUpData?.content?.find((b: any) => b.type === "text");
-    return await enforceHonestReply(textBlock?.text?.trim() || "", structuredResults, phone, "text");
+    try { data = JSON.parse(raw); } catch { return await replaceReply("", structuredResults, phone, "text", "followup_unparseable_replaced"); }
   }
 
-  // No tool use — just return the text response
-  const textBlock = data.content?.find((b: any) => b.type === "text");
-  return textBlock?.text?.trim() ||
-    "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
+  if (structuredResults.length === 0 && round === 1) {
+    if (text && FUTURE_ACTION.test(text)) return await enforceTurnHonesty(text, [], phone, "text");
+    return text || "Sorry, I had a little hiccup there! Try again in a moment 😊";
+  }
+  return await enforceTurnHonesty(text, structuredResults, phone, "text");
 }
 
 // ── Conversation helpers ──────────────────────────────────────────────────────
