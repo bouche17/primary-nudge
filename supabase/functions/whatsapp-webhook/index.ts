@@ -4,6 +4,7 @@ import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "
 import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
+import { recordAiCost } from "../_shared/aiCost.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -1710,7 +1711,7 @@ async function runSave(tool: string, args: any, context: MontyContext, phone: st
 
 const MAX_TOOL_ROUNDS = 5;
 
-async function callClaude(body: Record<string, unknown>) {
+async function callClaude(body: Record<string, unknown>, phone?: string, purpose = "chat") {
   const t0 = Date.now();
   if ((testStore.getStore() as any)?.failClaude === true) {
     return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. (forced test failure)" } }), { status: 400 });
@@ -1723,6 +1724,7 @@ async function callClaude(body: Record<string, unknown>) {
   const ms = Date.now() - t0;
   console.log(`[Claude] ${body.model} ${r.status} in ${ms}ms`);
   const st: any = testStore.getStore();
+  if (r.ok) { try { const j = await r.clone().json(); await recordAiCost({ functionName: "whatsapp-webhook", purpose, model: String(body.model), usage: j.usage, phone, isTest: !!st }); } catch { /* ignore */ } }
   if (st && r.ok) {
     try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
   }
@@ -1748,7 +1750,7 @@ async function generateReply(
   const childNames = context.children.map((c) => c.first_name);
   (context as any).__grounding = grounding;
 
-  const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools });
+  const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools }, phone);
   const rawText1 = await res.text();
   console.log("[Claude] Raw response text (round 1):", rawText1);
   if (!res.ok) {
@@ -1768,7 +1770,7 @@ async function generateReply(
       const retry = await callClaude({
         model, max_tokens: 2000, messages, tools, tool_choice: { type: "any" },
         system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
-      });
+      }, phone);
       if (!retry.ok) {
         const rt = await retry.text();
         await logClaudeFailure(phone, retry.status, rt, "Claude API - already-claim retry");
@@ -1871,7 +1873,7 @@ async function generateReply(
     round++;
     const failNext = (testStore.getStore() as any)?.failFollowup === true;
     const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
-      await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages: convo, tools });
+      await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages: convo, tools }, phone);
     const raw = await next.text();
     console.log(`[Claude] Raw response text (round ${round}):`, raw);
     if (!next.ok) {
@@ -2431,6 +2433,7 @@ If the image is unclear or unreadable, ask them to try again.`;
     }
 
     const data = JSON.parse(rawVisionText);
+    await recordAiCost({ functionName: "whatsapp-webhook", purpose: "photo", model: visionModel, usage: data.usage, phone, isTest: !!testStore.getStore() });
 
     // Handle tool use — save extracted dates
     if (data.stop_reason === "tool_use") {
@@ -2555,6 +2558,7 @@ If the image is unclear or unreadable, ask them to try again.`;
       });
 
       const rawVisionFollowUp = await followUp.text();
+      if (followUp.ok) { try { await recordAiCost({ functionName: "whatsapp-webhook", purpose: "photo", model: visionFollowModel, usage: JSON.parse(rawVisionFollowUp).usage, phone, isTest: !!testStore.getStore() }); } catch { /* ignore */ } }
       console.log("[Claude] Raw response text (vision follow-up):", rawVisionFollowUp);
       if (!followUp.ok) {
         await logClaudeFailure(phone, followUp.status, rawVisionFollowUp, "Claude API - vision follow-up");

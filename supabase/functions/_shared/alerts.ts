@@ -100,9 +100,13 @@ export async function evaluateDeliveryAlerts(o: AlertOpts = {}) {
   return r ? [r] : [];
 }
 
-/** Free-form WhatsApp inside Matt's 24h window, otherwise the approved single-variable template. */
+/** Real-parent ops alerts. Free-form WhatsApp only inside Matt's 24h window, worded as a "Monty system alert".
+ *  No approved template fits a system alert honestly (all are family-facing), so outside the window the alert is NOT
+ *  sent on WhatsApp: it stays in ops_alerts (channel "email_pending") and on the /admin/tests banner until an email
+ *  sender for hello@heymonty.co.uk (or a new utility template) exists. */
 export async function sendAlertWhatsApp(text: string): Promise<{ ok: boolean; channel: string }> {
   const to = ALERT_PHONE();
+  const body = "Monty system alert (not from a school): " + text.replace(/^Monty alert:\s*/, "");
   // Matt's own alerts are the only send allowed past an opt-out.
   if (await blockIfTestPhone(to, "ops-alert", { allowOptedOut: true })) return { ok: false, channel: "blocked_test_number" };
   const sid = Deno.env.get("TWILIO_ACCOUNT_SID")!, tok = Deno.env.get("TWILIO_AUTH_TOKEN")!, from = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
@@ -113,16 +117,14 @@ export async function sendAlertWhatsApp(text: string): Promise<{ ok: boolean; ch
       .order("created_at", { ascending: false }).limit(1);
     inWindow = !!last?.[0] && Date.now() - new Date(last[0].created_at).getTime() < 23.5 * 3600_000;
   }
-  const params = new URLSearchParams({ To: `whatsapp:${to}`, From: `whatsapp:${from}` });
-  if (inWindow) params.set("Body", text);
-  else {
-    params.set("ContentSid", Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX63040a55daeb8ef0673b8a1a156ad9a9");
-    params.set("ContentVariables", JSON.stringify({ "1": text.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").slice(0, 1000) }));
+  if (!inWindow) {
+    console.warn("[alerts] outside Matt's 24h window; alert kept for email/admin banner:", body.slice(0, 200));
+    return { ok: false, channel: "email_pending" };
   }
+  const params = new URLSearchParams({ To: `whatsapp:${to}`, From: `whatsapp:${from}`, Body: body });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
     method: "POST", headers: { Authorization: "Basic " + btoa(`${sid}:${tok}`), "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });
-  const body = await res.text();
-  if (!res.ok) console.error("[alerts] WhatsApp alert failed:", res.status, body);
-  return { ok: res.ok, channel: inWindow ? "whatsapp_freeform" : "whatsapp_template" };
+  if (!res.ok) console.error("[alerts] WhatsApp alert failed:", res.status, await res.text());
+  return { ok: res.ok, channel: "whatsapp_freeform" };
 }

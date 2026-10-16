@@ -19,6 +19,8 @@ import CalendarFeeds from "./pages/CalendarFeeds";
 import SchoolReminders from "./pages/SchoolReminders";
 import FamilyAudit from "./pages/FamilyAudit";
 import AdminTests from "./pages/AdminTests";
+import AdminCosts from "./pages/AdminCosts";
+import AdminWhatsOnDiffs from "./pages/AdminWhatsOnDiffs";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -67,6 +69,8 @@ const App = () => (
               <Route path="/calendar-feeds" element={<CalendarFeeds />} />
               <Route path="/family-audit" element={<FamilyAudit />} />
               <Route path="/admin/tests" element={<AdminTests />} />
+              <Route path="/admin/costs" element={<AdminCosts />} />
+              <Route path="/admin/whats-on-diffs" element={<AdminWhatsOnDiffs />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/invite/:token" element={<AcceptInvite />} />
               <Route path="/privacy" element={<Privacy />} />

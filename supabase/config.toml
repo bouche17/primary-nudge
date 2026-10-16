@@ -32,3 +32,5 @@ verify_jwt = false
 verify_jwt = false
 [functions.delete-parent]
 verify_jwt = false
+[functions.whats-on]
+verify_jwt = false

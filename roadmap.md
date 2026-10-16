@@ -29,3 +29,12 @@
 - [x] Leftover clean-up for deleted accounts; Twilio logs for +447904702768 deleted
 - [x] Invented-contact guard, Monty's real contact details, extra deletion phrases, plain-update fallback fix
 - [x] Quick suite + button, weekly unattended full suite (cron 21), max_tokens outage fix, contact-address clean-up
+
+## Cost + rebuild (16 Oct)
+- [x] Quick suite after credit top-up
+- [x] Remove weekly full-suite cron (21); tiered test rule (free / quick / full)
+- [x] ai_costs table + /admin/costs
+- [x] No test-run alerts; system alerts not via school template; runner refuses overlapping runs
+- [x] Step 2: whatsOn.ts, whats-on function, free tests, shadow diffs + nightly cron + /admin/whats-on-diffs, whats_on_source setting
+- [ ] Email delivery of outage alerts to hello@heymonty.co.uk — blocked: needs heymonty.co.uk set up as an email domain
+- [ ] New utility WhatsApp template "Monty system alert" — blocked: Matt to submit in Twilio

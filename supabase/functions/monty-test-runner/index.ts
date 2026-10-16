@@ -5,7 +5,9 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
-import { evaluateClaudeAlerts, evaluateDeliveryAlerts, sendAlertWhatsApp } from "../_shared/alerts.ts";
+import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
+import { computeWhatsOn, getWhatsOn, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
+import { runWhatsOnShadow } from "./shadow.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -273,7 +275,7 @@ async function runOptOutTests(quick = false): Promise<Result[]> {
     const back = await morning();
     const r2 = firstFail(start.data.reply !== OPT_REPLIES.start && `reply: ${start.data.reply}`, await isOptedOut(ph) && "still opted out",
       (back.data.messages ?? []).length !== baseN && `reminders after START: ${(back.data.messages ?? []).length}, want ${baseN}`, (await sendBlockReason(ph)) !== "test_number" && "guard still blocks as opted out");
-    out.push({ scenario: "START → opt-out removed, reminders resume", category: "opt-out", status: r2 ? "fail" : "pass", reply: start.data.reply ?? null, reason: r2 });
+    out.push({ scenario: "START → opt-out removed, reminders resume", category: "opt-out", status: r2 ? "fail" : "pass", reply: start.data.reply ?? null, reason: r2, details: r2 ? { back: back.data, start: start.data, slot_rows: (await admin.from("reminder_log").select("reference_id, period, sent_at").eq("phone_number", ph)).data } : null });
 
     const del = await say("Please delete my data", "opt-out: deletion request");
     const { data: al } = await admin.from("ops_alerts").select("alert_type, message").eq("is_test", true).eq("alert_type", "deletion_request");
@@ -404,8 +406,103 @@ async function runContactTests(quick = false): Promise<Result[]> {
   return out;
 }
 
-async function runSenderSuite(quick = false): Promise<Result[]> {
-  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick)), ...(await runContactTests(quick)), ...(await runDeleteParentTests())];
+// ── "What's on" shared function — pure tests (no AI, no database) + one linked-partner test ──
+function famFixture(over: Partial<FamilyData> = {}): FamilyData {
+  return { familyId: "f", children: [{ id: "k1", first_name: "Harry", school_id: "s1", year_group: "Year 3" }],
+    childReminders: [], lunchPlans: [], schoolReminders: [], schoolEvents: [], holidays: [], notes: [], exclusions: [], ...over };
+}
+const HALF_TERM = [{ school_id: "s1", start_date: "2026-10-23", end_date: "2026-11-01" }];
+async function runWhatsOnTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const t = (scenario: string, fn: () => string | null | Promise<string | null>, reply?: string) => out.push({ scenario, category: "whats-on", status: "pass", reply: reply ?? null, reason: null, details: { fn } as any });
+  const cases: [string, () => Promise<{ reason: string | null; reply?: string }>][] = [
+    ["What's on: weekly reminder appears every matching weekday", async () => {
+      const r = computeWhatsOn(famFixture({ childReminders: [{ id: "r1", child_id: "k1", title: "PE kit", emoji: "👟", day_of_week: "Tuesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }] }), "2026-10-05", "2026-10-18");
+      const d = r.map((i) => i.date).join(",");
+      return { reason: d === "2026-10-06,2026-10-13" && r.every((i) => i.kind === "weekly") ? null : `got ${d}`, reply: d };
+    }],
+    ["What's on: Y3 Forest School fortnightly across October half-term → 2 Oct, 16 Oct, 13 Nov, 27 Nov, 11 Dec", async () => {
+      const r = computeWhatsOn(famFixture({ holidays: HALF_TERM, childReminders: [{ id: "fs", child_id: "k1", title: "Forest School", emoji: "🌲", day_of_week: "Friday", reminder_time: "evening", active: true, recurrence_interval: 2, anchor_date: "2026-10-02" }] }), "2026-09-28", "2026-12-18");
+      const d = r.map((i) => i.date).join(",");
+      return { reason: d === "2026-10-02,2026-10-16,2026-11-13,2026-11-27,2026-12-11" ? null : `got ${d}`, reply: d };
+    }],
+    ["What's on: one-off note appears on its date only", async () => {
+      const r = computeWhatsOn(famFixture({ notes: [{ id: "n1", summary: "Harvest donations", child_name: "Harry", extracted_dates: [{ date: "2026-10-14" }] }] }), "2026-10-12", "2026-10-18");
+      return { reason: r.length === 1 && r[0].date === "2026-10-14" && r[0].kind === "one-off" && r[0].childName === "Harry" ? null : `got ${JSON.stringify(r)}` };
+    }],
+    ["What's on: school event reaches the matching year group only (Year 1 never matches Year 10; Y3/Year 3/3 normalised)", async () => {
+      const kids = [{ id: "k1", first_name: "Harry", school_id: "s1", year_group: "Y3" }, { id: "k2", first_name: "Jude", school_id: "s1", year_group: "Year 6" }];
+      const r = computeWhatsOn(famFixture({ children: kids, schoolEvents: [
+        { id: "e1", school_id: "s1", title: "Year 3 trip", start_at: "2026-10-14T08:00:00Z", year_group: "Year 3" },
+        { id: "e2", school_id: "s1", title: "Whole-school assembly", start_at: "2026-10-15T08:00:00Z", year_group: "all" },
+        { id: "e3", school_id: "s1", title: "Y10 thing", start_at: "2026-10-16T08:00:00Z", year_group: "Year 10" },
+      ] }), "2026-10-12", "2026-10-18");
+      const got = r.map((i) => `${i.date}:${i.childName}:${i.title}`).join(" | ");
+      const want = "2026-10-14:Harry:Year 3 trip | 2026-10-15:Harry:Whole-school assembly | 2026-10-15:Jude:Whole-school assembly";
+      const norm = yearGroupMatches("Year 1", "1") && !yearGroupMatches("Year 10", "Year 1") && !yearGroupMatches("Year 1", "Y10") && yearGroupMatches("", "Year 4");
+      return { reason: got === want && norm ? null : `got ${got}; normalise ok=${norm}`, reply: got };
+    }],
+    ["What's on: family with two children — each child's items, school reminder once per family, fixed order", async () => {
+      const kids = [{ id: "k2", first_name: "Rosa", school_id: "s1", year_group: "Year 4" }, { id: "k1", first_name: "Harry", school_id: "s1", year_group: "Year 3" }];
+      const rem = (id: string, child: string, title: string) => ({ id, child_id: child, title, emoji: null, day_of_week: "Wednesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null });
+      const r = computeWhatsOn(famFixture({ children: kids, childReminders: [rem("a", "k2", "Swimming"), rem("b", "k1", "PE kit")],
+        schoolReminders: [{ id: "sr", school_id: "s1", title: "Book fair", emoji: "📚", day_of_week: null, due_date: "2026-10-14", active: true }] }), "2026-10-14", "2026-10-14");
+      const got = r.map((i) => `${i.childName ?? "family"}:${i.title}`).join(" | ");
+      return { reason: got === "Harry:PE kit | Rosa:Swimming | family:Book fair" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: holiday and INSET days skip weekly, lunch and school reminders (not moved)", async () => {
+      const r = computeWhatsOn(famFixture({ holidays: [{ school_id: "s1", start_date: "2026-10-21", end_date: "2026-10-22" }],
+        childReminders: [{ id: "r", child_id: "k1", title: "PE kit", emoji: null, day_of_week: "Wednesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }],
+        lunchPlans: [{ id: "l", child_id: "k1", week_start: "2026-10-19", packed_lunch_days: ["Wednesday", "Friday"] }],
+        schoolReminders: [{ id: "sr", school_id: "s1", title: "Harvest", emoji: null, day_of_week: null, due_date: "2026-10-22", active: true }] }), "2026-10-19", "2026-10-25");
+      const got = r.map((i) => `${i.date}:${i.title}`).join(" | ");
+      return { reason: got === "2026-10-23:Packed lunch" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: clock-change week (25 Oct) — UK dates stay right across BST→GMT", async () => {
+      const r = computeWhatsOn(famFixture({
+        childReminders: [{ id: "r", child_id: "k1", title: "Cubs", emoji: null, day_of_week: "Sunday", reminder_time: "evening", active: true, recurrence_interval: 1, anchor_date: null }],
+        schoolEvents: [{ id: "e", school_id: "s1", title: "Late event", start_at: "2026-10-24T23:30:00Z", year_group: null }, { id: "e2", school_id: "s1", title: "GMT event", start_at: "2026-10-25T23:30:00Z", year_group: null }] }), "2026-10-24", "2026-10-26");
+      const got = r.map((i) => `${i.date}:${i.title}`).join(" | ");
+      return { reason: got === "2026-10-25:GMT event | 2026-10-25:Late event | 2026-10-25:Cubs" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: inactive reminder excluded, duplicates for same child/day shown once, all-opted-out family empty", async () => {
+      const base = { emoji: null, day_of_week: "Monday", reminder_time: "both", recurrence_interval: 1, anchor_date: null, child_id: "k1" };
+      const f = famFixture({ childReminders: [{ ...base, id: "a", title: "Library book", active: false }, { ...base, id: "b", title: "PE kit", active: true }, { ...base, id: "c", title: "PE  Kit", active: true }] });
+      const r = computeWhatsOn(f, "2026-10-12", "2026-10-12");
+      const o = computeWhatsOn({ ...f, allOptedOut: true }, "2026-10-12", "2026-10-12");
+      return { reason: r.length === 1 && /^pe\s+kit$/i.test(r[0].title) && r[0].source.id !== "a" && o.length === 0 ? null : `got ${JSON.stringify(r.map((i) => i.title))}, opted-out ${o.length}` };
+    }],
+    ["What's on: linked partner gets exactly the same list (incl. partner's notes)", async () => {
+      await resetTestData();
+      await seedFamily("A", { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-09" }] });
+      const a = await ensureTestUser(FAMILIES.A.phone), b = await ensureTestUser(FAMILIES.C.phone);
+      await admin.from("parent_notes").insert({ phone_number: FAMILIES.C.phone, raw_content: "x", summary: "Harry dentist", extracted_dates: [{ date: "2026-10-08" }], source_type: "whatsapp", child_name: "Harry" });
+      await admin.from("linked_accounts").insert({ primary_user_id: a, linked_user_id: b, status: "accepted" });
+      try {
+        const [wa, wb] = await Promise.all([getWhatsOn(admin as any, a, "2026-10-05", "2026-10-11"), getWhatsOn(admin as any, b, "2026-10-05", "2026-10-11")]);
+        const s1 = JSON.stringify(wa.items), s2 = JSON.stringify(wb.items);
+        const titles = wa.items.map((i) => `${i.date}:${i.title}`).join(" | ");
+        return { reason: s1 === s2 && wa.familyId === wb.familyId && /Harry dentist/.test(titles) && /Jude recorder/.test(titles) && /PE kit/.test(titles) ? null : `A: ${titles} | B: ${wb.items.map((i) => i.title).join(", ")}`, reply: titles };
+      } finally {
+        await admin.from("linked_accounts").delete().eq("primary_user_id", a).eq("linked_user_id", b);
+        await admin.from("parent_notes").delete().eq("phone_number", FAMILIES.C.phone);
+        await resetTestData();
+      }
+    }],
+  ];
+  void t;
+  for (const [scenario, fn] of cases) {
+    try { const r = await fn(); out.push({ scenario, category: "whats-on", status: r.reason ? "fail" : "pass", reply: r.reply ?? null, reason: r.reason }); }
+    catch (e) { out.push({ scenario, category: "whats-on", status: "fail", reply: null, reason: (e as Error).message }); }
+  }
+  return out;
+}
+
+async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
+  // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
+  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
+  results.push(...(await runWhatsOnTests()));
+  await seedSenderFixtures();
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
       scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],
@@ -850,6 +947,21 @@ Deno.serve(async (req) => {
     return json({ runs, outages: fails });
   }
 
+  if (action === "whats_on_shadow") {
+    try { return json(await runWhatsOnShadow(admin, { days: Number(body.days) || 14, now: body.now })); }
+    catch (e) {
+      const msg = (e as Error).message;
+      console.error("[shadow] failed:", msg);
+      if (body.scheduled === true) {
+        const { sendAlertWhatsApp } = await import("../_shared/alerts.ts");
+        const text = `Monty alert: the nightly what's-on comparison job failed (${msg.slice(0, 200)}). Nothing parents see is affected.`;
+        const res = await sendAlertWhatsApp(text).catch(() => ({ ok: false, channel: "error" }));
+        await admin.from("ops_alerts").insert({ alert_type: "whats_on_shadow_failed", affected_parents: 0, failure_count: 1, first_error: msg.slice(0, 300), message: text, likely_fix: "Open /admin/whats-on-diffs and re-run", is_test: false, delivered: res.ok, channel: res.channel });
+      }
+      return json({ error: msg }, 500);
+    }
+  }
+
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
   const part: "sender" | "conversation" = body.part === "conversation" ? "conversation" : "sender";
@@ -857,7 +969,11 @@ Deno.serve(async (req) => {
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
   if (!runId) {
-    const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : action === "quick_suite" ? "quick" : "full";
+    // Only one run at a time (chained chunks included): overlapping runs wipe each other's fixtures.
+    const { data: busy } = await admin.from("test_runs").select("id, suite, started_at").eq("status", "running")
+      .gt("started_at", new Date(Date.now() - 30 * 60_000).toISOString()).limit(1);
+    if (busy?.length) return json({ error: `Another ${busy[0].suite} run is still in progress (started ${busy[0].started_at}). Wait for it to finish.`, busy_run_id: busy[0].id }, 409);
+    const suite = action === "sender_suite" || action === "free_suite" ? "sender" : action === "conversation_suite" ? "conversation" : action === "quick_suite" ? "quick" : "full";
     const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
     runId = run!.id;
   }
@@ -868,7 +984,7 @@ Deno.serve(async (req) => {
   let fatal: string | null = null;
   try {
     await resetTestData();
-    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick"); }
+    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
@@ -910,18 +1026,10 @@ Deno.serve(async (req) => {
     notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined }),
   }).eq("id", runId);
 
-  // Unattended (scheduled) runs: queue the next chunk from the database with a fresh single-use token;
-  // on the last chunk alert Matt only if anything failed or was flaky.
-  if (body.chain === true) {
-    if (next) {
-      const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
-      if (error) { console.error("[runner] chain failed:", error.message); await sendAlertWhatsApp(`Monty alert: the weekly test run stopped part-way (${error.message}). Run it from /admin/tests.`); }
-    } else if (failed || flaky) {
-      const { data: bad } = await admin.from("test_run_results").select("scenario, status").eq("run_id", runId).neq("status", "pass").limit(5);
-      const msg = `Monty alert: weekly test run - ${failed} failing, ${flaky} flaky out of ${(all ?? []).length}. ${(bad ?? []).map((b) => `${b.status}: ${b.scenario}`).join("; ").slice(0, 600)}. Details on /admin/tests.`;
-      const res = await sendAlertWhatsApp(msg).catch(() => ({ ok: false, channel: "error" }));
-      await admin.from("ops_alerts").insert({ alert_type: "weekly_suite", affected_parents: 0, failure_count: failed + flaky, message: msg, likely_fix: "Open /admin/tests", is_test: false, delivered: res.ok, channel: res.channel });
-    }
+  // Chained runs: queue the next chunk from the database with a fresh single-use token. No WhatsApp alerts for test runs.
+  if (body.chain === true && next) {
+    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
+    if (error) { console.error("[runner] chain failed:", error.message); await admin.from("test_runs").update({ status: "failed", finished_at: new Date().toISOString() }).eq("id", runId); }
   }
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
 });

@@ -14,6 +14,66 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_costs: {
+        Row: {
+          cost_usd: number
+          created_at: string
+          family_id: string | null
+          function_name: string
+          id: string
+          input_tokens: number
+          is_test: boolean
+          model: string | null
+          output_tokens: number
+          purpose: string
+          school_id: string | null
+        }
+        Insert: {
+          cost_usd?: number
+          created_at?: string
+          family_id?: string | null
+          function_name: string
+          id?: string
+          input_tokens?: number
+          is_test?: boolean
+          model?: string | null
+          output_tokens?: number
+          purpose: string
+          school_id?: string | null
+        }
+        Update: {
+          cost_usd?: number
+          created_at?: string
+          family_id?: string | null
+          function_name?: string
+          id?: string
+          input_tokens?: number
+          is_test?: boolean
+          model?: string | null
+          output_tokens?: number
+          purpose?: string
+          school_id?: string | null
+        }
+        Relationships: []
+      }
+      app_settings: {
+        Row: {
+          key: string
+          updated_at: string
+          value: string
+        }
+        Insert: {
+          key: string
+          updated_at?: string
+          value: string
+        }
+        Update: {
+          key?: string
+          updated_at?: string
+          value?: string
+        }
+        Relationships: []
+      }
       bot_flows: {
         Row: {
           created_at: string
@@ -1265,6 +1325,48 @@ export type Database = {
           },
         ]
       }
+      whats_on_shadow_diffs: {
+        Row: {
+          created_at: string
+          family_id: string
+          family_label: string | null
+          id: string
+          item: string
+          item_date: string
+          likely_reason: string | null
+          run_date: string
+          side: string
+          verdict: string | null
+          verdict_at: string | null
+        }
+        Insert: {
+          created_at?: string
+          family_id: string
+          family_label?: string | null
+          id?: string
+          item: string
+          item_date: string
+          likely_reason?: string | null
+          run_date: string
+          side: string
+          verdict?: string | null
+          verdict_at?: string | null
+        }
+        Update: {
+          created_at?: string
+          family_id?: string
+          family_label?: string | null
+          id?: string
+          item?: string
+          item_date?: string
+          likely_reason?: string | null
+          run_date?: string
+          side?: string
+          verdict?: string | null
+          verdict_at?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -1319,6 +1421,7 @@ export type Database = {
         Returns: boolean
       }
       queue_suite_chunk: { Args: { _body: Json }; Returns: number }
+      queue_whats_on_shadow: { Args: never; Returns: number }
       rollover_year_groups: { Args: never; Returns: undefined }
       test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }
