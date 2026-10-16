@@ -498,8 +498,9 @@ async function runWhatsOnTests(): Promise<Result[]> {
   return out;
 }
 
-async function runSenderSuite(quick = false): Promise<Result[]> {
-  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick)), ...(await runContactTests(quick)), ...(await runDeleteParentTests())];
+async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
+  // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
+  const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
   results.push(...(await runWhatsOnTests()));
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
@@ -983,7 +984,7 @@ Deno.serve(async (req) => {
   let fatal: string | null = null;
   try {
     await resetTestData();
-    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick"); }
+    if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
