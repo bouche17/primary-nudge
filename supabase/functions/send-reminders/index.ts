@@ -628,7 +628,7 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
       scope, period, now: now.toISOString(), target_date: targetDateStr, count: planned.length,
       messages: planned.map((p) => ({ phone_last4: p.phone.slice(-4), family: p.familyId.slice(0, 8), message: p.message })),
       // Dry-run for the what's-on shadow comparison: one entry per family (not per phone), structured items.
-      ...(body.with_items === true ? { families: [...new Map(planned.map((p) => [p.familyId, { items: p.items.map((i) => ({ child_id: i.childId ?? null, child_name: i.childName, title: i.title, type: i.type, ref: i.refId })) }])).values()] } : {}),
+      ...(body.with_items === true ? { families: [...new Map(planned.map((p) => [p.familyId, { family: p.familyId, items: p.items.map((i) => ({ child_id: i.childId ?? null, child_name: i.childName, title: i.title, type: i.type, ref: i.refId })) }])).values()] } : {}),
     });
   }
 
