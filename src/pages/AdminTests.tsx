@@ -45,7 +45,7 @@ const AdminTests = () => {
 
   const [alerts, setAlerts] = useState<{ id: string; created_at: string; message: string; alert_type: string }[]>([]);
   const loadAlerts = useCallback(async () => {
-    const since = new Date(Date.now() - 3600_000).toISOString();
+    const since = new Date(Date.now() - 24 * 3600_000).toISOString(); // alerts not delivered on WhatsApp stay visible for a day
     const { data } = await supabase.from("ops_alerts" as any).select("id, created_at, message, alert_type")
       .eq("is_test", false).is("resolved_at", null).gt("created_at", since).order("created_at", { ascending: false });
     setAlerts((data as any) ?? []);
@@ -98,6 +98,7 @@ const AdminTests = () => {
         <Link to="/dashboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="w-4 h-4" /> Dashboard
         </Link>
+        <div className="flex gap-4 text-sm"><Link to="/admin/costs" className="text-primary hover:underline">AI costs</Link><Link to="/admin/whats-on-diffs" className="text-primary hover:underline">What's on: old vs new</Link></div>
         {alerts.length > 0 && (
           <div role="alert" className="rounded-2xl border border-destructive bg-destructive text-destructive-foreground p-4 space-y-2">
             <div className="flex items-center justify-between gap-4">
@@ -114,7 +115,7 @@ const AdminTests = () => {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-heading font-bold text-foreground">Monty test suite</h1>
-            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages. Quick suite after every change; full suite runs every Sunday at 8pm and before big changes.</p>
+            <p className="text-sm text-muted-foreground">Runs against test families only. Never sends WhatsApp messages. Free tests after non-chat changes, quick suite when chat behaviour changes, full suite only before big changes.</p>
           </div>
           <div className="flex gap-2">
             <Button onClick={() => runSuite("quick")} disabled={running} variant="outline" className="rounded-full">
