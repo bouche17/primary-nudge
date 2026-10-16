@@ -857,6 +857,10 @@ Deno.serve(async (req) => {
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
   if (!runId) {
+    // Only one run at a time (chained chunks included): overlapping runs wipe each other's fixtures.
+    const { data: busy } = await admin.from("test_runs").select("id, suite, started_at").eq("status", "running")
+      .gt("started_at", new Date(Date.now() - 30 * 60_000).toISOString()).limit(1);
+    if (busy?.length) return json({ error: `Another ${busy[0].suite} run is still in progress (started ${busy[0].started_at}). Wait for it to finish.`, busy_run_id: busy[0].id }, 409);
     const suite = action === "sender_suite" ? "sender" : action === "conversation_suite" ? "conversation" : action === "quick_suite" ? "quick" : "full";
     const { data: run } = await admin.from("test_runs").insert({ suite, triggered_by: adminId === "backend-token" ? null : adminId }).select("id").single();
     runId = run!.id;
@@ -910,18 +914,10 @@ Deno.serve(async (req) => {
     notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined }),
   }).eq("id", runId);
 
-  // Unattended (scheduled) runs: queue the next chunk from the database with a fresh single-use token;
-  // on the last chunk alert Matt only if anything failed or was flaky.
-  if (body.chain === true) {
-    if (next) {
-      const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
-      if (error) { console.error("[runner] chain failed:", error.message); await sendAlertWhatsApp(`Monty alert: the weekly test run stopped part-way (${error.message}). Run it from /admin/tests.`); }
-    } else if (failed || flaky) {
-      const { data: bad } = await admin.from("test_run_results").select("scenario, status").eq("run_id", runId).neq("status", "pass").limit(5);
-      const msg = `Monty alert: weekly test run - ${failed} failing, ${flaky} flaky out of ${(all ?? []).length}. ${(bad ?? []).map((b) => `${b.status}: ${b.scenario}`).join("; ").slice(0, 600)}. Details on /admin/tests.`;
-      const res = await sendAlertWhatsApp(msg).catch(() => ({ ok: false, channel: "error" }));
-      await admin.from("ops_alerts").insert({ alert_type: "weekly_suite", affected_parents: 0, failure_count: failed + flaky, message: msg, likely_fix: "Open /admin/tests", is_test: false, delivered: res.ok, channel: res.channel });
-    }
+  // Chained runs: queue the next chunk from the database with a fresh single-use token. No WhatsApp alerts for test runs.
+  if (body.chain === true && next) {
+    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
+    if (error) { console.error("[runner] chain failed:", error.message); await admin.from("test_runs").update({ status: "failed", finished_at: new Date().toISOString() }).eq("id", runId); }
   }
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
 });
