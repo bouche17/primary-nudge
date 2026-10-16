@@ -79,6 +79,8 @@ async function resetTestData() {
       await admin.from("children").delete().in("id", kidIds);
     }
   }
+  await admin.from("school_holidays").delete().eq("school_id", TEST_SCHOOL_ID);
+  await admin.from("school_reminders").delete().eq("school_id", TEST_SCHOOL_ID);
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
@@ -124,6 +126,23 @@ async function seedSenderFixtures() {
     extracted_dates: [{ date: "2026-10-07" }], source_type: "whatsapp", child_name: "Harry",
   });
   if (nErr) throw new Error(`seed note failed: ${nErr.message}`);
+  // Holiday fixtures: Wed 21 + Thu 22 Oct 2026 are school holidays (INSET) for the test school.
+  const { error: hErr } = await admin.from("school_holidays").insert({
+    school_id: TEST_SCHOOL_ID, label: "Test INSET days", start_date: "2026-10-21", end_date: "2026-10-22",
+  });
+  if (hErr) throw new Error(`seed holiday failed: ${hErr.message}`);
+  // Packed lunch every Wednesday (normal week 12 Oct + holiday week 19 Oct).
+  const { error: lErr } = await admin.from("weekly_lunch_plans").insert([
+    { child_id: child.id, parent_id: parentId, week_start: "2026-10-12", packed_lunch_days: ["Wednesday"] },
+    { child_id: child.id, parent_id: parentId, week_start: "2026-10-19", packed_lunch_days: ["Wednesday"] },
+  ]);
+  if (lErr) throw new Error(`seed lunch plans failed: ${lErr.message}`);
+  // School reminders: one due Wed 14 Oct (a normal school day), one due Thu 22 Oct (a holiday).
+  const { error: sErr } = await admin.from("school_reminders").insert([
+    { school_id: TEST_SCHOOL_ID, title: "Book fair", emoji: "📚", due_date: "2026-10-14", active: true },
+    { school_id: TEST_SCHOOL_ID, title: "Bring in harvest donations", emoji: "🥫", due_date: "2026-10-22", active: true },
+  ]);
+  if (sErr) throw new Error(`seed school reminders failed: ${sErr.message}`);
 }
 
 // ── Sender scenarios ──
@@ -145,6 +164,9 @@ const SENDER_CASES: SenderCase[] = [
   { name: "Clock change: Mon 26 Oct 7am GMT (nothing due)", period: "morning", now: "2026-10-26T07:00:00Z", expectTarget: "2026-10-26", expect: null },
   { name: "UK date: 23:30 UTC Sat 24 Oct is already Sun 25 in BST", period: "morning", now: "2026-10-24T23:30:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* today"] },
   { name: "UK date: 23:30 UTC Sun 25 Oct is still Sun 25 in GMT", period: "morning", now: "2026-10-25T23:30:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* today"] },
+  { name: "Packed lunch + school reminder sent on a normal school day (Wed 14 Oct)", period: "morning", now: "2026-10-14T06:00:00Z", expectTarget: "2026-10-14", expect: ["Harry needs a packed lunch today", "📚 Book fair"] },
+  { name: "Packed lunch skipped on a holiday (Wed 21 Oct INSET)", period: "morning", now: "2026-10-21T06:00:00Z", expectTarget: "2026-10-21", expect: null },
+  { name: "School reminder skipped on a holiday (Thu 22 Oct INSET)", period: "morning", now: "2026-10-22T06:00:00Z", expectTarget: "2026-10-22", expect: null },
 ];
 
 type Result = { scenario: string; category: string; status: "pass" | "fail" | "flaky"; reply: string | null; reason: string | null; details?: unknown };

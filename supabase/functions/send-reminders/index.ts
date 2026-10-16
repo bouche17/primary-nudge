@@ -457,6 +457,10 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
         .maybeSingle();
 
       if (lunchPlan && lunchPlan.packed_lunch_days?.includes(targetDay)) {
+        // No packed lunch needed on a school holiday (incl. INSET days).
+        if (await isSchoolHoliday(child.school_id, targetDateStr)) {
+          console.log(`[${period}] Skipping packed lunch for ${child.first_name} — ${targetDateStr} is a school holiday`);
+        } else {
         const refId = `lunch_${child.id}_${targetDateStr}_${period}`;
         if (!(await alreadySent(anchorPhone, refId, period, today))) {
           reminderItems.push({
@@ -467,6 +471,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
             refId,
           });
           refIdsToLog.push({ refId, title: "Packed lunch", type: "lunch_plan" });
+        }
         }
       }
 
@@ -482,6 +487,11 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
 
       for (const rem of schoolReminders || []) {
+        // School reminders don't apply on a school holiday (incl. INSET days).
+        if (await isSchoolHoliday(child.school_id, targetDateStr)) {
+          console.log(`[${period}] Skipping school reminder ${rem.id} — ${targetDateStr} is a school holiday`);
+          continue;
+        }
         const refId = `reminder_${rem.id}_${child.id}_${targetDateStr}_${period}`;
         if (await alreadySent(anchorPhone, refId, period, today)) continue;
         reminderItems.push({
