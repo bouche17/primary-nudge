@@ -376,8 +376,16 @@ Deno.serve(async (req: Request) => {
               stillNeed.push(child.first_name);
               continue;
             }
+            // Drop packed-lunch days that fall on a school holiday (incl. INSET).
+            const schoolDays: string[] = [];
+            for (const d of days) {
+              const idx = DAYS.indexOf(d);
+              if (idx === -1) continue;
+              if (await isSchoolHoliday(child.school_id ?? null, getDateForDay(targetMonday, idx))) continue;
+              schoolDays.push(d);
+            }
             const shortDays = DAYS.map((d) => SHORT_DAYS[d]).filter((short) =>
-              days.some((d: string) => SHORT_DAYS[d] === short)
+              schoolDays.some((d: string) => SHORT_DAYS[d] === short)
             );
             planParts.push(
               shortDays.length > 0
