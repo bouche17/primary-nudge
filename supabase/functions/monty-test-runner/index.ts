@@ -273,7 +273,7 @@ async function runOptOutTests(quick = false): Promise<Result[]> {
     const back = await morning();
     const r2 = firstFail(start.data.reply !== OPT_REPLIES.start && `reply: ${start.data.reply}`, await isOptedOut(ph) && "still opted out",
       (back.data.messages ?? []).length !== baseN && `reminders after START: ${(back.data.messages ?? []).length}, want ${baseN}`, (await sendBlockReason(ph)) !== "test_number" && "guard still blocks as opted out");
-    out.push({ scenario: "START → opt-out removed, reminders resume", category: "opt-out", status: r2 ? "fail" : "pass", reply: start.data.reply ?? null, reason: r2 });
+    out.push({ scenario: "START → opt-out removed, reminders resume", category: "opt-out", status: r2 ? "fail" : "pass", reply: start.data.reply ?? null, reason: r2, details: r2 ? { back: back.data, start: start.data, slot_rows: (await admin.from("reminder_log").select("reference_id, period, sent_at").eq("phone_number", ph)).data } : null });
 
     const del = await say("Please delete my data", "opt-out: deletion request");
     const { data: al } = await admin.from("ops_alerts").select("alert_type, message").eq("is_test", true).eq("alert_type", "deletion_request");
