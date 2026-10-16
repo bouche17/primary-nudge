@@ -1421,6 +1421,7 @@ export type Database = {
         Returns: boolean
       }
       queue_suite_chunk: { Args: { _body: Json }; Returns: number }
+      queue_whats_on_shadow: { Args: never; Returns: number }
       rollover_year_groups: { Args: never; Returns: undefined }
       test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }
