@@ -1770,7 +1770,7 @@ async function generateReply(
       const retry = await callClaude({
         model, max_tokens: 2000, messages, tools, tool_choice: { type: "any" },
         system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
-      });
+      }, phone);
       if (!retry.ok) {
         const rt = await retry.text();
         await logClaudeFailure(phone, retry.status, rt, "Claude API - already-claim retry");
