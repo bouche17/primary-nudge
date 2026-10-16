@@ -1,0 +1,179 @@
+// One source of truth for "what's on" for a family. No AI, no writes.
+// computeWhatsOn() is pure (testable without the database); loadFamilyData() does the reading.
+// Stage 1 of the rebuild: built and shadow-compared only — nothing reads this for parents yet.
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+export type WhatsOnKind = "weekly" | "fortnightly" | "one-off" | "school event" | "school reminder" | "lunch";
+export interface WhatsOnItem {
+  date: string;                 // YYYY-MM-DD, UK (Europe/London)
+  childId: string | null;       // null = whole family
+  childName: string | null;
+  title: string;
+  emoji: string;
+  kind: WhatsOnKind;
+  slot: "morning" | "evening" | "both";
+  source: { table: string; id: string };
+}
+
+export interface FamilyData {
+  familyId: string;
+  children: { id: string; first_name: string; school_id: string | null; year_group: string | null }[];
+  childReminders: { id: string; child_id: string; title: string; emoji: string | null; day_of_week: string; reminder_time: string | null; active: boolean | null; recurrence_interval: number | null; anchor_date: string | null }[];
+  lunchPlans: { id: string; child_id: string; week_start: string; packed_lunch_days: string[] }[];
+  schoolReminders: { id: string; school_id: string | null; title: string; emoji: string | null; day_of_week: string | null; due_date: string | null; active: boolean | null }[];
+  schoolEvents: { id: string; school_id: string | null; title: string; start_at: string; year_group: string | null }[];
+  holidays: { school_id: string | null; start_date: string; end_date: string }[];
+  notes: { id: string; summary: string | null; child_name: string | null; extracted_dates: unknown }[];
+  exclusions: { child_id: string; keyword: string }[];
+  allOptedOut?: boolean;        // every family number has sent STOP
+}
+
+const DAY_MS = 86_400_000;
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const noon = (d: string) => new Date(d + "T12:00:00Z").getTime();
+const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+export const ukDate = (ts: string | Date) => new Date(ts).toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+const weekdayOf = (d: string) => WEEKDAYS[new Date(d + "T12:00:00Z").getUTCDay()];
+const mondayOf = (d: string) => { const day = new Date(d + "T12:00:00Z").getUTCDay(); return iso(noon(d) - ((day + 6) % 7) * DAY_MS); };
+const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/** "Y1", "Year 1", "1" → "1"; "Reception"/"R"/"YR" → "R"; "all"/blank → null (everyone). Lists split on , / & "and". */
+export function normaliseYearGroups(v: string | null | undefined): Set<string> | null {
+  if (!v || !v.trim() || /^\s*(all|whole school|everyone)\s*$/i.test(v)) return null;
+  const out = new Set<string>();
+  for (const part of v.split(/,|\/|&|\band\b/i)) {
+    const p = part.trim();
+    if (!p) continue;
+    if (/^(all|whole school)$/i.test(p)) return null;
+    if (/^(reception|r|yr|year\s*r)$/i.test(p)) { out.add("R"); continue; }
+    const m = p.match(/^(?:y(?:ear)?\s*)?(\d{1,2})$/i);
+    if (m) out.add(String(Number(m[1])));
+    else out.add(norm(p));
+  }
+  return out.size ? out : null;
+}
+export function yearGroupMatches(eventYears: string | null, childYear: string | null): boolean {
+  const ev = normaliseYearGroups(eventYears);
+  if (!ev) return true;
+  const kid = normaliseYearGroups(childYear);
+  if (!kid) return false;
+  for (const k of kid) if (ev.has(k)) return true;
+  return false;
+}
+
+export function isHoliday(h: FamilyData["holidays"], schoolId: string | null, date: string) {
+  return h.some((x) => (x.school_id === null || x.school_id === schoolId) && x.start_date <= date && x.end_date >= date);
+}
+
+const KIND_ORDER: WhatsOnKind[] = ["school event", "one-off", "weekly", "fortnightly", "lunch", "school reminder"];
+const SLOT_ORDER = { morning: 0, both: 1, evening: 2 };
+
+export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string): WhatsOnItem[] {
+  if (f.allOptedOut) return [];
+  const items: WhatsOnItem[] = [];
+  const kids = [...f.children].sort((a, b) => a.first_name.localeCompare(b.first_name));
+  const byId = new Map(kids.map((k) => [k.id, k]));
+  const schoolIds = [...new Set(kids.map((k) => k.school_id))];
+  const excluded = (childId: string, title: string) => f.exclusions.some((e) => e.child_id === childId && norm(title).includes(norm(e.keyword)));
+
+  for (let t = noon(fromDate); t <= noon(toDate); t += DAY_MS) {
+    const date = iso(t), weekday = weekdayOf(date);
+
+    for (const r of f.childReminders) {
+      const kid = byId.get(r.child_id);
+      if (!kid || r.active === false || r.day_of_week !== weekday) continue;
+      const interval = r.recurrence_interval ?? 1;
+      if (interval > 1 && r.anchor_date) {
+        const weeks = Math.round((noon(date) - noon(r.anchor_date)) / (7 * DAY_MS));
+        if (((weeks % interval) + interval) % interval !== 0) continue;
+      }
+      if (isHoliday(f.holidays, kid.school_id, date)) continue; // skipped, never moved
+      const slot = r.reminder_time === "morning" || r.reminder_time === "evening" ? r.reminder_time : "both";
+      items.push({ date, childId: kid.id, childName: kid.first_name, title: r.title, emoji: r.emoji || "✅", kind: interval > 1 ? "fortnightly" : "weekly", slot, source: { table: "child_reminders", id: r.id } });
+    }
+
+    const monday = mondayOf(date);
+    for (const p of f.lunchPlans) {
+      const kid = byId.get(p.child_id);
+      if (!kid || p.week_start !== monday || !p.packed_lunch_days?.includes(weekday)) continue;
+      if (isHoliday(f.holidays, kid.school_id, date)) continue;
+      items.push({ date, childId: kid.id, childName: kid.first_name, title: "Packed lunch", emoji: "🥪", kind: "lunch", slot: "both", source: { table: "weekly_lunch_plans", id: p.id } });
+    }
+
+    // School reminders: one per family (no year/class targeting exists on these rows). Skipped only if
+    // every school the family uses is on holiday that day.
+    for (const r of f.schoolReminders) {
+      if (r.active === false) continue;
+      if (r.school_id !== null && !schoolIds.includes(r.school_id)) continue;
+      if (!(r.due_date === date || (!r.due_date && r.day_of_week === weekday))) continue;
+      const relevant = r.school_id === null ? schoolIds : [r.school_id];
+      if (relevant.length && relevant.every((s) => isHoliday(f.holidays, s, date))) continue;
+      items.push({ date, childId: null, childName: null, title: r.title, emoji: r.emoji || "✅", kind: "school reminder", slot: "both", source: { table: "school_reminders", id: r.id } });
+    }
+
+    for (const e of f.schoolEvents) {
+      if (ukDate(e.start_at) !== date) continue;
+      for (const kid of kids) {
+        if (e.school_id !== null && e.school_id !== kid.school_id) continue;
+        if (!yearGroupMatches(e.year_group, kid.year_group)) continue;
+        if (excluded(kid.id, e.title)) continue;
+        items.push({ date, childId: kid.id, childName: kid.first_name, title: e.title, emoji: "🏫", kind: "school event", slot: "both", source: { table: "school_events", id: e.id } });
+      }
+    }
+
+    for (const n of f.notes) {
+      if (!n.summary) continue;
+      const dates = Array.isArray(n.extracted_dates) ? (n.extracted_dates as { date?: string }[]) : [];
+      if (!dates.some((d) => d?.date === date)) continue;
+      const kid = n.child_name ? kids.find((k) => k.first_name.toLowerCase() === n.child_name!.trim().toLowerCase()) : undefined;
+      items.push({ date, childId: kid?.id ?? null, childName: kid?.first_name ?? null, title: n.summary, emoji: "📝", kind: "one-off", slot: "both", source: { table: "parent_notes", id: n.id } });
+    }
+  }
+
+  // Identical items for the same child on the same day appear once (first by kind order wins).
+  const sorted = items.sort((a, b) =>
+    a.date.localeCompare(b.date) || SLOT_ORDER[a.slot] - SLOT_ORDER[b.slot] ||
+    (a.childName ?? "\uffff").localeCompare(b.childName ?? "\uffff") ||
+    KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.title.localeCompare(b.title) || a.source.id.localeCompare(b.source.id));
+  const seen = new Set<string>();
+  return sorted.filter((i) => { const k = `${i.date}|${i.childId ?? "family"}|${norm(i.title)}`; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+/** Reads everything for the family of `userId` (the user plus every linked partner). */
+export async function loadFamilyData(db: SupabaseClient, userId: string, fromDate: string, toDate: string): Promise<FamilyData> {
+  const { data: famIds } = await db.rpc("get_family_user_ids", { _user_id: userId });
+  const ids: string[] = ((famIds ?? []) as unknown[]).map((r: any) => (typeof r === "string" ? r : r.get_family_user_ids ?? r)).filter(Boolean);
+  if (!ids.includes(userId)) ids.push(userId);
+  const familyId = [...ids].sort()[0];
+  const [{ data: children }, { data: profs }] = await Promise.all([
+    db.from("children").select("id, first_name, school_id, year_group").in("parent_id", ids),
+    db.from("profiles").select("phone_number").in("user_id", ids),
+  ]);
+  const kids = children ?? [];
+  const kidIds = kids.map((k) => k.id);
+  const schoolIds = [...new Set(kids.map((k) => k.school_id).filter(Boolean))] as string[];
+  const phones = (profs ?? []).map((p) => p.phone_number).filter(Boolean) as string[];
+  const none = ["00000000-0000-0000-0000-000000000000"];
+  const schoolOr = schoolIds.length ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null` : "school_id.is.null";
+  const fromTs = new Date(noon(fromDate) - 2 * DAY_MS).toISOString(), toTs = new Date(noon(toDate) + 2 * DAY_MS).toISOString();
+  const [cr, lp, sr, se, hol, notes, exc, opted] = await Promise.all([
+    db.from("child_reminders").select("id, child_id, title, emoji, day_of_week, reminder_time, active, recurrence_interval, anchor_date").in("child_id", kidIds.length ? kidIds : none).eq("active", true),
+    db.from("weekly_lunch_plans").select("id, child_id, week_start, packed_lunch_days").in("child_id", kidIds.length ? kidIds : none).gte("week_start", mondayOf(fromDate)).lte("week_start", toDate),
+    db.from("school_reminders").select("id, school_id, title, emoji, day_of_week, due_date, active").eq("active", true).or(schoolOr),
+    schoolIds.length ? db.from("school_events").select("id, school_id, title, start_at, year_group").in("school_id", schoolIds).gte("start_at", fromTs).lte("start_at", toTs) : Promise.resolve({ data: [] }),
+    db.from("school_holidays").select("school_id, start_date, end_date").or(schoolOr).lte("start_date", toDate).gte("end_date", fromDate),
+    phones.length ? db.from("parent_notes").select("id, summary, child_name, extracted_dates").in("phone_number", phones) : Promise.resolve({ data: [] }),
+    db.from("event_exclusions").select("child_id, keyword").in("child_id", kidIds.length ? kidIds : none),
+    phones.length ? db.from("opted_out_numbers").select("phone_number").in("phone_number", phones) : Promise.resolve({ data: [] }),
+  ]);
+  return {
+    familyId, children: kids, childReminders: (cr.data ?? []) as any, lunchPlans: (lp.data ?? []) as any, schoolReminders: (sr.data ?? []) as any,
+    schoolEvents: (se.data ?? []) as any, holidays: (hol.data ?? []) as any, notes: (notes.data ?? []) as any, exclusions: (exc.data ?? []) as any,
+    allOptedOut: phones.length > 0 && (opted.data ?? []).length === phones.length,
+  };
+}
+
+export async function getWhatsOn(db: SupabaseClient, userId: string, fromDate: string, toDate: string) {
+  const data = await loadFamilyData(db, userId, fromDate, toDate);
+  return { familyId: data.familyId, items: computeWhatsOn(data, fromDate, toDate) };
+}
