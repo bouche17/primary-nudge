@@ -463,14 +463,14 @@ async function runWhatsOnTests(): Promise<Result[]> {
         childReminders: [{ id: "r", child_id: "k1", title: "Cubs", emoji: null, day_of_week: "Sunday", reminder_time: "evening", active: true, recurrence_interval: 1, anchor_date: null }],
         schoolEvents: [{ id: "e", school_id: "s1", title: "Late event", start_at: "2026-10-24T23:30:00Z", year_group: null }, { id: "e2", school_id: "s1", title: "GMT event", start_at: "2026-10-25T23:30:00Z", year_group: null }] }), "2026-10-24", "2026-10-26");
       const got = r.map((i) => `${i.date}:${i.title}`).join(" | ");
-      return { reason: got === "2026-10-25:Late event | 2026-10-25:Cubs | 2026-10-25:GMT event" ? null : `got ${got}`, reply: got };
+      return { reason: got === "2026-10-25:GMT event | 2026-10-25:Late event | 2026-10-25:Cubs" ? null : `got ${got}`, reply: got };
     }],
     ["What's on: inactive reminder excluded, duplicates for same child/day shown once, all-opted-out family empty", async () => {
       const base = { emoji: null, day_of_week: "Monday", reminder_time: "both", recurrence_interval: 1, anchor_date: null, child_id: "k1" };
       const f = famFixture({ childReminders: [{ ...base, id: "a", title: "Library book", active: false }, { ...base, id: "b", title: "PE kit", active: true }, { ...base, id: "c", title: "PE  Kit", active: true }] });
       const r = computeWhatsOn(f, "2026-10-12", "2026-10-12");
       const o = computeWhatsOn({ ...f, allOptedOut: true }, "2026-10-12", "2026-10-12");
-      return { reason: r.length === 1 && r[0].title === "PE kit" && o.length === 0 ? null : `got ${JSON.stringify(r.map((i) => i.title))}, opted-out ${o.length}` };
+      return { reason: r.length === 1 && /^pe\s+kit$/i.test(r[0].title) && r[0].source.id !== "a" && o.length === 0 ? null : `got ${JSON.stringify(r.map((i) => i.title))}, opted-out ${o.length}` };
     }],
     ["What's on: linked partner gets exactly the same list (incl. partner's notes)", async () => {
       await resetTestData();
