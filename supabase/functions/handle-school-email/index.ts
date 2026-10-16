@@ -1,4 +1,5 @@
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
+import { recordAiCost } from "../_shared/aiCost.ts";
 import { blockIfTestPhone } from "../_shared/testGuard.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -96,6 +97,7 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
   });
 
   const data = await response.json();
+  await recordAiCost({ functionName: "handle-school-email", purpose: "school-email extraction", model: montyClaudeModel(), usage: data.usage });
   const text = data.content[0].text.trim();
   const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
 
