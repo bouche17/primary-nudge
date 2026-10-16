@@ -29,6 +29,7 @@ interface ReminderItem {
   emoji: string;
   type: "reminder" | "event" | "note" | "announcement";
   refId: string;
+  childId?: string | null; // shadow comparison only
 }
 
 // ── Year group filter ─────────────────────────────────────────────────────────
@@ -292,6 +293,7 @@ interface PlannedMessage {
   message: string;
   itemCount: number;
   refIdsToLog: Array<{ refId: string; title: string; type: string }>;
+  items: ReminderItem[];
 }
 
 interface BuildOptions {
@@ -436,7 +438,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
           title: rem.title,
           emoji: rem.emoji || "✅",
           type: "reminder",
-          refId,
+          refId, childId: child.id,
         });
         refIdsToLog.push({ refId, title: rem.title, type: "child_reminder" });
       }
@@ -468,7 +470,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
             title: "Packed lunch",
             emoji: "🥪",
             type: "reminder",
-            refId,
+            refId, childId: child.id,
           });
           refIdsToLog.push({ refId, title: "Packed lunch", type: "lunch_plan" });
         }
@@ -499,7 +501,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
           title: rem.title,
           emoji: rem.emoji || "✅",
           type: "announcement",
-          refId,
+          refId, childId: child.id,
         });
         refIdsToLog.push({ refId, title: rem.title, type: "weekly" });
       }
@@ -530,7 +532,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
         title: note.summary,
         emoji: "📝",
         type: "note",
-        refId,
+        refId, childId: null,
       });
       refIdsToLog.push({ refId, title: note.summary, type: "note" });
     }
@@ -542,7 +544,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
     for (const phone of familyPhones) {
       if (testMode && phone !== TEST_PHONE_NUMBER) continue;
       if (opts.onlyPhones && !opts.onlyPhones.has(phone)) continue;
-      planned.push({ phone, familyId, message, itemCount: reminderItems.length, refIdsToLog });
+      planned.push({ phone, familyId, message, itemCount: reminderItems.length, refIdsToLog, items: reminderItems });
     }
   }
 
@@ -625,6 +627,8 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
     return jsonRes({
       scope, period, now: now.toISOString(), target_date: targetDateStr, count: planned.length,
       messages: planned.map((p) => ({ phone_last4: p.phone.slice(-4), family: p.familyId.slice(0, 8), message: p.message })),
+      // Dry-run for the what's-on shadow comparison: one entry per family (not per phone), structured items.
+      ...(body.with_items === true ? { families: [...new Map(planned.map((p) => [p.familyId, { items: p.items.map((i) => ({ child_id: i.childId ?? null, child_name: i.childName, title: i.title, type: i.type, ref: i.refId })) }])).values()] } : {}),
     });
   }
 
