@@ -518,11 +518,11 @@ async function deliverReminderMessages(
       continue;
     }
     // Real line breaks only inside the parent's 24h window; otherwise the approved one-line template.
-    const channel = (await inParentWindow(p.phone)) ? "freeform" : "template";
+    let channel: "freeform" | "template" = (await inParentWindow(p.phone)) ? "freeform" : "template";
     let ok = true;
     if (mode === "real") {
       ok = channel === "freeform" ? await sendFreeform(p.phone, p.freeform, period) : false;
-      if (!ok) ok = await sendWhatsApp(p.phone, p.message, period); // freeform failed (or window closed) → template
+      if (!ok) { channel = "template"; ok = await sendWhatsApp(p.phone, p.message, period); } // window closed or free-form failed
     }
     if (ok) {
       for (const { refId, title, type } of p.refIdsToLog) {
