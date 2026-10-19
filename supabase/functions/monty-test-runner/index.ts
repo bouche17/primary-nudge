@@ -876,6 +876,7 @@ const footballCheck = (re: RegExp) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
   const n = noteFor(r2, "Caspian", "2026-10-21", re);
   return firstFail(total(r1) > 0 && `saved before the question was answered: ${JSON.stringify(r1)}`,
     !(/football tournament/i.test(q1) && /different/i.test(q1) && asks(q1)) && `didn't ask the same-thing question: "${q1}"`,
+    !/Caspian's football tournament after school a different one/.test(q1) && `question doesn't use the parent's words: "${q1}"`,
     /which child/i.test(q1 + a) && "asked which child",
     n.length !== 1 && `expected one Caspian note on 21 Oct: ${JSON.stringify(r2.notes)}`, r2.notes.length !== 1 && `extra notes: ${JSON.stringify(r2.notes)}`,
     r2.reminders.length > 0 && "weekly reminder saved", asks(a) && `asked again: "${a}"`, /already on the list/i.test(a) && "said already on the list",
