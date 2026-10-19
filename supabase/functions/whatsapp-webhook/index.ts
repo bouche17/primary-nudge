@@ -841,6 +841,7 @@ interface ToolResult {
   failed?: boolean;     // part of the request failed (may be true alongside ok)
   label?: string;       // parent-facing description of the item
   when?: string;        // parent-facing upcoming reminder timing
+  dupOf?: { text: string; date: string }; // possible duplicate found (not saved): the existing item
 }
 const okResult = (action: ToolAction, summary: string, text: string = summary, failed = false): ToolResult =>
   ({ ok: true, action, summary, text, failed });
@@ -860,10 +861,18 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
   if (failed.length) parts.push(`Sorry, I couldn't save ${failed.map((r) => r.label || "that").join(" or ")} just then — could you send it again? 🙏`);
   if (pendingQuestion) parts.push(pendingQuestion);
   if (!parts.length) {
+    const dup = results.find((r) => r.action === "pending" && r.dupOf);
+    if (dup) return duplicateQuestion(dup);
     if (results.some((r) => r.action === "pending")) return "Just to check before I save it — which child is that for? 😊";
     return "Sorry, I couldn't save that just then — could you send it again? 🙏";
   }
   return parts.join(" ");
+}
+
+/** "I've already got "Y3/4 Football Tournament" on Wednesday 21st. Is Caspian's football tournament a different one I should save too?" */
+function duplicateQuestion(r: ToolResult): string {
+  const item = (r.label || "this").replace(/ for \w+day \d+\w*$/, "");
+  return `I've already got "${r.dupOf!.text}" on ${fmtDayOrdinal(r.dupOf!.date)}. Is ${item} a different one I should save too? 😊`;
 }
 
 /** "Got it, Jude's PE kit for Wednesday 7th is saved ✅" — one short line, built only from real save results. */
@@ -1051,6 +1060,7 @@ async function executeTool(
       : null;
 
     let dupSummary: string | null = null;
+    let dupOf: { text: string; date: string } | undefined;
 
     for (const childName of childNames) {
       const child = childName
@@ -1125,6 +1135,7 @@ async function executeTool(
       if (partial && !confirmNew) {
         await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "ambiguous_asked_parent", match: partial });
         ambiguous.push(`${childName || "the family"} already has "${partial.text}" on ${noteDate}`);
+        dupOf = dupOf ?? { text: partial.text, date: noteDate };
         continue;
       }
       await logDedupDecision({
@@ -1183,7 +1194,7 @@ async function executeTool(
     if (alreadySavedFor.length > 0) {
       return okResult("no_change", `Already saved: ${alreadySavedFor.join(" and ")} — ${dupSummary || newSummary} on ${noteDate}`, text, partFailed);
     }
-    if (ambiguous.length > 0 && !partFailed) return failResult(text, "pending");
+    if (ambiguous.length > 0 && !partFailed) return { ...failResult(text, "pending"), dupOf };
     return failResult(text);
   }
 
@@ -1582,7 +1593,7 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate";
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
@@ -1602,12 +1613,40 @@ async function setPendingAction(phone: string, p: PendingAction | null) {
   await supabase.from("conversations").update({ context: { ...(row.context || {}), pending_action: p } }).eq("id", row.id);
 }
 
+/** A save that hit a possible duplicate becomes a stored "is this a different one?" question; yes saves it with confirm_new. */
+function duplicatePending(results: ToolResult[], items: Array<{ tool: string; args: any }>, sourceText?: string): PendingAction | null {
+  const i = results.findIndex((r) => r.action === "pending" && r.dupOf);
+  if (i < 0 || !items[i]) return null;
+  return { kind: "duplicate", items: [{ tool: items[i].tool, args: { ...items[i].args, confirm_new: true } }], proposed: null,
+    question: duplicateQuestion(results[i]), created_at: nowD().toISOString(), source_text: sourceText };
+}
+const DUP_DIFFERENT = /\b(different|separate|another|not the same|new one|as well|too)\b/i;
+const DUP_SAME = /^\s*(no|nope|nah)\b|\b(same|that'?s (it|the one)|that one|no need|don'?t|do not|leave it)\b/i;
+const DUP_SAVE = /^\s*(yes|yep|yeah|yea|yup|y|sure|ok|okay|please|go on|correct)\b|\b(save|add|keep) (it|that|this)\b/i;
+
 async function tryResolvePendingAction(phone: string, message: string, context: MontyContext): Promise<string | null> {
   const row = await getConversationRow(phone);
   const p: PendingAction | null = row?.context?.pending_action ?? null;
   if (!row || !p) return null;
   if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
+  const childNames = context.children.map((c) => c.first_name);
+
+  if (p.kind === "duplicate") {
+    const save = DUP_DIFFERENT.test(message) || (!DUP_SAME.test(message) && DUP_SAVE.test(message));
+    await setPendingAction(phone, null);
+    if (!save && !DUP_SAME.test(message)) {
+      (context as any).__droppedPending = true;
+      await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
+      return null;
+    }
+    await logDedupDecision({ phone, childName: p.items[0]?.args?.child_name ?? null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500),
+      decision: save ? "duplicate_confirmed_new" : "duplicate_confirmed_same", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
+    if (!save) return "No problem, it's already on the list 👍";
+    const rs: ToolResult[] = [];
+    for (const it of p.items) rs.push(await runSave(it.tool, it.args, context, phone));
+    return nameNotPronoun(buildHonestReply(rs), childNames);
+  }
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -1620,9 +1659,12 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     }
     await setPendingAction(phone, null);
     const picks = p.items.filter((i) => i.tool === (once ? "save_parent_note" : "save_child_reminder"));
+    const chosen = picks.length ? picks : [p.items[0]];
     const rs: ToolResult[] = [];
-    for (const pick of picks.length ? picks : [p.items[0]]) rs.push(await runSave(pick.tool, pick.args, context, phone));
-    return nameNotPronoun(buildHonestReply(rs), context.children.map((c) => c.first_name));
+    for (const pick of chosen) rs.push(await runSave(pick.tool, pick.args, context, phone));
+    const dupP = duplicatePending(rs, chosen, p.source_text);
+    if (dupP) await setPendingAction(phone, dupP);
+    return nameNotPronoun(buildHonestReply(rs, dupP?.question), childNames);
   }
 
   const words = message.trim().split(/\s+/).length;
@@ -1653,6 +1695,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   }
 
   const results: ToolResult[] = [];
+  const resultItems: Array<{ tool: string; args: any } | null> = []; // the save behind each result (null: nothing new tried)
   // One save per distinct item per chosen child (the model may list the same item once per child).
   const seen = new Set<string>();
   const items = p.items.filter((it) => {
@@ -1668,12 +1711,18 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
       const args = { ...item.args, ...(child ? { child_name: child } : {}) };
       if (item.tool === "save_parent_note" && !child) delete args.child_name;
       const d = await decideSave(item.tool, args, p.source_text || "", context, freq);
-      if (d.kind === "existing") { results.push(d.result); continue; }
+      if (d.kind === "existing") { results.push(d.result); resultItems.push(null); continue; }
       if (d.kind === "reject") continue;
       if (d.kind === "ask") { asks.push({ child, d }); continue; }
       const r = await runSave(d.tool, d.args, context, phone);
-      results.push(r);
+      results.push(r); resultItems.push({ tool: d.tool, args: d.args });
     }
+  }
+  // A save that hit a possible duplicate → ask "is this a different one?" (never the which-child fallback).
+  const dupP = asks.length ? null : duplicatePending(results, resultItems as Array<{ tool: string; args: any }>, p.source_text);
+  if (dupP) {
+    await setPendingAction(phone, dupP);
+    return nameNotPronoun(buildHonestReply(results, dupP.question), childNames);
   }
   if (asks.length) {
     // Child now known, but one-off vs weekly isn't: ask once, for every child chosen.
@@ -1683,7 +1732,8 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
       question = question.replace(/^.*? — /, `${itemTitle(asks[0].d.items[1].tool, asks[0].d.items[1].args)} for ${kids.join(" and ")} — `);
     }
     await setPendingAction(phone, { kind: "frequency", items: asks.flatMap((a) => a.d.items), proposed: null, question, created_at: nowD().toISOString(), source_text: p.source_text });
-    const done = results.length ? buildHonestReply(results) + " " : "";
+    const settled = results.filter((r) => r.action !== "pending");
+    const done = settled.length ? buildHonestReply(settled) + " " : "";
     return nameNotPronoun(done + question, context.children.map((c) => c.first_name));
   }
   return nameNotPronoun(buildHonestReply(results), context.children.map((c) => c.first_name));
@@ -1854,6 +1904,12 @@ async function generateReply(
           } else {
             result = await runSave(d.tool, d.args, context, phone);
             structuredResults.push(result);
+            const dupP: PendingAction | null = !pending ? duplicatePending([result], [{ tool: d.tool, args: d.args }], incomingMessage) : null;
+            if (dupP) {
+              // Possible duplicate: store "is this a different one?" so the parent's yes/no is handled in code.
+              pending = dupP;
+              result = { ...result, text: `WAITING_FOR_PARENT: not saved yet — it may already be on the list. Stored for confirmation. Reply with just this question: "${dupP.question}"` };
+            }
           }
         }
       } else {
@@ -1890,8 +1946,8 @@ async function generateReply(
     await setPendingAction(phone, p);
     // The reply must ask the question; it may only confirm things that really saved.
     let reply = text;
-    if (p.kind === "frequency" || p.ask_frequency) {
-      // One-off vs weekly (and, when combined, which child) is always asked in the same clear words.
+    if (p.kind === "frequency" || p.ask_frequency || p.kind === "duplicate") {
+      // One-off vs weekly (and, when combined, which child) and possible duplicates are always asked in the same clear words.
       return await replaceReply(text, structuredResults, phone, "text", "frequency_question", p.question);
     }
     if (CHILD_PRONOUN.test(reply) && p.proposed?.length) {
