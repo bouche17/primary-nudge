@@ -156,18 +156,18 @@ interface SenderCase {
 }
 
 const SENDER_CASES: SenderCase[] = [
-  { name: "Weekday morning (Tue 6 Oct, 7am BST)", period: "morning", now: "2026-10-06T06:00:00Z", expectTarget: "2026-10-06", expect: ["👟 Harry has *PE kit* today"] },
-  { name: "Weekday evening (Tue 6 Oct, 6pm BST) covers Wednesday note", period: "evening", now: "2026-10-06T17:00:00Z", expectTarget: "2026-10-07", expect: ["📝 Harry has gymnastics at 8am tomorrow"] },
-  { name: "Note sent after 6pm appears in next morning (Wed 7 Oct)", period: "morning", now: "2026-10-07T06:00:00Z", expectTarget: "2026-10-07", expect: ["📝 Harry has gymnastics at 8am today"] },
-  { name: "Friday evening covers Saturday item", period: "evening", now: "2026-10-09T17:00:00Z", expectTarget: "2026-10-10", expect: ["🤸 Harry has *Gymnastics* tomorrow"] },
-  { name: "Fortnightly on-week (Thu 8 Oct)", period: "morning", now: "2026-10-08T06:00:00Z", expectTarget: "2026-10-08", expect: ["Harry has Forest School today — they'll need their outdoor kit"] },
+  { name: "Weekday morning (Tue 6 Oct, 7am BST)", period: "morning", now: "2026-10-06T06:00:00Z", expectTarget: "2026-10-06", expect: "Harry: 👟 PE kit" },
+  { name: "Weekday evening (Tue 6 Oct, 6pm BST) covers Wednesday note", period: "evening", now: "2026-10-06T17:00:00Z", expectTarget: "2026-10-07", expect: "Harry: 📝 gymnastics at 8am" },
+  { name: "Note sent after 6pm appears in next morning (Wed 7 Oct)", period: "morning", now: "2026-10-07T06:00:00Z", expectTarget: "2026-10-07", expect: "Harry: 📝 gymnastics at 8am" },
+  { name: "Friday evening covers Saturday item", period: "evening", now: "2026-10-09T17:00:00Z", expectTarget: "2026-10-10", expect: "Harry: 🤸 gymnastics" },
+  { name: "Fortnightly on-week (Thu 8 Oct)", period: "morning", now: "2026-10-08T06:00:00Z", expectTarget: "2026-10-08", expect: "Harry: 🌲 Forest School" },
   { name: "Fortnightly off-week (Thu 15 Oct)", period: "morning", now: "2026-10-15T06:00:00Z", expectTarget: "2026-10-15", expect: null },
-  { name: "Clock change: Sat 24 Oct 6pm BST covers Sunday 25", period: "evening", now: "2026-10-24T17:00:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* tomorrow"] },
-  { name: "Clock change: Sun 25 Oct 7am GMT", period: "morning", now: "2026-10-25T07:00:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* today"] },
+  { name: "Clock change: Sat 24 Oct 6pm BST covers Sunday 25", period: "evening", now: "2026-10-24T17:00:00Z", expectTarget: "2026-10-25", expect: "Harry: 🏊 swimming" },
+  { name: "Clock change: Sun 25 Oct 7am GMT", period: "morning", now: "2026-10-25T07:00:00Z", expectTarget: "2026-10-25", expect: "Harry: 🏊 swimming" },
   { name: "Clock change: Mon 26 Oct 7am GMT (nothing due)", period: "morning", now: "2026-10-26T07:00:00Z", expectTarget: "2026-10-26", expect: null },
-  { name: "UK date: 23:30 UTC Sat 24 Oct is already Sun 25 in BST", period: "morning", now: "2026-10-24T23:30:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* today"] },
-  { name: "UK date: 23:30 UTC Sun 25 Oct is still Sun 25 in GMT", period: "morning", now: "2026-10-25T23:30:00Z", expectTarget: "2026-10-25", expect: ["🏊 Harry has *Swimming* today"] },
-  { name: "Packed lunch + school reminder sent on a normal school day (Wed 14 Oct)", period: "morning", now: "2026-10-14T06:00:00Z", expectTarget: "2026-10-14", expect: ["Harry needs a packed lunch today", "📚 Book fair"] },
+  { name: "UK date: 23:30 UTC Sat 24 Oct is already Sun 25 in BST", period: "morning", now: "2026-10-24T23:30:00Z", expectTarget: "2026-10-25", expect: "Harry: 🏊 swimming" },
+  { name: "UK date: 23:30 UTC Sun 25 Oct is still Sun 25 in GMT", period: "morning", now: "2026-10-25T23:30:00Z", expectTarget: "2026-10-25", expect: "Harry: 🏊 swimming" },
+  { name: "Packed lunch + school reminder sent on a normal school day (Wed 14 Oct)", period: "morning", now: "2026-10-14T06:00:00Z", expectTarget: "2026-10-14", expect: "Harry: 🥪 packed lunch • 📚 book fair" },
   { name: "Packed lunch skipped on a holiday (Wed 21 Oct INSET)", period: "morning", now: "2026-10-21T06:00:00Z", expectTarget: "2026-10-21", expect: null },
   { name: "School reminder skipped on a holiday (Thu 22 Oct INSET)", period: "morning", now: "2026-10-22T06:00:00Z", expectTarget: "2026-10-22", expect: null },
 ];
@@ -516,7 +516,8 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
     else if (c.expect === null && msgs.length > 0) reason = `expected no message, got: ${reply}`;
     else if (c.expect !== null) {
       if (msgs.length !== 1) reason = `expected 1 message, got ${msgs.length}`;
-      else if (reply !== c.expect.join(" | ")) reason = `expected "${c.expect.join(" | ")}", got "${reply}"`;
+      else if (reply !== c.expect) reason = `expected "${c.expect}", got "${reply}"`;
+      else if (/[\r\n]/.test(reply)) reason = "template variable contains a newline";
     }
     results.push({ scenario: c.name, category: "sender", status: reason ? "fail" : "pass", reply, reason, details: { now: c.now, period: c.period } });
   }
