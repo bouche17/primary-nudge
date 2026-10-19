@@ -6,6 +6,7 @@ import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
+import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
 import { formatFreeform, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
 import { computeWhatsOn, getWhatsOn, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
 import { runWhatsOnShadow } from "./shadow.ts";
@@ -516,6 +517,14 @@ function runFormatTests(): Result[] {
       return { got: /[\r\n]/.test(got) ? "CONTAINS NEWLINE: " + got : got, want: "Caspian: 📚 homework due • 🥪 packed lunch • 🪙 change for the Poppy Appeal; Ivy: 👟 PE kit" };
     }],
   ];
+  const em = (o: Partial<SchoolEmailInfo>): SchoolEmailInfo => ({ message: "⚽ The football tournament is on Wednesday 21st October.", yearGroups: ["Year 3", "Year 4"], links: [], ...o });
+  cases.push(
+    ["School email: targeted email starts with the family's children", () => ({ got: buildSchoolMessage(em({}), ["Caspian", "Ivy"]), want: "For Caspian and Ivy: ⚽ The football tournament is on Wednesday 21st October." })],
+    ["School email: whole-school email has no names", () => ({ got: buildSchoolMessage(em({ yearGroups: ["all"] }), ["Caspian"]), want: "⚽ The football tournament is on Wednesday 21st October." })],
+    ["School email: no newlines in the sent text", () => { const got = buildSchoolMessage(em({ message: "📸 Photos on Tuesday.\nOrder by Friday.\r\nThanks" }), ["Caspian"]); return { got: /[\r\n]/.test(got) ? "NEWLINE: " + got : got, want: "For Caspian: 📸 Photos on Tuesday. Order by Friday. Thanks" }; }],
+    ["School email: links appended once (dupes, mailto dropped)", () => ({ got: buildSchoolMessage(em({ yearGroups: ["all"], links: ["https://x.uk/book", "https://x.uk/book", "mailto:a@b.uk"] })), want: "⚽ The football tournament is on Wednesday 21st October. https://x.uk/book" })],
+    ["School email: empty message falls back to a plain sentence", () => ({ got: buildSchoolMessage(em({ message: "", yearGroups: ["all"], what: "School photos", when: "Tuesday 3rd November", cost: null, action: "Order online by Friday 13th November" })), want: "School photos on Tuesday 3rd November. Order online by Friday 13th November." })],
+  );
   return cases.map(([scenario, fn]) => {
     try { const { got, want } = fn(); return { scenario, category: "sender", status: got === want ? "pass" : "fail", reply: got, reason: got === want ? null : `expected ${JSON.stringify(want)}` } as Result; }
     catch (e) { return { scenario, category: "sender", status: "fail", reply: null, reason: (e as Error).message } as Result; }

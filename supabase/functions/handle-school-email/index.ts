@@ -1,6 +1,7 @@
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
-import { blockIfTestPhone } from "../_shared/testGuard.ts";
+import { blockIfTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { buildSchoolMessage, buildOldSchoolMessage } from "../_shared/schoolEmailMessage.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -13,22 +14,13 @@ const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_
 
 const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
 
-// Treat missing/placeholder values as absent: null, undefined, blank, or common filler strings like "null", "N/A", "Not stated"
-const hasValue = (v: any): boolean => {
-  if (v === null || v === undefined) return false;
-  if (typeof v !== "string") return false;
-  const s = v.trim().toLowerCase();
-  if (!s) return false;
-  if (["null", "undefined", "n/a", "na", "none", "not stated", "not specified", "unknown", "tbc", "-"].includes(s)) return false;
-  return true;
-};
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
 async function extractEmailInfo(subject: string, body: string): Promise<{
+  message: string | null;
   tldr: string;
   what: string;
   who: string;
@@ -49,6 +41,7 @@ ${body}
 
 Return this exact JSON structure:
 {
+  "message": "the WhatsApp text parents will read — see the rules below",
   "tldr": "ONE punchy sentence capturing the single most important takeaway — genuinely short, like a headline, NOT a paragraph",
   "what": "short label for the type of event/announcement, e.g. 'Community Cup football tournament'",
   "who": "which year groups this affects, in plain readable form, e.g. 'Year 2, Year 3/4, Year 6' or 'All children' for whole-school",
@@ -60,6 +53,14 @@ Return this exact JSON structure:
 }
 
 Guidelines for each field:
+
+message: Write it like a helpful friend passing on the school email. Plain English, 1 to 3 short sentences, at most about 320 characters (links not counted, and don't put links in it).
+- Lead with what it is and what the parent needs to know, in everyday words. No labels, no "TL;DR", no headings, no "|" separators, no line breaks.
+- Always include, when the email has them: the date or deadline, the cost, and the action. Put any must-do action and its deadline in the final sentence, e.g. "Please book a slot by Friday 23rd October."
+- Mention year groups only when it's not for the whole school, and say it naturally ("for Years 3 and 4").
+- Never invent anything. If the email has no date, cost or action, don't mention them.
+- UK spelling and dates ("Wednesday 21st October"). No exclamation marks, except at most one friendly one. At most one emoji, at the very start, matching the topic (⚽ 📸 🎃 🍽️ 📚 🎒 🏫).
+Examples of the style: "⚽ The Y3/4 mixed football tournament is at Macc FC on Wednesday 21st October after school. Children need their PE kit and a water bottle." / "📸 School photos are on Tuesday 3rd November. Order online by Friday 13th November if you'd like copies." / "🎃 Non-uniform day this Friday for £1, raising money for the PTA's Halloween disco."
 
 tldr: Lead with the point. One short headline-style sentence a parent can scan in a second. Never a paragraph.
 
@@ -103,7 +104,7 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const parsed = JSON.parse(clean);
   // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
-  for (const key of ["cost", "action", "when"] as const) {
+  for (const key of ["cost", "action", "when", "message"] as const) {
     if (parsed[key] !== null && (typeof parsed[key] !== "string" || parsed[key].trim() === "")) {
       parsed[key] = null;
     }
@@ -165,7 +166,18 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { from, subject, rawEmail, test, only_phone } = await req.json();
+    const reqBody = await req.json();
+    const { from, subject, rawEmail, test, only_phone } = reqBody;
+    if (reqBody.dry_run === true) {
+      // Dry run: secret-gated, uses only the sample children passed in, never reads families or sends.
+      const ok = await validTestSecret(req.headers.get("x-monty-test-secret"));
+      await auditTestEntry({ entry_point: "handle-school-email:dry_run", scenario: String(subject ?? "").slice(0, 120), allowed: ok, reason: ok ? "dry_run" : "bad_secret" });
+      if (!ok) return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      const ex = await extractEmailInfo(subject, rawEmail);
+      const sample: { first_name: string; year_group: string }[] = Array.isArray(reqBody.sample_children) ? reqBody.sample_children : [];
+      const names = sample.filter((c) => (ex.yearGroups || []).some((y) => y.toLowerCase() === (c.year_group || "").toLowerCase())).map((c) => c.first_name);
+      return new Response(JSON.stringify({ dry_run: true, extracted: ex, old: buildOldSchoolMessage(ex), new: buildSchoolMessage(ex, names) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
     const testMode = test === true;
     const catchUpPhone = typeof only_phone === "string" ? only_phone.trim() : null;
 
@@ -249,75 +261,35 @@ Deno.serve(async (req: Request) => {
       phonesByFamily.get(fam)!.add(p.phone_number as string);
     }
 
-    // Collect every phone number across all matching families
-    const recipientPhones = new Set<string>();
-    for (const parentId of parentIds) {
-      const fam = find(parentId);
-      for (const phone of phonesByFamily.get(fam) || []) recipientPhones.add(phone);
+    // One message per family: targeted emails start with that family's matching children ("For Caspian: …").
+    const kidsByFamily = new Map<string, string[]>();
+    for (const c of relevantChildren as any[]) {
+      const fam = find(c.parent_id);
+      if (!kidsByFamily.has(fam)) kidsByFamily.set(fam, []);
+      kidsByFamily.get(fam)!.push(c.first_name);
+    }
+    const sends: { phone: string; message: string }[] = [];
+    const seenPhones = new Set<string>();
+    for (const [fam, kids] of kidsByFamily) {
+      const message = buildSchoolMessage(extracted, kids.sort((a, b) => a.localeCompare(b)));
+      for (const phone of phonesByFamily.get(fam) || []) {
+        if (seenPhones.has(phone)) continue;
+        if (testMode && phone !== TEST_PHONE_NUMBER) continue;
+        if (catchUpPhone && phone !== catchUpPhone) continue;
+        seenPhones.add(phone);
+        sends.push({ phone, message });
+      }
     }
 
-    let phones = Array.from(recipientPhones);
-
-    if (testMode) {
-      const beforeCount = phones.length;
-      phones = phones.filter((p) => p === TEST_PHONE_NUMBER);
-      console.log(`[handle-school-email] Test mode: filtered ${beforeCount} recipients down to ${phones.length} test recipient(s)`);
-    }
-
-    if (catchUpPhone) {
-      const beforeCount = phones.length;
-      phones = phones.filter((p) => p === catchUpPhone);
-      console.log(`[handle-school-email] Catch-up mode: filtered ${beforeCount} recipients down to ${phones.length} recipient(s)`);
-    }
-
-    if (phones.length === 0) {
+    if (sends.length === 0) {
       return new Response(JSON.stringify({ message: "No parent phone numbers found" }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Build the message — scannable " | "-separated fields (WhatsApp template vars can't contain real line breaks)
-    // TL;DR is mandatory; every other field is only appended when it has a real value (never "null", "N/A", etc.)
-    let message = `📋 TL;DR: ${extracted.tldr}`;
-    if (hasValue(extracted.what)) {
-      message += ` | What: ${extracted.what}`;
-    }
-    if (hasValue(extracted.who)) {
-      message += ` | Who: ${extracted.who}`;
-    }
-    if (hasValue(extracted.when)) {
-      message += ` | When: ${extracted.when}`;
-    }
-    if (hasValue(extracted.cost)) {
-      message += ` | Cost: ${extracted.cost}`;
-    }
-    if (hasValue(extracted.action)) {
-      message += ` | Action: ${extracted.action}`;
-    }
-    if (extracted.links && extracted.links.length > 0) {
-      // Defensively filter links: drop mailto/tel, drop anything already present in the message text (e.g. an email address already shown in Action), and dedupe.
-      const messageSoFar = message.toLowerCase();
-      const seen = new Set<string>();
-      const usefulLinks = extracted.links.filter((link: string) => {
-        const trimmed = (link || "").trim();
-        if (!trimmed) return false;
-        if (/^(mailto:|tel:)/i.test(trimmed)) return false;
-        const bare = trimmed.replace(/^[a-zA-Z]+:\/\//, "").toLowerCase();
-        if (messageSoFar.includes(trimmed.toLowerCase()) || messageSoFar.includes(bare)) return false;
-        if (seen.has(trimmed.toLowerCase())) return false;
-        seen.add(trimmed.toLowerCase());
-        return true;
-      });
-      if (usefulLinks.length > 0) {
-        message += " " + usefulLinks.join(" ");
-      }
-    }
-
-    // Send to all relevant parents (including linked partner accounts)
     let sentCount = 0;
-    for (const phone of phones) {
-      const ok = await sendWhatsApp(phone, message);
-      if (ok) sentCount++;
+    for (const { phone, message } of sends) {
+      if (await sendWhatsApp(phone, message)) sentCount++;
     }
 
     console.log(`Sent to ${sentCount} parents for year groups: ${extracted.yearGroups.join(", ")}`);

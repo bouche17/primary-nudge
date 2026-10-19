@@ -1708,7 +1708,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
 /** Words that don't make two items the same thing on their own. */
 const GENERIC_EVENT_WORDS = new Set(["tournament", "event", "day", "club", "match", "festival", "session", "competition", "activity", "after", "before",
   "school", "class", "year", "mixed", "morning", "afternoon", "evening", "week", "fc", "team", "practice", "time", "group", "the", "and", "at"]);
-const YEAR_PREFIX = /^\s*((?:y(?:ea)?rs?\s*)?(?:\d{1,2}|r)(?:\s*(?:[,/&]|and)\s*(?:y(?:ea)?r?\s*)?(?:\d{1,2}|r))*|reception)\b/i;
+const YEAR_PREFIX = /^\s*((?:y(?:ea)?r?s?\s*)?(?:\d{1,2}|r)(?:\s*(?:[,/&]|and)\s*(?:y(?:ea)?r?s?\s*)?(?:\d{1,2}|r))*|reception)\b/i;
 /** A school-event overlap needs no question when: explicit year group includes the child's, and a real topic word is shared. Same date is given. */
 function clearSchoolEventMatch(dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): boolean {
   if (dup.table !== "school_events" || !dup.child) return false;
