@@ -1992,6 +1992,12 @@ async function generateReply(
   const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
   const p = pending as PendingAction | null;
   if (!p && dupQuestion) return await replaceReply(text, structuredResults, phone, "text", "duplicate_question", dupQuestion);
+  if (!p && structuredResults.some((r) => r.ok && r.confirm)) {
+    // Clear school-event match: the confirmation is always the code-built line, never the model's wording.
+    const others = structuredResults.filter((r) => !r.confirm);
+    const lines = structuredResults.filter((r) => r.ok && r.confirm).map((r) => r.confirm!);
+    return nameNotPronoun([...(others.length ? [buildHonestReply(others)] : []), ...lines].join(" "), childNames);
+  }
   if (p) {
     await setPendingAction(phone, p);
     // The reply must ask the question; it may only confirm things that really saved.
