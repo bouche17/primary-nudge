@@ -83,6 +83,7 @@ async function resetTestData() {
   }
   await admin.from("school_holidays").delete().eq("school_id", TEST_SCHOOL_ID);
   await admin.from("school_reminders").delete().eq("school_id", TEST_SCHOOL_ID);
+  await admin.from("school_events").delete().eq("school_id", TEST_SCHOOL_ID).like("uid", "monty-test-%");
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
@@ -549,6 +550,7 @@ const FAMILIES: Record<string, { phone: string; kids: { name: string; year: stri
   A: { phone: "+447000000001", kids: [{ name: "Jude", year: "Year 6" }, { name: "Harry", year: "Year 3" }] },
   B: { phone: "+447000000002", kids: [{ name: "Rosa", year: "Year 4" }, { name: "Tom", year: "Year 2" }] },
   C: { phone: "+447000000003", kids: [{ name: "Mila", year: "Year 5" }] },
+  D: { phone: "+447000000004", kids: [{ name: "Caspian", year: "Year 3" }, { name: "Ivy", year: "Year 1" }] },
 };
 const REAL_CONVERSATION_ID = "21634d6e-1eda-4198-b9be-5b8b1d716d54"; // read-only source for the replay test
 const SYSTEM_WORDS = /NOT SAVED|POSSIBLE_DUPLICATE|ALREADY_SAVED|PENDING|TIMING|WAITING_FOR_PARENT|CONFIRM_STORED|ungrounded|tool_result|child_name|recurrence_interval/i;
@@ -558,6 +560,7 @@ interface Seed {
   reminders?: { child: string; title: string; day: string }[];
   notes?: { child: string | null; summary: string; date: string }[];
   lunches?: { child: string; days: string[]; week: string }[];
+  events?: { title: string; start: string }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
 }
@@ -601,6 +604,12 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
       child_id: id(l.child), parent_id: parentId, week_start: l.week, packed_lunch_days: l.days,
     })));
     if (e) throw new Error(`seed lunches: ${e.message}`);
+  }
+  if (seed.events?.length) {
+    const { error: e } = await admin.from("school_events").insert(seed.events.map((ev, i) => ({
+      school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: null, uid: `monty-test-${i}-${Date.now()}`,
+    })));
+    if (e) throw new Error(`seed events: ${e.message}`);
   }
   let history: Msg[] = seed.history ?? [];
   if (seed.realHistory) {
@@ -860,6 +869,27 @@ const HANDLER_CASES: HandlerCase[] = [
       r.failedInbound !== 1 && `failed item not recorded (${r.failedInbound})`, r.inbound < 1 && "inbound message not stored") },
 ];
 
+// ── held as a possible duplicate of a school event (real bug, Sun 18 Oct) ──
+const FOOTBALL_EVENT = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z" };
+const SUN_PM = "2026-10-18T17:28:00Z"; // Sun 18 Oct 18:28 BST
+const footballCheck = (re: RegExp) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
+  const n = noteFor(r2, "Caspian", "2026-10-21", re);
+  return firstFail(total(r1) > 0 && `saved before the question was answered: ${JSON.stringify(r1)}`,
+    !(/football tournament/i.test(q1) && /different/i.test(q1) && asks(q1)) && `didn't ask the same-thing question: "${q1}"`,
+    /which child/i.test(q1 + a) && "asked which child",
+    n.length !== 1 && `expected one Caspian note on 21 Oct: ${JSON.stringify(r2.notes)}`, r2.notes.length !== 1 && `extra notes: ${JSON.stringify(r2.notes)}`,
+    r2.reminders.length > 0 && "weekly reminder saved", asks(a) && `asked again: "${a}"`, /already on the list/i.test(a) && "said already on the list",
+    !/caspian/i.test(a) && "reply doesn't name Caspian", r2.pending !== null && "pending not cleared");
+};
+HANDLER_CASES.push(
+  { name: "Possible duplicate of school event → 'yes please' saves one Caspian note", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
+    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "Yes please" }], check: footballCheck(/football/i) },
+  { name: "Possible duplicate of school event → 'no, it's the same one' still adds it to Caspian's reminders", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
+    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "no, it's the same one" }], check: footballCheck(/Macc FC/i) },
+  { name: "Possible duplicate of school event → 'Please save it for Caspian' saves one note", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
+    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "Please save it for Caspian" }], check: footballCheck(/football/i) },
+);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -872,6 +902,9 @@ const QUICK_NAMES = [
   "General question → nothing saved, no success claim",
   "Forced database failure → warm, specific 'couldn't save', nothing written",
   "'He needs his recorder Friday' (Jude & Harry) → reply uses no he/she/his/her",
+  "Possible duplicate of school event → 'yes please' saves one Caspian note",
+  "Possible duplicate of school event → 'no, it's the same one' still adds it to Caspian's reminders",
+  "Possible duplicate of school event → 'Please save it for Caspian' saves one note",
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;

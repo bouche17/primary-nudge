@@ -841,6 +841,7 @@ interface ToolResult {
   failed?: boolean;     // part of the request failed (may be true alongside ok)
   label?: string;       // parent-facing description of the item
   when?: string;        // parent-facing upcoming reminder timing
+  dup?: { child: string | null; summary: string; date: string; existing: string; table: string }; // save held: overlaps an existing item
 }
 const okResult = (action: ToolAction, summary: string, text: string = summary, failed = false): ToolResult =>
   ({ ok: true, action, summary, text, failed });
@@ -1030,6 +1031,8 @@ async function executeTool(
     const noteDate: string = toolArgs.date;
     const noteChild = toolArgs.child_name || null;
     const confirmNew = toolArgs.confirm_new === true;
+    const skipDedup = toolArgs.__skip_dedup === true; // parent already answered the "is this the same thing?" question
+    let dupInfo: ToolResult["dup"] | undefined;
 
     // If no specific child, save for ALL children
     const childNames: (string | null)[] = noteChild
@@ -1058,7 +1061,7 @@ async function executeTool(
         : null;
       const candidates: Array<{ table: string; id: string; text: string }> = [];
 
-      if (validDate) {
+      if (validDate && !skipDedup) {
         // 1. Existing notes on the same date for the same child
         const { data: existingNotes } = await supabase
           .from("parent_notes")
@@ -1125,6 +1128,7 @@ async function executeTool(
       if (partial && !confirmNew) {
         await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "ambiguous_asked_parent", match: partial });
         ambiguous.push(`${childName || "the family"} already has "${partial.text}" on ${noteDate}`);
+        if (!dupInfo) dupInfo = { child: childName, summary: newSummary, date: noteDate, existing: partial.text, table: partial.table };
         continue;
       }
       await logDedupDecision({
@@ -1183,7 +1187,7 @@ async function executeTool(
     if (alreadySavedFor.length > 0) {
       return okResult("no_change", `Already saved: ${alreadySavedFor.join(" and ")} — ${dupSummary || newSummary} on ${noteDate}`, text, partFailed);
     }
-    if (ambiguous.length > 0 && !partFailed) return failResult(text, "pending");
+    if (ambiguous.length > 0 && !partFailed) { const r = failResult(text, "pending"); r.dup = dupInfo; return r; }
     return failResult(text);
   }
 
@@ -1582,7 +1586,8 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate";
+  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; tool: string; args: any };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
@@ -1608,6 +1613,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (!row || !p) return null;
   if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
+  if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -1672,6 +1678,13 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
       if (d.kind === "reject") continue;
       if (d.kind === "ask") { asks.push({ child, d }); continue; }
       const r = await runSave(d.tool, d.args, context, phone);
+      if (r.action === "pending" && r.dup) {
+        // Child now known, but it overlaps something already on the calendar: ask that, stored as pending.
+        const q = await holdDuplicate(phone, d.tool, d.args, r.dup, p.source_text || message, context);
+        if (q.saved) { results.push(q.saved); continue; }
+        const done = results.length ? buildHonestReply(results) + " " : "";
+        return nameNotPronoun(done + q.question!, context.children.map((c) => c.first_name));
+      }
       results.push(r);
     }
   }
@@ -1687,6 +1700,57 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     return nameNotPronoun(done + question, context.children.map((c) => c.first_name));
   }
   return nameNotPronoun(buildHonestReply(results), context.children.map((c) => c.first_name));
+}
+
+// ── "Is this the same thing?" (save held because it overlaps an existing item) ──
+const dupKey = (d: { child: string | null; date: string; summary: string }) => `${(d.child || "").toLowerCase()}|${d.date}|${d.summary.toLowerCase().trim()}`;
+function duplicateQuestion(d: { child: string | null; summary: string; date: string; existing: string }): string {
+  const item = itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const whose = d.child ? `${d.child}'s ${item}` : `the ${item}`;
+  return `I've already got "${d.existing}" on ${fmtDayOrdinal(d.date)}. Is ${whose} a different one I should save too? 😊`;
+}
+/** Store the duplicate question as pending. If the same question was just asked for this item, save instead (never loop). */
+async function holdDuplicate(phone: string, tool: string, args: any, dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): Promise<{ question?: string; saved?: ToolResult }> {
+  const row = await getConversationRow(phone);
+  const key = dupKey(dup);
+  const last = row?.context?.last_dup_question;
+  if (last?.key === key && nowD().getTime() - new Date(last.at).getTime() < 3600_000) {
+    await logDedupDecision({ phone, childName: dup.child, tool, date: dup.date, newItem: dup.summary, decision: "duplicate_question_loop_prevented_saved", match: { table: dup.table, id: "held", text: dup.existing } });
+    return { saved: await runSave(tool, { ...args, child_name: dup.child ?? args?.child_name, __skip_dedup: true }, context, phone) };
+  }
+  const question = duplicateQuestion(dup);
+  if (row) {
+    await supabase.from("conversations").update({ context: { ...(row.context || {}),
+      last_dup_question: { key, at: nowD().toISOString() },
+      pending_action: { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
+        dup: { ...dup, tool, args } } satisfies PendingAction } }).eq("id", row.id);
+  }
+  return { question };
+}
+async function resolveDuplicatePending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const d = p.dup!;
+  const m = message.trim();
+  const same = /\b(same|that one|that'?s it|it is|it'?s that)\b/i.test(m) || /^\s*(no|nope|nah)\b/i.test(m);
+  const different = !same && (/^\s*(yes|yep|yeah|yea|yup|sure|ok|okay|please)\b/i.test(m) || /\b(different|another|separate|save it|please save|save that|save)\b/i.test(m));
+  const names = context.children.map((c) => c.first_name);
+  if (!same && !different) {
+    await setPendingAction(phone, null);
+    await logDedupDecision({ phone, childName: d.child, tool: "pending_action", newItem: d.summary, decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: m.slice(0, 300) } });
+    return null;
+  }
+  await setPendingAction(phone, null);
+  const named = names.find((n) => new RegExp(`\\b${n}\\b`, "i").test(m));
+  const child = d.child || named || d.args?.child_name || null;
+  const args = { ...d.args, ...(child ? { child_name: child } : {}), __skip_dedup: true,
+    ...(same ? { summary: d.existing } : {}) };
+  const r = await runSave(d.tool, args, context, phone);
+  await logDedupDecision({ phone, childName: child, tool: d.tool, date: d.date, newItem: d.summary, decision: same ? "duplicate_answer_same_saved_reminder" : "duplicate_answer_different_saved", match: { table: d.table, id: "held", text: d.existing } });
+  if (!r.ok) return nameNotPronoun(buildHonestReply([r]), names);
+  const item = itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const weekday = new Date(`${d.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+  return same
+    ? `That's the same one, I've added it to ${child ? `${child}'s` : "your"} reminders for ${weekday} 👍`
+    : `Got it, I've saved ${child ? `${child}'s ` : "the "}${item} for ${fmtDayOrdinal(d.date)} ✅`;
 }
 
 /** Single place every save goes through (forced DB failure switch for tests lives here). */
@@ -1786,6 +1850,7 @@ async function generateReply(
   const pluralMsg = PLURAL_CHILDREN.test(incomingMessage);
   const namesInGrounding = childNames.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(grounding));
   let pending: PendingAction | null = null;
+  let dupQuestion: string | null = null;
   const addPending = (kind: PendingAction["kind"], items: PendingAction["items"], proposed: string[] | null, question: string) => {
     if (!pending) pending = { kind, items: [], proposed, question, created_at: nowD().toISOString(), source_text: incomingMessage };
     pending.items.push(...items);
@@ -1853,7 +1918,11 @@ async function generateReply(
             testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: false, action: "frequency_asked", text: result.text });
           } else {
             result = await runSave(d.tool, d.args, context, phone);
-            structuredResults.push(result);
+            if (result.action === "pending" && result.dup && !pending) {
+              const h = await holdDuplicate(phone, d.tool, d.args, result.dup, incomingMessage, context);
+              if (h.saved) { result = h.saved; structuredResults.push(result); }
+              else { dupQuestion = h.question!; result = { ...result, text: `WAITING_FOR_PARENT: not saved yet — overlaps an existing item. Stored for confirmation. Reply with just this question: "${h.question}"` }; }
+            } else structuredResults.push(result);
           }
         }
       } else {
@@ -1886,6 +1955,7 @@ async function generateReply(
 
   const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
   const p = pending as PendingAction | null;
+  if (!p && dupQuestion) return await replaceReply(text, structuredResults, phone, "text", "duplicate_question", dupQuestion);
   if (p) {
     await setPendingAction(phone, p);
     // The reply must ask the question; it may only confirm things that really saved.
