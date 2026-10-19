@@ -6,6 +6,7 @@ import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
+import { formatFreeform, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
 import { computeWhatsOn, getWhatsOn, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
 import { runWhatsOnShadow } from "./shadow.ts";
 
@@ -152,7 +153,7 @@ async function seedSenderFixtures() {
 
 interface SenderCase {
   name: string; period: "morning" | "evening"; now: string;
-  expectTarget: string; expect: string[] | null; // null = expect no message
+  expectTarget: string; expect: string | null; // template variable (one line); null = expect no message
 }
 
 const SENDER_CASES: SenderCase[] = [
@@ -499,10 +500,33 @@ async function runWhatsOnTests(): Promise<Result[]> {
   return out;
 }
 
+// ── Morning/evening layout — pure tests (no AI, no database) ──
+function runFormatTests(): Result[] {
+  const it = (childName: string, title: string, emoji: string, type: FmtItem["type"] = "reminder"): FmtItem => ({ childName, title, emoji, type });
+  const today = [it("Caspian", "Homework needed", "📝"), it("Caspian", "Packed lunch", ""), it("Caspian", "Caspian needs change for the Poppy Appeal", "📝", "note")];
+  const cases: [string, () => { got: string; want: string }][] = [
+    ["Reminder layout: one child, three items (window open)", () => ({ got: formatFreeform(today, "morning"),
+      want: "Good morning! ☀️ Here's what's on today:\n📚 Caspian: homework due\n🥪 Caspian: packed lunch\n🪙 Caspian: change for the Poppy Appeal\nHave a great day!" })],
+    ["Reminder layout: two children grouped by child (window open)", () => ({ got: formatFreeform([it("Ivy", "Reading books returned", "📖"), it("Caspian", "PE kit", "👟"), it("Ivy", "Packed lunch", "🥪")], "evening"),
+      want: "Good evening! 🌙 A few things to get ready for tomorrow:\n📖 Ivy: reading books returned\n🥪 Ivy: packed lunch\n👟 Caspian: PE kit\nHope you have a lovely evening!" })],
+    ["Reminder layout: item with no emoji gets a default by type", () => ({ got: formatFreeform([it("Caspian", "Harvest festival", "", "event"), it("Caspian", "Bring a jumper", "", "reminder")], "morning"),
+      want: "Good morning! ☀️ Here's what's on today:\n🏫 Caspian: harvest festival\n✅ Caspian: bring a jumper\nHave a great day!" })],
+    ["Reminder layout: template path is one line, no newlines", () => {
+      const got = formatTemplateVar([...today, it("Ivy", "PE kit", "👟")]);
+      return { got: /[\r\n]/.test(got) ? "CONTAINS NEWLINE: " + got : got, want: "Caspian: 📚 homework due • 🥪 packed lunch • 🪙 change for the Poppy Appeal; Ivy: 👟 PE kit" };
+    }],
+  ];
+  return cases.map(([scenario, fn]) => {
+    try { const { got, want } = fn(); return { scenario, category: "sender", status: got === want ? "pass" : "fail", reply: got, reason: got === want ? null : `expected ${JSON.stringify(want)}` } as Result; }
+    catch (e) { return { scenario, category: "sender", status: "fail", reply: null, reason: (e as Error).message } as Result; }
+  });
+}
+
 async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
   const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
   results.push(...(await runWhatsOnTests()));
+  results.push(...runFormatTests());
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
@@ -873,23 +897,33 @@ const HANDLER_CASES: HandlerCase[] = [
 // ── held as a possible duplicate of a school event (real bug, Sun 18 Oct) ──
 const FOOTBALL_EVENT = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z" };
 const SUN_PM = "2026-10-18T17:28:00Z"; // Sun 18 Oct 18:28 BST
-const footballCheck = (re: RegExp) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
-  const n = noteFor(r2, "Caspian", "2026-10-21", re);
-  return firstFail(total(r1) > 0 && `saved before the question was answered: ${JSON.stringify(r1)}`,
-    !(/football tournament/i.test(q1) && /different/i.test(q1) && asks(q1)) && `didn't ask the same-thing question: "${q1}"`,
-    !/Caspian's football tournament after school a different one/.test(q1) && `question doesn't use the parent's words: "${q1}"`,
+const SCHOOL_EVENT_Y5 = { title: "Y5 Football Tournament", start: "2026-10-21T14:00:00Z" };
+const SCHOOL_EVENT_NO_TOPIC = { title: "Y3/4 Mixed Tournament @ Macc FC", start: "2026-10-21T14:00:00Z" };
+const CASPIAN_MSG = "Caspian has a football tournament after school on Wednesday";
+/** Clear match (Year 3 on a Y3/4 event, same day, shared "football"): saves at once, no question. */
+const clearMatchCheck = ([r]: Rows[], [a]: string[]) => {
+  const n = noteFor(r, "Caspian", "2026-10-21", /Macc FC/i);
+  return firstFail(n.length !== 1 && `expected one Caspian note on 21 Oct under the school event's title: ${JSON.stringify(r.notes)}`,
+    r.notes.length !== 1 && `extra notes: ${JSON.stringify(r.notes)}`, r.reminders.length > 0 && "weekly reminder saved",
+    asks(a) && `asked a question: "${a}"`, !/caspian/i.test(a) && "reply doesn't name Caspian", !/✅/.test(a) && `not the short confirmation: "${a}"`,
+    r.pending !== null && "left a pending question");
+};
+/** Real doubt: must ask the stored "different one?" question first, then save exactly one note. */
+const stillAsksCheck = (eventRe: RegExp) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
+  const n = noteFor(r2, "Caspian", "2026-10-21", /football/i);
+  return firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`,
+    !(eventRe.test(q1) && /different/i.test(q1) && asks(q1)) && `didn't ask the same-thing question: "${q1}"`,
     /which child/i.test(q1 + a) && "asked which child",
     n.length !== 1 && `expected one Caspian note on 21 Oct: ${JSON.stringify(r2.notes)}`, r2.notes.length !== 1 && `extra notes: ${JSON.stringify(r2.notes)}`,
-    r2.reminders.length > 0 && "weekly reminder saved", asks(a) && `asked again: "${a}"`, /already on the list/i.test(a) && "said already on the list",
-    !/caspian/i.test(a) && "reply doesn't name Caspian", r2.pending !== null && "pending not cleared");
+    asks(a) && `asked again: "${a}"`, r2.pending !== null && "pending not cleared");
 };
 HANDLER_CASES.push(
-  { name: "Possible duplicate of school event → 'yes please' saves one Caspian note", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
-    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "Yes please" }], check: footballCheck(/football/i) },
-  { name: "Possible duplicate of school event → 'no, it's the same one' still adds it to Caspian's reminders", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
-    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "no, it's the same one" }], check: footballCheck(/Macc FC/i) },
-  { name: "Possible duplicate of school event → 'Please save it for Caspian' saves one note", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
-    steps: [{ message: "Caspian has a football tournament after school on Wednesday" }, { message: "Please save it for Caspian" }], check: footballCheck(/football/i) },
+  { name: "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
+    steps: [{ message: CASPIAN_MSG }], check: clearMatchCheck },
+  { name: "School event for another year (Y5) → still asks, 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_Y5] },
+    steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Y5 Football/i) },
+  { name: "School event with no shared topic word → still asks, 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
+    steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Mixed Tournament/i) },
 );
 
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
@@ -904,9 +938,9 @@ const QUICK_NAMES = [
   "General question → nothing saved, no success claim",
   "Forced database failure → warm, specific 'couldn't save', nothing written",
   "'He needs his recorder Friday' (Jude & Harry) → reply uses no he/she/his/her",
-  "Possible duplicate of school event → 'yes please' saves one Caspian note",
-  "Possible duplicate of school event → 'no, it's the same one' still adds it to Caspian's reminders",
-  "Possible duplicate of school event → 'Please save it for Caspian' saves one note",
+  "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question",
+  "School event for another year (Y5) → still asks, 'yes please' saves one note",
+  "School event with no shared topic word → still asks, 'yes please' saves one note",
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;
