@@ -5,6 +5,7 @@ import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_sha
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
+import { normaliseYearGroups, yearGroupMatches } from "../_shared/whatsOn.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -841,7 +842,8 @@ interface ToolResult {
   failed?: boolean;     // part of the request failed (may be true alongside ok)
   label?: string;       // parent-facing description of the item
   when?: string;        // parent-facing upcoming reminder timing
-  dup?: { child: string | null; summary: string; date: string; existing: string; table: string }; // save held: overlaps an existing item
+  confirm?: string;     // code-built confirmation that replaces the generic line (clear school-event match)
+  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null }; // save held: overlaps an existing item
 }
 const okResult = (action: ToolAction, summary: string, text: string = summary, failed = false): ToolResult =>
   ({ ok: true, action, summary, text, failed });
@@ -869,6 +871,7 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
 
 /** "Got it, Jude's PE kit for Wednesday 7th is saved ✅" — one short line, built only from real save results. */
 function confirmationLine(saved: ToolResult[]): string {
+  if (saved.length === 1 && saved[0].confirm) return saved[0].confirm;
   const labels = [...new Set(saved.map((r) => r.label || "that"))];
   const list = labels.length <= 1 ? labels.join("") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
   return `Got it, ${list} ${labels.length > 1 ? "are" : "is"} saved ✅`;
@@ -1059,7 +1062,7 @@ async function executeTool(
       const child = childName
         ? context.children.find((c) => c.first_name.toLowerCase() === childName.toLowerCase())
         : null;
-      const candidates: Array<{ table: string; id: string; text: string }> = [];
+      const candidates: Array<{ table: string; id: string; text: string; yg?: string | null }> = [];
 
       if (validDate && !skipDedup) {
         // 1. Existing notes on the same date for the same child
@@ -1096,9 +1099,8 @@ async function executeTool(
             .gte("start_at", `${noteDate}T00:00:00.000Z`)
             .lte("start_at", `${noteDate}T23:59:59.999Z`);
           for (const ev of events ?? []) {
-            const yg = (ev.year_group || "all").toLowerCase();
-            if (child && yg !== "all" && !yg.includes((child.year_group || "").toLowerCase())) continue;
-            candidates.push({ table: "school_events", id: ev.id, text: ev.title || "" });
+            // Year group is judged later (clear match → save directly; different year → ask).
+            candidates.push({ table: "school_events", id: ev.id, text: ev.title || "", yg: ev.year_group ?? null });
           }
           const { data: schoolRems } = await supabase
             .from("school_reminders")
@@ -1128,7 +1130,7 @@ async function executeTool(
       if (partial && !confirmNew) {
         await logDedupDecision({ phone, childName, tool: toolName, date: noteDate, newItem: newSummary, decision: "ambiguous_asked_parent", match: partial });
         ambiguous.push(`${childName || "the family"} already has "${partial.text}" on ${noteDate}`);
-        if (!dupInfo) dupInfo = { child: childName, summary: newSummary, date: noteDate, existing: partial.text, table: partial.table };
+        if (!dupInfo) dupInfo = { child: childName, summary: newSummary, date: noteDate, existing: partial.text, table: partial.table, yearGroup: partial.yg ?? null };
         continue;
       }
       await logDedupDecision({
@@ -1587,7 +1589,7 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface PendingAction {
   kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate";
-  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; tool: string; args: any; item?: string };
+  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
@@ -1703,6 +1705,22 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
 }
 
 // ── "Is this the same thing?" (save held because it overlaps an existing item) ──
+/** Words that don't make two items the same thing on their own. */
+const GENERIC_EVENT_WORDS = new Set(["tournament", "event", "day", "club", "match", "festival", "session", "competition", "activity", "after", "before",
+  "school", "class", "year", "mixed", "morning", "afternoon", "evening", "week", "fc", "team", "practice", "time", "group", "the", "and", "at"]);
+const YEAR_PREFIX = /^\s*((?:y(?:ea)?rs?\s*)?(?:\d{1,2}|r)(?:\s*(?:[,/&]|and)\s*(?:y(?:ea)?r?\s*)?(?:\d{1,2}|r))*|reception)\b/i;
+/** A school-event overlap needs no question when: explicit year group includes the child's, and a real topic word is shared. Same date is given. */
+function clearSchoolEventMatch(dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): boolean {
+  if (dup.table !== "school_events" || !dup.child) return false;
+  const kid = context.children.find((c) => c.first_name.toLowerCase() === dup.child!.toLowerCase());
+  if (!kid?.year_group) return false;
+  const eventYears = dup.yearGroup || dup.existing.match(YEAR_PREFIX)?.[1] || null;
+  if (!normaliseYearGroups(eventYears) || !yearGroupMatches(eventYears, kid.year_group)) return false;
+  const names = context.children.map((c) => c.first_name);
+  const ev = itemTokens(dup.existing, names);
+  const mine = new Set([...itemTokens(dup.summary, names), ...itemTokens(sourceText, names)]);
+  return [...ev].some((w) => mine.has(w) && !GENERIC_EVENT_WORDS.has(w) && w.length >= 3);
+}
 const dupKey = (d: { child: string | null; date: string; summary: string }) => `${(d.child || "").toLowerCase()}|${d.date}|${d.summary.toLowerCase().trim()}`;
 /** The held item in the parent's own words ("football tournament after school"), not the model's rewrite. */
 function heldItemText(d: { child: string | null; summary: string }, sourceText: string): string {
@@ -1718,6 +1736,16 @@ function duplicateQuestion(d: { child: string | null; summary: string; date: str
 }
 /** Store the duplicate question as pending. If the same question was just asked for this item, save instead (never loop). */
 async function holdDuplicate(phone: string, tool: string, args: any, dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): Promise<{ question?: string; saved?: ToolResult }> {
+  if (clearSchoolEventMatch(dup, sourceText, context)) {
+    // Same date, the child's year group is on the event, and a shared topic word: no question, save under the event's title.
+    await logDedupDecision({ phone, childName: dup.child, tool, date: dup.date, newItem: dup.summary, decision: "school_event_clear_match_saved", match: { table: dup.table, id: "held", text: dup.existing } });
+    const r = await runSave(tool, { ...args, child_name: dup.child, summary: dup.existing, __skip_dedup: true }, context, phone);
+    if (r.ok) {
+      const weekday = new Date(`${dup.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+      r.confirm = `That's "${dup.existing.replace(/\s*@\s*/g, " at ")}" from school. I've added it to ${dup.child}'s reminders for ${weekday} ✅`;
+    }
+    return { saved: r };
+  }
   const row = await getConversationRow(phone);
   const key = dupKey(dup);
   const last = row?.context?.last_dup_question;
