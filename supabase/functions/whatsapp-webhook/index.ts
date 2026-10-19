@@ -1587,7 +1587,7 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface PendingAction {
   kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate";
-  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; tool: string; args: any };
+  dup?: { child: string | null; summary: string; date: string; existing: string; table: string; tool: string; args: any; item?: string };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
@@ -1704,8 +1704,15 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
 
 // ── "Is this the same thing?" (save held because it overlaps an existing item) ──
 const dupKey = (d: { child: string | null; date: string; summary: string }) => `${(d.child || "").toLowerCase()}|${d.date}|${d.summary.toLowerCase().trim()}`;
-function duplicateQuestion(d: { child: string | null; summary: string; date: string; existing: string }): string {
-  const item = itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+/** The held item in the parent's own words ("football tournament after school"), not the model's rewrite. */
+function heldItemText(d: { child: string | null; summary: string }, sourceText: string): string {
+  const who = d.child ? d.child.replace(/[^A-Za-z'-]/g, "") : "\\w+";
+  const m = (sourceText || "").match(new RegExp(String.raw`\b${who}\s+(?:has got|has|needs to bring|needs|is having|is doing|is)\s+(?:a|an|the|his|her|their)?\s*(.+?)(?:\s+(?:on|this|next)\s+\w+day\b.*|\s+(?:tomorrow|today)\b.*)?[.!?\s]*$`, "i"));
+  const t = (m?.[1] || itemTitle("save_parent_note", { summary: d.summary })).trim();
+  return t.charAt(0).toLowerCase() + t.slice(1);
+}
+function duplicateQuestion(d: { child: string | null; summary: string; date: string; existing: string; item?: string }): string {
+  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
   const whose = d.child ? `${d.child}'s ${item}` : `the ${item}`;
   return `I've already got "${d.existing}" on ${fmtDayOrdinal(d.date)}. Is ${whose} a different one I should save too? 😊`;
 }
@@ -1718,12 +1725,13 @@ async function holdDuplicate(phone: string, tool: string, args: any, dup: NonNul
     await logDedupDecision({ phone, childName: dup.child, tool, date: dup.date, newItem: dup.summary, decision: "duplicate_question_loop_prevented_saved", match: { table: dup.table, id: "held", text: dup.existing } });
     return { saved: await runSave(tool, { ...args, child_name: dup.child ?? args?.child_name, __skip_dedup: true }, context, phone) };
   }
-  const question = duplicateQuestion(dup);
+  const item = heldItemText(dup, sourceText);
+  const question = duplicateQuestion({ ...dup, item });
   if (row) {
     await supabase.from("conversations").update({ context: { ...(row.context || {}),
       last_dup_question: { key, at: nowD().toISOString() },
       pending_action: { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
-        dup: { ...dup, tool, args } } satisfies PendingAction } }).eq("id", row.id);
+        dup: { ...dup, item, tool, args } } satisfies PendingAction } }).eq("id", row.id);
   }
   return { question };
 }
@@ -1742,11 +1750,11 @@ async function resolveDuplicatePending(phone: string, p: PendingAction, message:
   const named = names.find((n) => new RegExp(`\\b${n}\\b`, "i").test(m));
   const child = d.child || named || d.args?.child_name || null;
   const args = { ...d.args, ...(child ? { child_name: child } : {}), __skip_dedup: true,
-    ...(same ? { summary: d.existing } : {}) };
+    summary: same ? d.existing : (d.item ? (child ? `${child}'s ${d.item}` : d.item) : d.summary) };
   const r = await runSave(d.tool, args, context, phone);
   await logDedupDecision({ phone, childName: child, tool: d.tool, date: d.date, newItem: d.summary, decision: same ? "duplicate_answer_same_saved_reminder" : "duplicate_answer_different_saved", match: { table: d.table, id: "held", text: d.existing } });
   if (!r.ok) return nameNotPronoun(buildHonestReply([r]), names);
-  const item = itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
   const weekday = new Date(`${d.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   return same
     ? `That's the same one, I've added it to ${child ? `${child}'s` : "your"} reminders for ${weekday} 👍`
