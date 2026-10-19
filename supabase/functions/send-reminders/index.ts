@@ -1,5 +1,6 @@
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { filterOptedOut } from "../_shared/optOut.ts";
+import { formatTemplateVar, formatFreeform } from "../_shared/reminderFormat.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -180,83 +181,31 @@ async function logReminder(phone: string, type: string, refId: string, title: st
 
 // ── Message builder ───────────────────────────────────────────────────────────
 
-function joinNames(names: string[]): string {
-  const unique = Array.from(new Set(names));
-  if (unique.length === 0) return "";
-  if (unique.length === 1) return unique[0];
-  if (unique.length === 2) return `${unique[0]} and ${unique[1]}`;
-  return `${unique.slice(0, -1).join(", ")} and ${unique[unique.length - 1]}`;
+// Layout lives in _shared/reminderFormat.ts (formatTemplateVar / formatFreeform).
+
+/** Parent messaged Monty in the last 23.5h → WhatsApp allows free-form text (with line breaks). */
+async function inParentWindow(phone: string): Promise<boolean> {
+  const { data: convo } = await supabase.from("conversations").select("id").eq("phone_number", phone).maybeSingle();
+  if (!convo) return false;
+  const { data: last } = await supabase.from("messages").select("created_at").eq("conversation_id", convo.id)
+    .eq("direction", "inbound").order("created_at", { ascending: false }).limit(1);
+  return !!last?.[0] && Date.now() - new Date(last[0].created_at).getTime() < 23.5 * 3600_000;
 }
 
-function isPluralSubject(name: string): boolean {
-  const lower = name.toLowerCase().trim();
-  if (lower === "the children" || lower === "the kids") return true;
-  return / and /.test(lower) || /,/.test(lower);
-}
-
-function buildConsolidatedMessage(items: ReminderItem[], period: "morning" | "evening"): string {
-  const groups = new Map<string, { item: ReminderItem; names: string[] }>();
-  const order: string[] = [];
-  for (const item of items) {
-    const key =
-      item.type === "note"
-        ? `note:${item.refId}`
-        : `${item.type}:${item.emoji}:${item.title.toLowerCase()}`;
-    if (!groups.has(key)) {
-      groups.set(key, { item, names: [item.childName] });
-      order.push(key);
-    } else {
-      groups.get(key)!.names.push(item.childName);
-    }
+async function sendFreeform(to: string, body: string, period: "morning" | "evening"): Promise<boolean> {
+  if (await blockIfTestPhone(to, "send-reminders")) return true;
+  const params = new URLSearchParams({ To: `whatsapp:${to}`, From: `whatsapp:${TWILIO_WHATSAPP_NUMBER}`, Body: body.slice(0, 1500),
+    StatusCallback: `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=send-reminders` });
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: "POST", headers: { Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`), "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  const txt = await res.text();
+  if (!res.ok) {
+    console.error(`[${period}] free-form send failed, falling back to template:`, res.status, txt.slice(0, 300));
+    try { await supabase.from("message_send_failures").insert({ function_name: "send-reminders", phone_number: to, period, status_code: res.status, error_body: txt, context: "free-form (24h window) — fell back to template" }); } catch { /* ignore */ }
   }
-
-  return order
-    .map((key) => {
-      const { item, names } = groups.get(key)!;
-      const merged: ReminderItem = { ...item, childName: joinNames(names) };
-      return buildItemLine(merged, period);
-    })
-    .join(" | ");
-}
-
-function buildItemLine(item: ReminderItem, period: "morning" | "evening"): string {
-  const { childName, title, emoji, type } = item;
-  const when = period === "evening" ? "tomorrow" : "today";
-  const plural = isPluralSubject(childName);
-  const hasHave = plural ? "have" : "has";
-  const needsNeed = plural ? "need" : "needs";
-
-  if (type === "announcement") {
-    return `${emoji} ${title}`;
-  }
-
-  // Notes are already complete sentences (from parent_notes.summary) — never wrap them in the generic template
-  if (type === "note") {
-    const cleanSummary = title.replace(/\.+\s*$/, "");
-    const mentionsChild =
-      childName === "the children" ||
-      new RegExp(`\\b${childName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(cleanSummary);
-    if (mentionsChild) {
-      return `${emoji} ${cleanSummary} ${when}`;
-    }
-    return `${emoji} ${childName}: ${cleanSummary} ${when}`;
-  }
-
-  if (type === "event") {
-    return `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
-  }
-
-  const actionMap: Record<string, string> = {
-    "PE kit needed": `Don't forget ${childName}'s PE kit ${when}`,
-    "Packed lunch": `${childName} ${needsNeed} a packed lunch ${when}`,
-    "Reading books returned": `${childName}'s reading book ${needsNeed} to go in their bag ${when}`,
-    "Dinner money due": `Dinner money is due for ${childName} ${when}`,
-    "Forest School": `${childName} ${hasHave} Forest School ${when} — they'll need their outdoor kit`,
-    "Homework due": `${childName}'s homework is due ${when}`,
-  };
-
-  const action = actionMap[title] || `${emoji} ${childName} ${hasHave} *${title}* ${when}`;
-  return action;
+  return res.ok;
 }
 
 // ── Main send logic ───────────────────────────────────────────────────────────
@@ -290,7 +239,8 @@ async function releaseSlot(phone: string, targetDateStr: string, period: string)
 interface PlannedMessage {
   phone: string;
   familyId: string;
-  message: string;
+  message: string;   // template variable {{1}}: one line, no newlines
+  freeform: string;  // full message with line breaks, used only inside the parent's 24h window
   itemCount: number;
   refIdsToLog: Array<{ refId: string; title: string; type: string }>;
   items: ReminderItem[];
@@ -539,12 +489,13 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
     if (reminderItems.length === 0) continue;
 
-    const message = buildConsolidatedMessage(reminderItems, period);
+    const message = formatTemplateVar(reminderItems);
+    const freeform = formatFreeform(reminderItems, period);
 
     for (const phone of familyPhones) {
       if (testMode && phone !== TEST_PHONE_NUMBER) continue;
       if (opts.onlyPhones && !opts.onlyPhones.has(phone)) continue;
-      planned.push({ phone, familyId, message, itemCount: reminderItems.length, refIdsToLog, items: reminderItems });
+      planned.push({ phone, familyId, message, freeform, itemCount: reminderItems.length, refIdsToLog, items: reminderItems });
     }
   }
 
@@ -558,7 +509,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 async function deliverReminderMessages(
   planned: PlannedMessage[], period: "morning" | "evening", targetDateStr: string, mode: "real" | "stub",
 ) {
-  const delivered: Array<{ phone: string; message: string }> = [];
+  const delivered: Array<{ phone: string; message: string; channel: "freeform" | "template" }> = [];
   const blocked: Array<{ phone: string; reason: string }> = [];
   for (const p of planned) {
     if (!(await claimSlot(p.phone, targetDateStr, period))) {
@@ -566,13 +517,19 @@ async function deliverReminderMessages(
       blocked.push({ phone: p.phone, reason: "slot_already_claimed" });
       continue;
     }
-    const ok = mode === "stub" ? true : await sendWhatsApp(p.phone, p.message, period);
+    // Real line breaks only inside the parent's 24h window; otherwise the approved one-line template.
+    const channel = (await inParentWindow(p.phone)) ? "freeform" : "template";
+    let ok = true;
+    if (mode === "real") {
+      ok = channel === "freeform" ? await sendFreeform(p.phone, p.freeform, period) : false;
+      if (!ok) ok = await sendWhatsApp(p.phone, p.message, period); // freeform failed (or window closed) → template
+    }
     if (ok) {
       for (const { refId, title, type } of p.refIdsToLog) {
         await logReminder(p.phone, type, refId, title, period);
       }
-      delivered.push({ phone: p.phone, message: p.message });
-      console.log(`[${period}] ${mode === "stub" ? "Recorded (stub)" : "Sent"} to ${p.phone} with ${p.itemCount} items`);
+      delivered.push({ phone: p.phone, message: channel === "freeform" ? p.freeform : p.message, channel });
+      console.log(`[${period}] ${mode === "stub" ? "Recorded (stub)" : "Sent"} to ${p.phone} with ${p.itemCount} items via ${channel}`);
     } else {
       await releaseSlot(p.phone, targetDateStr, period);
     }
@@ -645,7 +602,7 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
     now, includeTestFamilies: true, onlyPhones: new Set(phones),
   });
   if (!stubSend) {
-    return jsonRes({ scope, period, target_date: targetDateStr, messages: planned.map((p) => ({ phone: p.phone, message: p.message })) });
+    return jsonRes({ scope, period, target_date: targetDateStr, messages: planned.map((p) => ({ phone: p.phone, message: p.message, freeform: p.freeform })) });
   }
   // Stub delivery: never Twilio. Belt and braces: every planned phone is an allowlisted test number.
   const safe = planned.filter((p) => phones.includes(p.phone));
