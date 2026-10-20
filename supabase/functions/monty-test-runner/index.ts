@@ -516,7 +516,54 @@ async function runWhatsOnTests(): Promise<Result[]> {
         { id: "d2", school_id: "s1", title: "PTA Halloween Disco Party", start_at: "2026-10-22T17:00:00Z", year_group: null },
       ] }), "2026-10-22", "2026-10-22");
       const got = r.map((i) => `${i.title}${i.optIn ? " (opt-in)" : ""}`).join(" | ");
-      return { reason: got === "ASC Harry Potter Party (opt-in) | Halloween Disco | PTA Halloween Disco Party" ? null : `got ${got}`, reply: got };
+      // "Halloween Disco" is contained in "PTA Halloween Disco Party" on the same day → shown once (the longer title).
+      return { reason: got === "ASC Harry Potter Party (opt-in) | PTA Halloween Disco Party" ? null : `got ${got}`, reply: got };
+    }],
+    // ── 22 Oct fixes: after-school sport = opt-in, key-stage discos, same-day calendar markers ──
+    ["What's on: 'Y3/4 Football' Tue 16:30 and 'Y5/6 Football' are opt-in; a Y4 16:30 session is opt-in by time, 'Y4 Parents' Evening' 16:30 isn't", async () => {
+      const kids = [{ id: "k1", first_name: "Harry", school_id: "s1", year_group: "Year 4" }, { id: "k2", first_name: "Jude", school_id: "s1", year_group: "Year 5" }];
+      const r = computeWhatsOn(famFixture({ children: kids, schoolEvents: [
+        { id: "f1", school_id: "s1", title: "Y3/4 Football", start_at: "2026-10-20T15:30:00Z", year_group: "Year 3,Year 4" },
+        { id: "f2", school_id: "s1", title: "Y5/6 Football", start_at: "2026-10-22T15:30:00Z", year_group: "Year 5,Year 6" },
+        { id: "t1", school_id: "s1", title: "Y4 Science Explorers", start_at: "2026-10-21T15:30:00Z", year_group: "Year 4" },
+        { id: "t2", school_id: "s1", title: "Y4 Parents' Evening", start_at: "2026-10-21T15:30:00Z", year_group: "Year 4" },
+      ] }), "2026-10-19", "2026-10-23");
+      const got = r.map((i) => `${i.childName}:${i.title}${i.optIn ? " (opt-in)" : ""}`).join(" | ");
+      const want = "Harry:Y3/4 Football (opt-in) | Harry:Y4 Parents' Evening | Harry:Y4 Science Explorers (opt-in) | Jude:Y5/6 Football (opt-in)";
+      return { reason: got === want ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: 'Y4/5/6 Swimming' (all day) stays included; whole-school 'Halloween Disco' is included", async () => {
+      const kids = [{ id: "k1", first_name: "Harry", school_id: "s1", year_group: "Year 4" }];
+      const r = computeWhatsOn(famFixture({ children: kids, schoolEvents: [
+        { id: "s", school_id: "s1", title: "Y4/5/6 Swimming", start_at: "2026-10-20T00:00:00Z", year_group: "Year 4,Year 5,Year 6" },
+        { id: "d", school_id: "s1", title: "Halloween Disco", start_at: "2026-10-22T17:00:00Z", year_group: "all" },
+      ] }), "2026-10-19", "2026-10-23");
+      const got = r.map((i) => `${i.date}:${i.title}${i.optIn ? " (opt-in)" : ""}`).join(" | ");
+      return { reason: got === "2026-10-20:Y4/5/6 Swimming | 2026-10-22:Halloween Disco" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: 'PTA KS1 Disco' stored as 'all' reaches Reception/Y1/Y2 only, not a Year 4 child", async () => {
+      const kids = [{ id: "k1", first_name: "Ava", school_id: "s1", year_group: "Reception" }, { id: "k2", first_name: "Ben", school_id: "s1", year_group: "Year 1" },
+        { id: "k3", first_name: "Cal", school_id: "s1", year_group: "Year 2" }, { id: "k4", first_name: "Dot", school_id: "s1", year_group: "Year 4" }];
+      const r = computeWhatsOn(famFixture({ children: kids, schoolEvents: [{ id: "d", school_id: "s1", title: "PTA KS1 Disco", start_at: "2026-10-22T17:00:00Z", year_group: "all" }] }), "2026-10-22", "2026-10-22");
+      const got = r.map((i) => `${i.childName}${i.optIn ? " (opt-in)" : ""}`).join(",");
+      return { reason: got === "Ava,Ben,Cal" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: 'PTA KS2 Disco' → Year 3 child yes, Year 1 child no (from 'all'); a stored year group is never widened", async () => {
+      const kids = [{ id: "k1", first_name: "Ben", school_id: "s1", year_group: "Year 1" }, { id: "k2", first_name: "Harry", school_id: "s1", year_group: "Year 3" }];
+      const a = computeWhatsOn(famFixture({ children: kids, schoolEvents: [{ id: "d", school_id: "s1", title: "PTA KS2 Disco", start_at: "2026-10-22T18:15:00Z", year_group: "all" }] }), "2026-10-22", "2026-10-22");
+      const b = computeWhatsOn(famFixture({ children: kids, schoolEvents: [{ id: "d", school_id: "s1", title: "PTA KS2 Disco", start_at: "2026-10-22T18:15:00Z", year_group: "Year 5" }] }), "2026-10-22", "2026-10-22");
+      const got = `all: ${a.map((i) => `${i.childName}${i.optIn ? " (opt-in)" : ""}`).join(",")} / Year 5: ${b.map((i) => i.childName).join(",") || "none"}`;
+      return { reason: got === "all: Harry / Year 5: none" ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: same-day markers shown once — 'School closes' + 'October Half Term begins (school closes)', 'School opens' + '…ends (school reopens)', 'Inset Day' ×2", async () => {
+      const ev = (id: string, title: string, start_at: string) => ({ id, school_id: "s1", title, start_at, year_group: "all" });
+      const r = computeWhatsOn(famFixture({ schoolEvents: [
+        ev("c1", "School closes", "2026-10-22T15:20:00Z"), ev("c2", "October Half Term begins (school closes)", "2026-10-22T15:20:00Z"),
+        ev("i1", "Inset Day", "2026-10-23T00:00:00Z"), ev("i2", "Inset Day", "2026-10-23T08:50:00Z"),
+        ev("o1", "October Half Term ends (school reopens)", "2026-11-02T08:50:00Z"), ev("o2", "School opens", "2026-11-02T08:50:00Z"),
+      ] }), "2026-10-22", "2026-11-02");
+      const got = r.map((i) => `${i.date}:${i.title}`).join(" | ");
+      return { reason: got === "2026-10-22:October Half Term begins (school closes) | 2026-10-23:Inset Day | 2026-11-02:October Half Term ends (school reopens)" ? null : `got ${got}`, reply: got };
     }],
     ["What's on: linked partner gets exactly the same list (incl. partner's notes)", async () => {
       await resetTestData();
@@ -972,13 +1019,16 @@ const SCHOOL_EVENT_NO_TOPIC = { title: "Y3/4 Mixed Tournament @ Macc FC", start:
 const SCHOOL_EVENT_NO_YEAR = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z", year_group: null };
 const CASPIAN_MSG = "Caspian has a football tournament after school on Wednesday";
 /** Clear match (Year 3 on a Y3/4 event, same day, shared "football"): saves at once, no question. */
-const clearMatchCheck = ([r]: Rows[], [a]: string[]) => {
-  const n = noteFor(r, "Caspian", "2026-10-21", /Macc FC/i);
+const clearMatchCheckFor = (titleRe: RegExp, notRe?: RegExp) => ([r]: Rows[], [a]: string[]) => {
+  const n = noteFor(r, "Caspian", "2026-10-21", titleRe);
+  if (notRe && r.notes.some((x: any) => notRe.test(x.summary || ""))) return `saved under the wrong event: ${JSON.stringify(r.notes)}`;
   return firstFail(n.length !== 1 && `expected one Caspian note on 21 Oct under the school event's title: ${JSON.stringify(r.notes)}`,
     r.notes.length !== 1 && `extra notes: ${JSON.stringify(r.notes)}`, r.reminders.length > 0 && "weekly reminder saved",
     asks(a) && `asked a question: "${a}"`, !/caspian/i.test(a) && "reply doesn't name Caspian", !/✅/.test(a) && `not the short confirmation: "${a}"`,
     r.pending !== null && "left a pending question");
 };
+const clearMatchCheck = clearMatchCheckFor(/Macc FC/i);
+const GIRLS_EVENT = { title: "Y3/4 Girls Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z", year_group: "Year 3,Year 4" };
 /** Real doubt: must ask the stored "different one?" question first, then save exactly one note. */
 const stillAsksCheck = (eventRe: RegExp, savedRe: RegExp = /football/i) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
   const n = noteFor(r2, "Caspian", "2026-10-21", savedRe);
@@ -991,6 +1041,8 @@ const stillAsksCheck = (eventRe: RegExp, savedRe: RegExp = /football/i) => ([r1,
 HANDLER_CASES.push(
   { name: "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
     steps: [{ message: CASPIAN_MSG }], check: clearMatchCheck },
+  { name: "Two Y3/4 football events same day + 'girls football tournament' → saved under the Girls title", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT, GIRLS_EVENT] },
+    steps: [{ message: "Caspian has a girls football tournament after school on Wednesday" }], check: clearMatchCheckFor(/Girls Football Tournament/i, /Mixed/i) },
   { name: "School event for another year (Y5) → still asks, 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_Y5] },
     steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Y5 Football/i) },
   { name: "School event with no shared topic word → still asks, 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
@@ -1014,6 +1066,7 @@ const QUICK_NAMES = [
   "Forced database failure → warm, specific 'couldn't save', nothing written",
   "'He needs his recorder Friday' (Jude & Harry) → reply uses no he/she/his/her",
   "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question",
+  "Two Y3/4 football events same day + 'girls football tournament' → saved under the Girls title",
   "School event for another year (Y5) → still asks, 'yes please' saves one note",
   "School event with no shared topic word → still asks, 'yes please' saves one note",
   "School event with no year group → still asks (unknown year isn't a clear match), 'yes please' saves one note",
