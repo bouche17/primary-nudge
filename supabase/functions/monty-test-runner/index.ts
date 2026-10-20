@@ -594,7 +594,7 @@ interface Seed {
   reminders?: { child: string; title: string; day: string }[];
   notes?: { child: string | null; summary: string; date: string }[];
   lunches?: { child: string; days: string[]; week: string }[];
-  events?: { title: string; start: string }[];
+  events?: { title: string; start: string; year_group: string | null }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
 }
@@ -641,7 +641,7 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
   }
   if (seed.events?.length) {
     const { error: e } = await admin.from("school_events").insert(seed.events.map((ev, i) => ({
-      school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: null, uid: `monty-test-${i}-${Date.now()}`,
+      school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: ev.year_group, uid: `monty-test-${i}-${Date.now()}`,
     })));
     if (e) throw new Error(`seed events: ${e.message}`);
   }
@@ -904,10 +904,12 @@ const HANDLER_CASES: HandlerCase[] = [
 ];
 
 // ── held as a possible duplicate of a school event (real bug, Sun 18 Oct) ──
-const FOOTBALL_EVENT = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z" };
+// Year groups use the real row's format ("Year 3,Year 4"), so each test asks/saves for the reason in its name.
+const FOOTBALL_EVENT = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z", year_group: "Year 3,Year 4" };
 const SUN_PM = "2026-10-18T17:28:00Z"; // Sun 18 Oct 18:28 BST
-const SCHOOL_EVENT_Y5 = { title: "Y5 Football Tournament", start: "2026-10-21T14:00:00Z" };
-const SCHOOL_EVENT_NO_TOPIC = { title: "Y3/4 Mixed Tournament @ Macc FC", start: "2026-10-21T14:00:00Z" };
+const SCHOOL_EVENT_Y5 = { title: "Y5 Football Tournament", start: "2026-10-21T14:00:00Z", year_group: "Year 5" };
+const SCHOOL_EVENT_NO_TOPIC = { title: "Y3/4 Mixed Tournament @ Macc FC", start: "2026-10-21T14:00:00Z", year_group: "Year 3,Year 4" };
+const SCHOOL_EVENT_NO_YEAR = { title: "Y3/4 Mixed Football Tournament @ Macc FC", start: "2026-10-21T14:00:00Z", year_group: null };
 const CASPIAN_MSG = "Caspian has a football tournament after school on Wednesday";
 /** Clear match (Year 3 on a Y3/4 event, same day, shared "football"): saves at once, no question. */
 const clearMatchCheck = ([r]: Rows[], [a]: string[]) => {
@@ -918,13 +920,13 @@ const clearMatchCheck = ([r]: Rows[], [a]: string[]) => {
     r.pending !== null && "left a pending question");
 };
 /** Real doubt: must ask the stored "different one?" question first, then save exactly one note. */
-const stillAsksCheck = (eventRe: RegExp) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
-  const n = noteFor(r2, "Caspian", "2026-10-21", /football/i);
+const stillAsksCheck = (eventRe: RegExp, savedRe: RegExp = /football/i) => ([r1, r2]: Rows[], [q1, a]: string[]) => {
+  const n = noteFor(r2, "Caspian", "2026-10-21", savedRe);
   return firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`,
     !(eventRe.test(q1) && /different/i.test(q1) && asks(q1)) && `didn't ask the same-thing question: "${q1}"`,
     /which child/i.test(q1 + a) && "asked which child",
-    n.length !== 1 && `expected one Caspian note on 21 Oct: ${JSON.stringify(r2.notes)}`, r2.notes.length !== 1 && `extra notes: ${JSON.stringify(r2.notes)}`,
-    asks(a) && `asked again: "${a}"`, r2.pending !== null && "pending not cleared");
+    n.length !== 1 && `expected one Caspian note on 21 Oct matching ${savedRe}: ${JSON.stringify(r2.notes)}`, r2.notes.length !== 1 && `extra notes: ${JSON.stringify(r2.notes)}`,
+    asks(a) && `asked again: "${a}"`, !/caspian/i.test(a) && `reply doesn't name Caspian: "${a}"`, r2.pending !== null && "pending not cleared");
 };
 HANDLER_CASES.push(
   { name: "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question", family: "D", now: SUN_PM, seed: { events: [FOOTBALL_EVENT] },
@@ -933,6 +935,10 @@ HANDLER_CASES.push(
     steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Y5 Football/i) },
   { name: "School event with no shared topic word → still asks, 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
     steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Mixed Tournament/i) },
+  { name: "School event with no year group → still asks (unknown year isn't a clear match), 'yes please' saves one note", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_YEAR] },
+    steps: [{ message: CASPIAN_MSG }, { message: "Yes please" }], check: stillAsksCheck(/Mixed Football Tournament/i) },
+  { name: "Duplicate question → 'no, it's the same one' saves one note under the school event's title", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
+    steps: [{ message: CASPIAN_MSG }, { message: "no, it's the same one" }], check: stillAsksCheck(/Mixed Tournament/i, /Mixed Tournament/i) },
 );
 
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
@@ -950,6 +956,8 @@ const QUICK_NAMES = [
   "Clear school-event match (Year 3, Y3/4 football, same day) → saved at once, no question",
   "School event for another year (Y5) → still asks, 'yes please' saves one note",
   "School event with no shared topic word → still asks, 'yes please' saves one note",
+  "School event with no year group → still asks (unknown year isn't a clear match), 'yes please' saves one note",
+  "Duplicate question → 'no, it's the same one' saves one note under the school event's title",
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;

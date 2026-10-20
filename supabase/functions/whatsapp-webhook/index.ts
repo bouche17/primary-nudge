@@ -1708,17 +1708,18 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
 /** Words that don't make two items the same thing on their own. */
 const GENERIC_EVENT_WORDS = new Set(["tournament", "event", "day", "club", "match", "festival", "session", "competition", "activity", "after", "before",
   "school", "class", "year", "mixed", "morning", "afternoon", "evening", "week", "fc", "team", "practice", "time", "group", "the", "and", "at"]);
-const YEAR_PREFIX = /^\s*((?:y(?:ea)?r?s?\s*)?(?:\d{1,2}|r)(?:\s*(?:[,/&]|and)\s*(?:y(?:ea)?r?s?\s*)?(?:\d{1,2}|r))*|reception)\b/i;
-/** A school-event overlap needs no question when: explicit year group includes the child's, and a real topic word is shared. Same date is given. */
+/** A school-event overlap needs no question when: the event's stored year_group (column only — a blank/unknown or
+ *  "all" year is never a clear match) includes the child's, and a real topic word is shared. Same date is given. */
 function clearSchoolEventMatch(dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): boolean {
   if (dup.table !== "school_events" || !dup.child) return false;
   const kid = context.children.find((c) => c.first_name.toLowerCase() === dup.child!.toLowerCase());
   if (!kid?.year_group) return false;
-  const eventYears = dup.yearGroup || dup.existing.match(YEAR_PREFIX)?.[1] || null;
+  const eventYears = dup.yearGroup?.trim() || null;
   if (!normaliseYearGroups(eventYears) || !yearGroupMatches(eventYears, kid.year_group)) return false;
   const names = context.children.map((c) => c.first_name);
   const ev = itemTokens(dup.existing, names);
-  const mine = new Set([...itemTokens(dup.summary, names), ...itemTokens(sourceText, names)]);
+  // Parent's own words only: the AI's summary can borrow the school event's wording ("Macc FC"), faking a shared topic.
+  const mine = new Set(itemTokens(sourceText || dup.summary, names));
   return [...ev].some((w) => mine.has(w) && !GENERIC_EVENT_WORDS.has(w) && w.length >= 3);
 }
 const dupKey = (d: { child: string | null; date: string; summary: string }) => `${(d.child || "").toLowerCase()}|${d.date}|${d.summary.toLowerCase().trim()}`;
