@@ -1718,7 +1718,8 @@ function clearSchoolEventMatch(dup: NonNullable<ToolResult["dup"]>, sourceText: 
   if (!normaliseYearGroups(eventYears) || !yearGroupMatches(eventYears, kid.year_group)) return false;
   const names = context.children.map((c) => c.first_name);
   const ev = itemTokens(dup.existing, names);
-  const mine = new Set([...itemTokens(dup.summary, names), ...itemTokens(sourceText, names)]);
+  // Parent's own words only: the AI's summary can borrow the school event's wording ("Macc FC"), faking a shared topic.
+  const mine = new Set(itemTokens(sourceText || dup.summary, names));
   return [...ev].some((w) => mine.has(w) && !GENERIC_EVENT_WORDS.has(w) && w.length >= 3);
 }
 const dupKey = (d: { child: string | null; date: string; summary: string }) => `${(d.child || "").toLowerCase()}|${d.date}|${d.summary.toLowerCase().trim()}`;
