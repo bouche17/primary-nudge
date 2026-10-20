@@ -1,0 +1,4 @@
+# monty-test-runner rules
+- Nightly shadow comparison (action `whats_on_shadow`, queued by `queue_whats_on_shadow()` at 21:00 UK, clock-safe) diffs the send-reminders read-only dry run forced to the legacy rules against getWhatsOn (opt-in items removed) for the next 14 days into `whats_on_shadow_diffs`; Matt marks diffs on /admin/whats-on-diffs; alerts only if the job fails — why: keeps the rollback path checked after the switch.
+- A run can force the reminder rules with `whats_on_source` ('new'/'legacy') in the body: every send-reminders test call gets it and chained chunks carry it; tests never change `app_settings` — why: both settings are testable without touching real sends.
+- Seeded school events must carry a real `year_group` (real rows use "Year 3,Year 4" / "all") — why: an empty year group hides year-matching bugs.

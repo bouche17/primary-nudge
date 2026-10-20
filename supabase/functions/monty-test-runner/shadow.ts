@@ -17,7 +17,7 @@ async function oldDryRun(period: "morning" | "evening", now: string) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/send-reminders`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}`, "x-monty-test-secret": TEST_SECRET },
-    body: JSON.stringify({ scenario: "whats-on shadow", scope: "real_readonly", period, now, ignore_sent_log: true, with_items: true }),
+    body: JSON.stringify({ scenario: "whats-on shadow", scope: "real_readonly", period, now, ignore_sent_log: true, with_items: true, whats_on_source: "legacy" }), // always the old rules
   });
   if (!res.ok) throw new Error(`send-reminders dry run ${period} ${now}: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
   const j = await res.json();
@@ -34,7 +34,7 @@ function likelyReason(side: string, kinds: string[], title: string): string {
     return "Same item on the same day, attached to different children.";
   }
   if (side === "new only") {
-    if (k === "school event") return "School events were never in the old reminders; new includes them for the matching year group.";
+    if (k === "school event") return "School events were never in the old reminders; new includes them for the matching year group (opt-in activities left out).";
     if (k === "school reminder") return "Check: a school reminder the old sender didn't pick up (e.g. weekday rule or school match).";
     if (k === "fortnightly" || k === "weekly") return "Check: recurring reminder the old sender skipped (time slot, fortnight parity or holiday).";
     return `Check: only the new function has this (${k}).`;
@@ -68,7 +68,7 @@ export async function runWhatsOnShadow(db: SupabaseClient, opts: { days?: number
     for (const u of famUsers) userToFamily.set(u, w?.familyId ?? "test");
     if (isTest || !w) { skippedTest++; continue; }
     const label = (kids ?? []).filter((k) => famUsers.includes(k.parent_id)).map((k) => k.first_name).sort().join(" & ");
-    newByFamily.set(w.familyId, { label, items: w.items });
+    newByFamily.set(w.familyId, { label, items: w.items.filter((x) => !x.optIn) }); // reminders never send opt-in events
   }
 
   // ── Old side: morning of each date + evening before it (both target that date) ──

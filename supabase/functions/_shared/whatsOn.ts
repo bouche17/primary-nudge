@@ -1,6 +1,7 @@
 // One source of truth for "what's on" for a family. No AI, no writes.
 // computeWhatsOn() is pure (testable without the database); loadFamilyData() does the reading.
-// Stage 1 of the rebuild: built and shadow-compared only — nothing reads this for parents yet.
+// Morning/evening reminders read this when app_settings.whats_on_source = 'new' (send-reminders);
+// they skip items flagged optIn. The dashboard and Sunday week-ahead don't read it yet.
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 export type WhatsOnKind = "weekly" | "fortnightly" | "one-off" | "school event" | "school reminder" | "lunch";
@@ -13,6 +14,7 @@ export interface WhatsOnItem {
   kind: WhatsOnKind;
   slot: "morning" | "evening" | "both";
   source: { table: string; id: string };
+  optIn?: boolean;              // school event for an opt-in activity (club, tournament…) the parent hasn't saved: shown in lists, never in reminders
 }
 
 export interface FamilyData {
@@ -36,6 +38,30 @@ export const ukDate = (ts: string | Date) => new Date(ts).toLocaleDateString("en
 const weekdayOf = (d: string) => WEEKDAYS[new Date(d + "T12:00:00Z").getUTCDay()];
 const mondayOf = (d: string) => { const day = new Date(d + "T12:00:00Z").getUTCDay(); return iso(noon(d) - ((day + 6) % 7) * DAY_MS); };
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+// ── Opt-in school events (Matt's rule): left out of reminders unless the parent saved them. Edit the list here. ──
+export const OPT_IN_WORDS = [
+  "club", "clubs", "asc", "after school club", "breakfast club", "tournament", "tournaments", "match", "matches", "fixture", "fixtures",
+  "squad", "team", "teams", "trials", "trial", "auditions", "audition", "lessons", "lesson", "tuition", "party", "parties",
+  "sign up", "signup", "sign ups", "taster", "tasters",
+];
+/** Opt-in = any OPT_IN_WORDS phrase as whole words. "Party" doesn't count for a whole-school disco. */
+export function isOptInEvent(title: string, yearGroup: string | null): boolean {
+  const t = ` ${norm(title)} `;
+  const hits = OPT_IN_WORDS.filter((w) => t.includes(` ${w} `));
+  if (!hits.length) return false;
+  const wholeSchool = normaliseYearGroups(yearGroup) === null;
+  if (wholeSchool && /\bdisco\b/.test(t) && hits.every((w) => w === "party" || w === "parties")) return false;
+  return true;
+}
+/** Year prefix on event titles ("Y3/4 ", "Year 5: ", "KS2 ") — removed for matching and for the reminder line. */
+export function stripYearPrefix(title: string): string {
+  const re = /^\s*(?:(?:y(?:ea)?r?s?)\s*[\dR]+(?:\s*[,/&\-]\s*(?:y(?:ea)?r?s?\s*)?[\dR]+)*|ks\s*[1-4]|eyfs|reception|nursery)\b[\s:.\-–—]*/i;
+  let t = title;
+  for (let i = 0; i < 2; i++) { const n = t.replace(re, ""); if (n === t) break; t = n; }
+  return t.trim() || title.trim();
+}
+const matchKey = (s: string) => norm(s).replace(/\b(at|the|a|an)\b/g, " ").replace(/\s+/g, " ").trim();
 
 /** "Y1", "Year 1", "1" → "1"; "Reception"/"R"/"YR" → "R"; "all"/blank → null (everyone). Lists split on , / & "and". */
 export function normaliseYearGroups(v: string | null | undefined): Set<string> | null {
@@ -111,16 +137,6 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
       items.push({ date, childId: null, childName: null, title: r.title, emoji: r.emoji || "✅", kind: "school reminder", slot: "both", source: { table: "school_reminders", id: r.id } });
     }
 
-    for (const e of f.schoolEvents) {
-      if (ukDate(e.start_at) !== date) continue;
-      for (const kid of kids) {
-        if (e.school_id !== null && e.school_id !== kid.school_id) continue;
-        if (!yearGroupMatches(e.year_group, kid.year_group)) continue;
-        if (excluded(kid.id, e.title)) continue;
-        items.push({ date, childId: kid.id, childName: kid.first_name, title: e.title, emoji: "🏫", kind: "school event", slot: "both", source: { table: "school_events", id: e.id } });
-      }
-    }
-
     for (const n of f.notes) {
       if (!n.summary) continue;
       const dates = Array.isArray(n.extracted_dates) ? (n.extracted_dates as { date?: string }[]) : [];
@@ -128,9 +144,26 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
       const kid = n.child_name ? kids.find((k) => k.first_name.toLowerCase() === n.child_name!.trim().toLowerCase()) : undefined;
       items.push({ date, childId: kid?.id ?? null, childName: kid?.first_name ?? null, title: n.summary, emoji: "📝", kind: "one-off", slot: "both", source: { table: "parent_notes", id: n.id } });
     }
+
+    // Parent's own items for each child today (notes + child reminders), for "show it once" with school events.
+    const parentKeys = (childId: string) => new Set(items.filter((i) => i.date === date && i.childId === childId &&
+      (i.source.table === "parent_notes" || i.source.table === "child_reminders")).map((i) => matchKey(i.title)));
+    for (const e of f.schoolEvents) {
+      if (ukDate(e.start_at) !== date) continue;
+      for (const kid of kids) {
+        if (e.school_id !== null && e.school_id !== kid.school_id) continue;
+        if (!yearGroupMatches(e.year_group, kid.year_group)) continue;
+        if (excluded(kid.id, e.title)) continue;
+        // Parent saved it themselves (same title, or saved under the event's title): their item is the one shown.
+        const mine = parentKeys(kid.id);
+        if (mine.has(matchKey(e.title)) || mine.has(matchKey(stripYearPrefix(e.title)))) continue;
+        const optIn = isOptInEvent(e.title, e.year_group);
+        items.push({ date, childId: kid.id, childName: kid.first_name, title: e.title, emoji: "🏫", kind: "school event", slot: "both", source: { table: "school_events", id: e.id }, ...(optIn ? { optIn: true } : {}) });
+      }
+    }
   }
 
-  // Identical items for the same child on the same day appear once (first by kind order wins).
+  // Identical items for the same child on the same day appear once (first by kind order wins; reminder-visible beats opt-in).
   const sorted = items.sort((a, b) =>
     a.date.localeCompare(b.date) || SLOT_ORDER[a.slot] - SLOT_ORDER[b.slot] ||
     (a.childName ?? "\uffff").localeCompare(b.childName ?? "\uffff") ||
@@ -144,6 +177,11 @@ export async function loadFamilyData(db: SupabaseClient, userId: string, fromDat
   const { data: famIds } = await db.rpc("get_family_user_ids", { _user_id: userId });
   const ids: string[] = ((famIds ?? []) as unknown[]).map((r: any) => (typeof r === "string" ? r : r.get_family_user_ids ?? r)).filter(Boolean);
   if (!ids.includes(userId)) ids.push(userId);
+  return loadFamilyDataForUsers(db, ids, fromDate, toDate);
+}
+
+/** Same as loadFamilyData, for a family whose user ids are already known (send-reminders groups families itself). */
+export async function loadFamilyDataForUsers(db: SupabaseClient, ids: string[], fromDate: string, toDate: string): Promise<FamilyData> {
   const familyId = [...ids].sort()[0];
   const [{ data: children }, { data: profs }] = await Promise.all([
     db.from("children").select("id, first_name, school_id, year_group").in("parent_id", ids),
@@ -166,6 +204,9 @@ export async function loadFamilyData(db: SupabaseClient, userId: string, fromDat
     db.from("event_exclusions").select("child_id, keyword").in("child_id", kidIds.length ? kidIds : none),
     phones.length ? db.from("opted_out_numbers").select("phone_number").in("phone_number", phones) : Promise.resolve({ data: [] }),
   ]);
+  for (const r of [cr, lp, sr, se, hol, notes, exc] as { error?: { message: string } | null }[]) {
+    if (r.error) throw new Error(`what's on: read failed: ${r.error.message}`); // never build a partial list silently
+  }
   return {
     familyId, children: kids, childReminders: (cr.data ?? []) as any, lunchPlans: (lp.data ?? []) as any, schoolReminders: (sr.data ?? []) as any,
     schoolEvents: (se.data ?? []) as any, holidays: (hol.data ?? []) as any, notes: (notes.data ?? []) as any, exclusions: (exc.data ?? []) as any,

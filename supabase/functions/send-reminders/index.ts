@@ -1,6 +1,7 @@
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { filterOptedOut } from "../_shared/optOut.ts";
 import { formatTemplateVar, formatFreeform } from "../_shared/reminderFormat.ts";
+import { computeWhatsOn, loadFamilyDataForUsers, stripYearPrefix } from "../_shared/whatsOn.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -246,7 +247,44 @@ interface PlannedMessage {
   items: ReminderItem[];
 }
 
+type Source = "legacy" | "new";
+/** app_settings.whats_on_source: 'new' = items from the shared getWhatsOn rules; anything else (or a read error) = legacy. */
+async function readSource(): Promise<Source> {
+  const { data, error } = await supabase.from("app_settings").select("value").eq("key", "whats_on_source").maybeSingle();
+  if (error) console.error("whats_on_source read failed — using legacy:", error.message);
+  return data?.value === "new" ? "new" : "legacy";
+}
+
+/** 'new' source: this family's items for the target date + slot from computeWhatsOn, with the same refIds/log types
+ *  as legacy so the sent-log de-duplication carries across a switch. Opt-in school events are never sent. */
+async function buildItemsFromWhatsOn(
+  userIds: string[], familyChildren: { first_name: string }[], period: "morning" | "evening", targetDateStr: string, today: string, anchorPhone: string,
+) {
+  const data = await loadFamilyDataForUsers(supabase as any, userIds, targetDateStr, targetDateStr);
+  const items: ReminderItem[] = [];
+  const refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
+  // One-child family: family-wide items (school reminders, unnamed notes) read as that child's.
+  const onlyChild = familyChildren.length === 1 ? familyChildren[0].first_name : null;
+  for (const w of computeWhatsOn(data, targetDateStr, targetDateStr)) {
+    if (w.optIn) continue;
+    if (w.slot !== "both" && w.slot !== period) continue;
+    const t = w.source.table, id = w.source.id;
+    const [refId, logType, type, title] =
+      t === "child_reminders" ? [`childreminder_${id}_${w.date}_${period}`, "child_reminder", "reminder", w.title] :
+      t === "weekly_lunch_plans" ? [`lunch_${w.childId}_${w.date}_${period}`, "lunch_plan", "reminder", w.title] :
+      t === "school_reminders" ? [`reminder_${id}_${w.childId ?? "family"}_${w.date}_${period}`, "weekly", "announcement", w.title] :
+      t === "school_events" ? [`event_${id}_${w.childId}_${w.date}_${period}`, "event", "event", stripYearPrefix(w.title)] :
+      [`note_${id}_${w.date}_${period}`, "note", "note", w.title];
+    if (await alreadySent(anchorPhone, refId, period, today)) continue;
+    items.push({ childName: w.childName ?? onlyChild ?? "the children", title, emoji: t === "school_events" ? "" : w.emoji, // events: emoji by topic (🚌 trip, 📸 photos…)
+      type: type as ReminderItem["type"], refId, childId: w.childId });
+    refIdsToLog.push({ refId, title: w.title, type: logType });
+  }
+  return { items, refIdsToLog };
+}
+
 interface BuildOptions {
+  source?: Source;               // override (test entry only); default = app_settings.whats_on_source
   now?: Date;
   testMode?: boolean;            // legacy ?test=true: only the family containing TEST_PHONE_NUMBER
   includeTestFamilies?: boolean; // false for every real run
@@ -265,13 +303,15 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
   const targetDay = targetDate.toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   const targetDateStr = targetDate.toISOString().split("T")[0];
+  const source: Source = opts.source ?? (await readSource());
+  console.log(`[${period}] building from source=${source}`);
 
   const { data: children } = await supabase.from("children").select("id, first_name, school_id, parent_id");
 
   const planned: PlannedMessage[] = [];
   if (!children || children.length === 0) {
     console.log("No children registered yet");
-    return { planned, targetDateStr, today };
+    return { planned, targetDateStr, today, source };
   }
 
   const { data: profiles } = await supabase
@@ -281,7 +321,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
   if (!profiles || profiles.length === 0) {
     console.log("No parent phone numbers found");
-    return { planned, targetDateStr, today };
+    return { planned, targetDateStr, today, source };
   }
 
   const phoneByUser = new Map(profiles.map((p) => [p.user_id, p.phone_number!]));
@@ -346,9 +386,21 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
     const anchorPhone = familyPhones[0];
 
-    const reminderItems: ReminderItem[] = [];
-    const refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
+    let reminderItems: ReminderItem[] = [];
+    let refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
 
+    let useLegacy = source !== "new";
+    if (!useLegacy) {
+      try {
+        const familyUsers = [...allUsers].filter((u) => find(u) === familyId);
+        ({ items: reminderItems, refIdsToLog } = await buildItemsFromWhatsOn(familyUsers, familyChildren, period, targetDateStr, today, anchorPhone));
+      } catch (e) {
+        // Never skip a family's reminders because the new reader failed: fall back to the legacy build for this family.
+        console.error(`[${period}] what's-on build failed for family ${familyId} — using legacy:`, (e as Error).message);
+        reminderItems = []; refIdsToLog = []; useLegacy = true;
+      }
+    }
+    if (useLegacy) {
     for (const child of familyChildren) {
       const schoolIds = [child.school_id].filter(Boolean);
 
@@ -486,6 +538,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
       });
       refIdsToLog.push({ refId, title: note.summary, type: "note" });
     }
+    } // end legacy
 
     if (reminderItems.length === 0) continue;
 
@@ -499,7 +552,7 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
     }
   }
 
-  return { planned, targetDateStr, today };
+  return { planned, targetDateStr, today, source };
 }
 
 /**
@@ -566,6 +619,7 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
   const scope = body.scope === "real_readonly" ? "real_readonly" : "test";
   const dryRun = body.dry_run !== false; // defaults to true
   const stubSend = body.stub_send === true;
+  const source: Source | undefined = body.whats_on_source === "new" || body.whats_on_source === "legacy" ? body.whats_on_source : undefined;
 
   if (scope === "real_readonly") {
     if (stubSend || !dryRun) {
@@ -576,14 +630,14 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
     IGNORE_SENT_LOG = body.ignore_sent_log === true;
     let built;
     try {
-      built = await buildReminderMessages(period, { now, includeTestFamilies: false });
+      built = await buildReminderMessages(period, { now, includeTestFamilies: false, source });
     } finally {
       IGNORE_SENT_LOG = false;
     }
     const { planned, targetDateStr } = built;
     return jsonRes({
-      scope, period, now: now.toISOString(), target_date: targetDateStr, count: planned.length,
-      messages: planned.map((p) => ({ phone_last4: p.phone.slice(-4), family: p.familyId.slice(0, 8), message: p.message })),
+      scope, period, now: now.toISOString(), target_date: targetDateStr, count: planned.length, source: built.source,
+      messages: planned.map((p) => ({ phone_last4: p.phone.slice(-4), family: p.familyId.slice(0, 8), message: p.message, ...(body.with_freeform === true ? { freeform: p.freeform } : {}) })),
       // Dry-run for the what's-on shadow comparison: one entry per family (not per phone), structured items.
       ...(body.with_items === true ? { families: [...new Map(planned.map((p) => [p.familyId, { family: p.familyId, items: p.items.map((i) => ({ child_id: i.childId ?? null, child_name: i.childName, title: i.title, type: i.type, ref: i.refId })) }])).values()] } : {}),
     });
@@ -598,11 +652,11 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
   }
   await auditTestEntry({ entry_point: "send-reminders", phone_number: phones.join(","), scenario, allowed: true, reason: `${period} ${now.toISOString()} stub_send=${stubSend}` });
 
-  const { planned, targetDateStr } = await buildReminderMessages(period, {
-    now, includeTestFamilies: true, onlyPhones: new Set(phones),
+  const { planned, targetDateStr, source: used } = await buildReminderMessages(period, {
+    now, includeTestFamilies: true, onlyPhones: new Set(phones), source,
   });
   if (!stubSend) {
-    return jsonRes({ scope, period, target_date: targetDateStr, messages: planned.map((p) => ({ phone: p.phone, message: p.message, freeform: p.freeform })) });
+    return jsonRes({ scope, period, target_date: targetDateStr, source: used, messages: planned.map((p) => ({ phone: p.phone, message: p.message, freeform: p.freeform })) });
   }
   // Stub delivery: never Twilio. Belt and braces: every planned phone is an allowlisted test number.
   const safe = planned.filter((p) => phones.includes(p.phone));

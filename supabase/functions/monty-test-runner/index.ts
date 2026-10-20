@@ -7,7 +7,7 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
-import { formatFreeform, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
+import { formatFreeform, formatLines, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
 import { computeWhatsOn, getWhatsOn, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
 import { runWhatsOnShadow } from "./shadow.ts";
 
@@ -47,7 +47,10 @@ async function requireAdmin(req: Request): Promise<string | null> {
   return role ? data.user.id : null;
 }
 
+// Set per request from body.whats_on_source (test runs only): every send-reminders call in the run uses that source.
+let SENDER_SOURCE: "legacy" | "new" | null = null;
 async function callFn(name: string, body: unknown) {
+  if (name === "send-reminders" && SENDER_SOURCE && body && typeof body === "object" && !("whats_on_source" in (body as any))) body = { ...(body as any), whats_on_source: SENDER_SOURCE };
   const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_KEY}`, "x-monty-test-secret": TEST_SECRET },
@@ -148,12 +151,20 @@ async function seedSenderFixtures() {
     { school_id: TEST_SCHOOL_ID, title: "Bring in harvest donations", emoji: "🥫", due_date: "2026-10-22", active: true },
   ]);
   if (sErr) throw new Error(`seed school reminders failed: ${sErr.message}`);
+  // School events on Mon 12 Oct (Harry is Year 3): read only by the 'new' source. The tournament is saved by the parent too.
+  const { error: eErr } = await admin.from("school_events").insert([
+    ["Y3 Trip to Jodrell Bank", "Year 3"], ["Y3/4 Mixed Football Tournament @ Macc FC", "Year 3,Year 4"], ["ASC Harry Potter Party", "all"], ["Halloween Disco", "all"], ["Y5 Bikeability", "Year 5"],
+  ].map(([title, yg], i) => ({ school_id: TEST_SCHOOL_ID, title, start_at: "2026-10-12T08:30:00Z", all_day: false, year_group: yg, uid: `monty-test-sender-${i}-${Date.now()}` })));
+  if (eErr) throw new Error(`seed events failed: ${eErr.message}`);
+  const { error: n2Err } = await admin.from("parent_notes").insert({ phone_number: FAMILY_A_PHONE, raw_content: "Y3/4 Mixed Football Tournament @ Macc FC",
+    summary: "Y3/4 Mixed Football Tournament @ Macc FC", extracted_dates: [{ date: "2026-10-12" }], source_type: "whatsapp", child_name: "Harry" });
+  if (n2Err) throw new Error(`seed event note failed: ${n2Err.message}`);
 }
 
 // ── Sender scenarios ──
 
 interface SenderCase {
-  name: string; period: "morning" | "evening"; now: string;
+  name: string; period: "morning" | "evening"; now: string; source?: "legacy" | "new"; // source forces the reminder rules for this case
   expectTarget: string; expect: string | null; // template variable (one line); null = expect no message
 }
 
@@ -172,6 +183,10 @@ const SENDER_CASES: SenderCase[] = [
   { name: "Packed lunch + school reminder sent on a normal school day (Wed 14 Oct)", period: "morning", now: "2026-10-14T06:00:00Z", expectTarget: "2026-10-14", expect: "Harry: 🥪 packed lunch • 📚 book fair" },
   { name: "Packed lunch skipped on a holiday (Wed 21 Oct INSET)", period: "morning", now: "2026-10-21T06:00:00Z", expectTarget: "2026-10-21", expect: null },
   { name: "School reminder skipped on a holiday (Thu 22 Oct INSET)", period: "morning", now: "2026-10-22T06:00:00Z", expectTarget: "2026-10-22", expect: null },
+  { name: "New rules: Y3 trip + whole-school disco sent, opt-in ASC party/Y5 event left out, parent-saved tournament once (Mon 12 Oct)", source: "new", period: "morning", now: "2026-10-12T06:00:00Z", expectTarget: "2026-10-12",
+    expect: "Harry: 🎉 Halloween Disco • 🚌 trip to Jodrell Bank • ⚽ Y3/4 Mixed Football Tournament @ Macc FC" },
+  { name: "Old rules (rollback): no school events, only the parent's own note (Mon 12 Oct)", source: "legacy", period: "morning", now: "2026-10-12T06:00:00Z", expectTarget: "2026-10-12",
+    expect: "Harry: ⚽ Y3/4 Mixed Football Tournament @ Macc FC" },
 ];
 
 type Result = { scenario: string; category: string; status: "pass" | "fail" | "flaky"; reply: string | null; reason: string | null; details?: unknown };
@@ -475,6 +490,34 @@ async function runWhatsOnTests(): Promise<Result[]> {
       const o = computeWhatsOn({ ...f, allOptedOut: true }, "2026-10-12", "2026-10-12");
       return { reason: r.length === 1 && /^pe\s+kit$/i.test(r[0].title) && r[0].source.id !== "a" && o.length === 0 ? null : `got ${JSON.stringify(r.map((i) => i.title))}, opted-out ${o.length}` };
     }],
+    // ── School events in reminders (Matt's rule): year-group events in, opt-in activities out unless the parent saved them ──
+    ["What's on: Y3 trip is included for a Year 3 child", async () => {
+      const r = computeWhatsOn(famFixture({ schoolEvents: [{ id: "e", school_id: "s1", title: "Y3 Trip to Jodrell Bank", start_at: "2026-10-21T08:30:00Z", year_group: "Year 3" }] }), "2026-10-21", "2026-10-21");
+      return { reason: r.length === 1 && r[0].kind === "school event" && !r[0].optIn ? null : `got ${JSON.stringify(r)}` };
+    }],
+    ["What's on: 'Y3/4 Mixed Football Tournament' is opt-in (flagged, not for reminders) unless the parent saved it", async () => {
+      const r = computeWhatsOn(famFixture({ schoolEvents: [{ id: "e", school_id: "s1", title: "Y3/4 Mixed Football Tournament @ Macc FC", start_at: "2026-10-21T15:00:00Z", year_group: "Year 3,Year 4" }] }), "2026-10-21", "2026-10-21");
+      const forReminders = r.filter((i) => !i.optIn);
+      return { reason: r.length === 1 && r[0].optIn === true && forReminders.length === 0 ? null : `got ${JSON.stringify(r)}` };
+    }],
+    ["What's on: once the parent saves the tournament it appears exactly once (event title or own words)", async () => {
+      const ev = [{ id: "e", school_id: "s1", title: "Y3/4 Mixed Football Tournament @ Macc FC", start_at: "2026-10-21T15:00:00Z", year_group: "Year 3,Year 4" }];
+      const note = (summary: string) => [{ id: "n", summary, child_name: "Harry", extracted_dates: [{ date: "2026-10-21" }] }];
+      const a = computeWhatsOn(famFixture({ schoolEvents: ev, notes: note("Y3/4 Mixed Football Tournament at Macc FC") }), "2026-10-21", "2026-10-21").filter((i) => !i.optIn);
+      const b = computeWhatsOn(famFixture({ schoolEvents: ev, notes: note("Harry's football tournament after school") }), "2026-10-21", "2026-10-21").filter((i) => !i.optIn);
+      const c = computeWhatsOn(famFixture({ schoolEvents: ev, childReminders: [{ id: "r", child_id: "k1", title: "Mixed Football Tournament @ Macc FC", emoji: null, day_of_week: "Wednesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }] }), "2026-10-21", "2026-10-21").filter((i) => !i.optIn);
+      const got = [a, b, c].map((x) => x.map((i) => `${i.kind}:${i.title}`).join("+")).join(" | ");
+      return { reason: [a, b, c].every((x) => x.length === 1 && x[0].kind !== "school event") ? null : `got ${got}`, reply: got };
+    }],
+    ["What's on: 'ASC Harry Potter Party' is opt-in; whole-school 'Halloween Disco' is included", async () => {
+      const r = computeWhatsOn(famFixture({ schoolEvents: [
+        { id: "p", school_id: "s1", title: "ASC Harry Potter Party", start_at: "2026-10-22T15:30:00Z", year_group: "all" },
+        { id: "d", school_id: "s1", title: "Halloween Disco", start_at: "2026-10-22T17:00:00Z", year_group: "all" },
+        { id: "d2", school_id: "s1", title: "PTA Halloween Disco Party", start_at: "2026-10-22T17:00:00Z", year_group: null },
+      ] }), "2026-10-22", "2026-10-22");
+      const got = r.map((i) => `${i.title}${i.optIn ? " (opt-in)" : ""}`).join(" | ");
+      return { reason: got === "ASC Harry Potter Party (opt-in) | Halloween Disco | PTA Halloween Disco Party" ? null : `got ${got}`, reply: got };
+    }],
     ["What's on: linked partner gets exactly the same list (incl. partner's notes)", async () => {
       await resetTestData();
       await seedFamily("A", { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-09" }] });
@@ -512,6 +555,23 @@ function runFormatTests(): Result[] {
       want: "Good evening! 🌙 A few things to get ready for tomorrow:\n📖 Ivy: reading books returned\n🥪 Ivy: packed lunch\n👟 Caspian: PE kit\nHope you have a lovely evening!" })],
     ["Reminder layout: item with no emoji gets a default by type", () => ({ got: formatFreeform([it("Caspian", "Harvest festival", "", "event"), it("Caspian", "Bring a jumper", "", "reminder")], "morning"),
       want: "Good morning! ☀️ Here's what's on today:\n🏫 Caspian: harvest festival\n✅ Caspian: bring a jumper\nHave a great day!" })],
+    ["Reminder layout: long note cut to a short headline at a natural break", () => ({ got: formatLines([it("Caspian", "Caspian needs to bring £2 for the cake sale on Friday, please send it in a named envelope to the office by 9am", "📝", "note")]).join("\n"),
+      want: "🪙 Caspian: £2 for the cake sale on Friday" })],
+    ["Reminder layout: no links or phone numbers in the line", () => ({ got: formatLines([it("Ivy", "Jodrell Bank trip money due, pay at https://pay.example.uk/trip or call 01625 383838", "📝", "note"),
+      it("Ivy", "Call the school office on 01625 383 838 about the Jodrell Bank trip, details at https://deanvalley.example/trip", "📝", "note")]).join("\n"),
+      want: "🪙 Ivy: Jodrell Bank trip money due\n🚌 Ivy: call the school office about the Jodrell Bank trip" })],
+    ["Reminder layout: no break → cut at a whole word (never mid-word), under ~70 characters", () => {
+      const src = "completed reading record and signed permission slip for the museum visit next week";
+      const line = formatLines([it("Harry", `Harry needs to bring in his ${src}`, "📝", "note")])[0];
+      const text = line.replace(/^\S+ Harry: /, ""), body = text.replace(/…$/, "");
+      const ok = text.endsWith("…") && text.length <= 71 && `his ${src}`.startsWith(body) && `his ${src}`[body.length] === " ";
+      return { got: ok ? "ok" : line, want: "ok" };
+    }],
+    ["Reminder layout: title tidy on every item ('Outdoor PE kit' → 'outdoor PE kit', acronyms and proper names kept)", () => ({
+      got: formatLines([it("Harry", "Outdoor PE kit", "👟"), it("Harry", "PE kit", "👟"), it("Harry", "Forest School", "🌳"), it("Harry", "Halloween disco", "", "event")]).join("\n"),
+      want: "👟 Harry: outdoor PE kit\n👟 Harry: PE kit\n🌳 Harry: Forest School\n🎉 Harry: Halloween disco" })],
+    ["Reminder layout: swimming always uses 🏊", () => ({ got: formatLines([it("Rosa", "Swimming kit", "👟"), it("Rosa", "Swim bag", ""), it("Rosa", "Swimming", "🩴")]).join("\n"),
+      want: "🏊 Rosa: swimming kit\n🏊 Rosa: swim bag\n🏊 Rosa: swimming" })],
     ["Reminder layout: template path is one line, no newlines", () => {
       const got = formatTemplateVar([...today, it("Ivy", "PE kit", "👟")]);
       return { got: /[\r\n]/.test(got) ? "CONTAINS NEWLINE: " + got : got, want: "Caspian: 📚 homework due • 🥪 packed lunch • 🪙 change for the Poppy Appeal; Ivy: 👟 PE kit" };
@@ -539,7 +599,7 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
-      scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE],
+      scenario: c.name, period: c.period, now: c.now, scope: "test", only_phones: [FAMILY_A_PHONE], ...(c.source ? { whats_on_source: c.source } : {}),
     });
     const msgs: string[] = (data.messages ?? []).map((m: any) => m.message);
     const reply = msgs[0] ?? null;
@@ -552,7 +612,7 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
       else if (reply !== c.expect) reason = `expected "${c.expect}", got "${reply}"`;
       else if (/[\r\n]/.test(reply)) reason = "template variable contains a newline";
     }
-    results.push({ scenario: c.name, category: "sender", status: reason ? "fail" : "pass", reply, reason, details: { now: c.now, period: c.period } });
+    results.push({ scenario: c.name, category: "sender", status: reason ? "fail" : "pass", reply, reason, details: { now: c.now, period: c.period, source: data.source } });
   }
 
   // Double-send guard: stub-send twice for the same slot; second must be blocked. Never calls Twilio.
@@ -1020,6 +1080,8 @@ Deno.serve(async (req) => {
   if (!adminId) return json({ error: "Admin only" }, 403);
   const body = await req.json().catch(() => ({}));
   const action = body.action ?? "full_suite";
+  // Test-only override of the reminder rules for this whole run (never touches app_settings).
+  SENDER_SOURCE = body.whats_on_source === "new" || body.whats_on_source === "legacy" ? body.whats_on_source : null;
   // Diagnosis helper: run one scenario N times (no retry), return outcomes + any recorded outage errors.
   if (action === "repeat_case") {
     const c = HANDLER_CASES.find((x) => x.name === body.scenario);
@@ -1109,12 +1171,12 @@ Deno.serve(async (req) => {
   await admin.from("test_runs").update({
     finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
     status: next ? "running" : failed ? "failed" : "passed",
-    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined }),
+    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined, whats_on_source: SENDER_SOURCE ?? "setting" }),
   }).eq("id", runId);
 
   // Chained runs: queue the next chunk from the database with a fresh single-use token. No WhatsApp alerts for test runs.
   if (body.chain === true && next) {
-    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...next } });
+    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...(SENDER_SOURCE ? { whats_on_source: SENDER_SOURCE } : {}), ...next } });
     if (error) { console.error("[runner] chain failed:", error.message); await admin.from("test_runs").update({ status: "failed", finished_at: new Date().toISOString() }).eq("id", runId); }
   }
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });
