@@ -5,7 +5,7 @@ import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_sha
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
-import { normaliseYearGroups, yearGroupMatches } from "../_shared/whatsOn.ts";
+import { eventYearGroups, yearGroupMatches } from "../_shared/whatsOn.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -1115,10 +1115,15 @@ async function executeTool(
       // Exact match on same child + same date + same thing → genuine duplicate
       let exact: typeof candidates[number] | undefined;
       let partial: typeof candidates[number] | undefined;
+      // Several overlapping items (e.g. "Y3/4 Mixed…" and "Y3/4 Girls Football Tournament"): pick the one sharing the
+      // most words with the parent's own message + the summary; ties keep the first found.
+      const parentWords = itemTokens(`${(context as any).__grounding || ""} ${newSummary}`, allChildNames);
+      const score = (text: string) => [...itemTokens(text, allChildNames)].filter((w) => parentWords.has(w)).length;
+      let bestScore = -1;
       for (const c of candidates) {
         const m = matchItem(c.text, newSummary, allChildNames);
         if (m === "exact") { exact = c; break; }
-        if (m === "ambiguous" && !partial) partial = c;
+        if (m === "ambiguous") { const sc = score(c.text); if (sc > bestScore) { partial = c; bestScore = sc; } }
       }
 
       if (exact) {
@@ -1708,14 +1713,15 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
 /** Words that don't make two items the same thing on their own. */
 const GENERIC_EVENT_WORDS = new Set(["tournament", "event", "day", "club", "match", "festival", "session", "competition", "activity", "after", "before",
   "school", "class", "year", "mixed", "morning", "afternoon", "evening", "week", "fc", "team", "practice", "time", "group", "the", "and", "at"]);
-/** A school-event overlap needs no question when: the event's stored year_group (column only — a blank/unknown or
- *  "all" year is never a clear match) includes the child's, and a real topic word is shared. Same date is given. */
+/** A school-event overlap needs no question when: the event's year group (stored column, or a KS1/KS2/EYFS title
+ *  narrowing an "all" — a blank/unknown or plain "all" is never a clear match) includes the child's, and a real topic
+ *  word is shared. Same date is given. */
 function clearSchoolEventMatch(dup: NonNullable<ToolResult["dup"]>, sourceText: string, context: MontyContext): boolean {
   if (dup.table !== "school_events" || !dup.child) return false;
   const kid = context.children.find((c) => c.first_name.toLowerCase() === dup.child!.toLowerCase());
   if (!kid?.year_group) return false;
   const eventYears = dup.yearGroup?.trim() || null;
-  if (!normaliseYearGroups(eventYears) || !yearGroupMatches(eventYears, kid.year_group)) return false;
+  if (!eventYearGroups(eventYears, dup.existing) || !yearGroupMatches(eventYears, kid.year_group, dup.existing)) return false;
   const names = context.children.map((c) => c.first_name);
   const ev = itemTokens(dup.existing, names);
   // Parent's own words only: the AI's summary can borrow the school event's wording ("Macc FC"), faking a shared topic.

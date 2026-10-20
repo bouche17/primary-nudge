@@ -3,6 +3,7 @@ import GettingStarted from "@/components/GettingStarted";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { yearGroupMatches } from "../../supabase/functions/_shared/schoolEventRules.ts";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -338,7 +339,6 @@ const Dashboard = () => {
       };
 
       if (schoolIds.length > 0) {
-        const allowedYears = ["all", ...yearGroups];
         const { data: events } = await supabase
           .from("school_events")
           .select("id, title, start_at, year_group, school_id")
@@ -348,14 +348,13 @@ const Dashboard = () => {
           .order("start_at", { ascending: true });
 
         events?.forEach((e) => {
-          if (e.year_group && !allowedYears.includes(e.year_group)) return;
+          // Same year-group rule as reminders and chat ("Year 3,Year 4" includes Year 3; "PTA KS1 Disco" → R/Y1/Y2).
           const date = new Date(e.start_at).toISOString().slice(0, 10);
           const matchedChildren = children
             .filter((c) => c.school_id === e.school_id)
-            .filter(
-              (c) => !e.year_group || e.year_group === "all" || c.year_group === e.year_group
-            )
+            .filter((c) => yearGroupMatches(e.year_group, c.year_group, e.title))
             .map((c) => c.first_name);
+          if (matchedChildren.length === 0) return;
           const dedupeKey = `event|${date}|${e.title.trim().toLowerCase()}`;
           addItem(dedupeKey, {
             key: `event-${date}-${e.title}`,
