@@ -45,11 +45,11 @@
 - [x] send-reminders reads app_settings.whats_on_source (legacy/new), full suite both ways
 - [x] Switched whats_on_source='new'; tonight's 18:00 previewed
 - [x] Reminder line tidies (short headline, no links/phones, title tidy everywhere, 🏊)
-- [ ] Data check for Matt: "PTA KS1 Disco" is tagged whole-school; two "school closes" events on 22 Oct
+- [x] Data check for Matt: "PTA KS1 Disco" is tagged whole-school; two "school closes" events on 22 Oct (handled in code, 20 Oct)
 
 ## Thursday 22 Oct reminder fixes (due Wed 21 Oct 15:00 UK; else whats_on_source → legacy)
-- [ ] After-school sport/activity words + 15:15 time rule → opt-in (Y4/5/6 Swimming stays)
-- [ ] KS1/KS2/EYFS title narrows an "all"/blank year group (shared logic: reminders, dashboard, chat)
-- [ ] Same-day school-event markers: shorter title contained in longer → one line
-- [ ] Chat duplicate check picks the event sharing most words with the parent's message (+ girls test)
-- [ ] Free tests, quick suite, shadow re-run, Thursday 22nd evening dry-run examples
+- [x] After-school sport/activity words + 15:15 time rule → opt-in (Y4/5/6 Swimming stays)
+- [x] KS1/KS2/EYFS title narrows an "all"/blank year group (shared logic: reminders, dashboard, chat)
+- [x] Same-day school-event markers: shorter title contained in longer → one line
+- [x] Chat duplicate check picks the event sharing most words with the parent's message (+ girls test)
+- [x] Free tests, quick suite, shadow re-run, Thursday 22nd evening dry-run examples
