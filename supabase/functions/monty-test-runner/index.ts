@@ -1148,6 +1148,17 @@ Deno.serve(async (req) => {
     return json({ runs, outages: fails });
   }
 
+  // Read-only preview of a real reminder run (send-reminders real_readonly: builds only, never sends, phones masked).
+  if (action === "reminder_preview") {
+    const period = body.period === "morning" ? "morning" : "evening";
+    const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/send-reminders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "x-monty-test-secret": Deno.env.get("MONTY_TEST_SECRET")! },
+      body: JSON.stringify({ scenario: "reminder preview", scope: "real_readonly", period, now: body.now, with_freeform: true, ignore_sent_log: true }),
+    });
+    return json(await res.json().catch(() => ({ error: `HTTP ${res.status}` })), res.ok ? 200 : 500);
+  }
+
   if (action === "whats_on_shadow") {
     try { return json(await runWhatsOnShadow(admin, { days: Number(body.days) || 14, now: body.now })); }
     catch (e) {
