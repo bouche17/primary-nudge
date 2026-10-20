@@ -1,8 +1,10 @@
 // One source of truth for "what's on" for a family. No AI, no writes.
 // computeWhatsOn() is pure (testable without the database); loadFamilyData() does the reading.
 // Morning/evening reminders read this when app_settings.whats_on_source = 'new' (send-reminders);
-// they skip items flagged optIn. The dashboard and Sunday week-ahead don't read it yet.
+// they skip items flagged optIn. Year-group/opt-in rules live in schoolEventRules.ts (also used by the dashboard and chat).
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isOptInEvent, markerContained, norm, yearGroupMatches } from "./schoolEventRules.ts";
+export { ACTIVITY_WORDS, ALWAYS_INCLUDE_WORDS, eventYearGroups, isOptInEvent, markerContained, normaliseYearGroups, OPT_IN_WORDS, yearGroupMatches } from "./schoolEventRules.ts";
 
 export type WhatsOnKind = "weekly" | "fortnightly" | "one-off" | "school event" | "school reminder" | "lunch";
 export interface WhatsOnItem {
@@ -37,23 +39,7 @@ const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 export const ukDate = (ts: string | Date) => new Date(ts).toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 const weekdayOf = (d: string) => WEEKDAYS[new Date(d + "T12:00:00Z").getUTCDay()];
 const mondayOf = (d: string) => { const day = new Date(d + "T12:00:00Z").getUTCDay(); return iso(noon(d) - ((day + 6) % 7) * DAY_MS); };
-const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
-// ── Opt-in school events (Matt's rule): left out of reminders unless the parent saved them. Edit the list here. ──
-export const OPT_IN_WORDS = [
-  "club", "clubs", "asc", "after school club", "breakfast club", "tournament", "tournaments", "match", "matches", "fixture", "fixtures",
-  "squad", "team", "teams", "trials", "trial", "auditions", "audition", "lessons", "lesson", "tuition", "party", "parties",
-  "sign up", "signup", "sign ups", "taster", "tasters",
-];
-/** Opt-in = any OPT_IN_WORDS phrase as whole words. "Party" doesn't count for a whole-school disco. */
-export function isOptInEvent(title: string, yearGroup: string | null): boolean {
-  const t = ` ${norm(title)} `;
-  const hits = OPT_IN_WORDS.filter((w) => t.includes(` ${w} `));
-  if (!hits.length) return false;
-  const wholeSchool = normaliseYearGroups(yearGroup) === null;
-  if (wholeSchool && /\bdisco\b/.test(t) && hits.every((w) => w === "party" || w === "parties")) return false;
-  return true;
-}
 /** Year prefix on event titles ("Y3/4 ", "Year 5: ", "KS2 ") — removed for matching and for the reminder line. */
 export function stripYearPrefix(title: string): string {
   const re = /^\s*(?:(?:y(?:ea)?r?s?)\s*[\dR]+(?:\s*[,/&\-]\s*(?:y(?:ea)?r?s?\s*)?[\dR]+)*|ks\s*[1-4]|eyfs|reception|nursery)\b[\s:.\-–—]*/i;
@@ -62,30 +48,6 @@ export function stripYearPrefix(title: string): string {
   return t.trim() || title.trim();
 }
 const matchKey = (s: string) => norm(s).replace(/\b(at|the|a|an)\b/g, " ").replace(/\s+/g, " ").trim();
-
-/** "Y1", "Year 1", "1" → "1"; "Reception"/"R"/"YR" → "R"; "all"/blank → null (everyone). Lists split on , / & "and". */
-export function normaliseYearGroups(v: string | null | undefined): Set<string> | null {
-  if (!v || !v.trim() || /^\s*(all|whole school|everyone)\s*$/i.test(v)) return null;
-  const out = new Set<string>();
-  for (const part of v.split(/,|\/|&|\band\b/i)) {
-    const p = part.trim();
-    if (!p) continue;
-    if (/^(all|whole school)$/i.test(p)) return null;
-    if (/^(reception|r|yr|year\s*r)$/i.test(p)) { out.add("R"); continue; }
-    const m = p.match(/^(?:y(?:ear)?\s*)?(\d{1,2})$/i);
-    if (m) out.add(String(Number(m[1])));
-    else out.add(norm(p));
-  }
-  return out.size ? out : null;
-}
-export function yearGroupMatches(eventYears: string | null, childYear: string | null): boolean {
-  const ev = normaliseYearGroups(eventYears);
-  if (!ev) return true;
-  const kid = normaliseYearGroups(childYear);
-  if (!kid) return false;
-  for (const k of kid) if (ev.has(k)) return true;
-  return false;
-}
 
 export function isHoliday(h: FamilyData["holidays"], schoolId: string | null, date: string) {
   return h.some((x) => (x.school_id === null || x.school_id === schoolId) && x.start_date <= date && x.end_date >= date);
@@ -152,12 +114,12 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
       if (ukDate(e.start_at) !== date) continue;
       for (const kid of kids) {
         if (e.school_id !== null && e.school_id !== kid.school_id) continue;
-        if (!yearGroupMatches(e.year_group, kid.year_group)) continue;
+        if (!yearGroupMatches(e.year_group, kid.year_group, e.title)) continue;
         if (excluded(kid.id, e.title)) continue;
         // Parent saved it themselves (same title, or saved under the event's title): their item is the one shown.
         const mine = parentKeys(kid.id);
         if (mine.has(matchKey(e.title)) || mine.has(matchKey(stripYearPrefix(e.title)))) continue;
-        const optIn = isOptInEvent(e.title, e.year_group);
+        const optIn = isOptInEvent(e.title, e.year_group, e.start_at);
         items.push({ date, childId: kid.id, childName: kid.first_name, title: e.title, emoji: "🏫", kind: "school event", slot: "both", source: { table: "school_events", id: e.id }, ...(optIn ? { optIn: true } : {}) });
       }
     }
@@ -169,7 +131,21 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
     (a.childName ?? "\uffff").localeCompare(b.childName ?? "\uffff") ||
     KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || a.title.localeCompare(b.title) || a.source.id.localeCompare(b.source.id));
   const seen = new Set<string>();
-  return sorted.filter((i) => { const k = `${i.date}|${i.childId ?? "family"}|${norm(i.title)}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const unique = sorted.filter((i) => { const k = `${i.date}|${i.childId ?? "family"}|${norm(i.title)}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  // Same-day school events where one title's meaningful words are all in the other's ("School closes" vs
+  // "October Half Term begins (school closes)"): keep the longer one. An opt-in item never hides a reminder-visible one.
+  const events = unique.filter((i) => i.kind === "school event");
+  const hidden = new Set<WhatsOnItem>();
+  for (const a of events) {
+    for (const b of events) {
+      if (a === b || hidden.has(b) || a.date !== b.date || a.childId !== b.childId) continue;
+      if (b.optIn && !a.optIn) continue;
+      if (!markerContained(a.title, b.title)) continue;
+      const bWins = b.title.length > a.title.length || (b.title.length === a.title.length && unique.indexOf(b) < unique.indexOf(a));
+      if (bWins) { hidden.add(a); break; }
+    }
+  }
+  return unique.filter((i) => !hidden.has(i));
 }
 
 /** Reads everything for the family of `userId` (the user plus every linked partner). */
