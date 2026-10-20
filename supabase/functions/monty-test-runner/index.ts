@@ -594,7 +594,7 @@ interface Seed {
   reminders?: { child: string; title: string; day: string }[];
   notes?: { child: string | null; summary: string; date: string }[];
   lunches?: { child: string; days: string[]; week: string }[];
-  events?: { title: string; start: string }[];
+  events?: { title: string; start: string; year_group: string | null }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
 }
@@ -641,7 +641,7 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
   }
   if (seed.events?.length) {
     const { error: e } = await admin.from("school_events").insert(seed.events.map((ev, i) => ({
-      school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: null, uid: `monty-test-${i}-${Date.now()}`,
+      school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: ev.year_group, uid: `monty-test-${i}-${Date.now()}`,
     })));
     if (e) throw new Error(`seed events: ${e.message}`);
   }
