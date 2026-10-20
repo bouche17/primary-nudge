@@ -38,3 +38,11 @@
 - [x] Step 2: whatsOn.ts, whats-on function, free tests, shadow diffs + nightly cron + /admin/whats-on-diffs, whats_on_source setting
 - [ ] Email delivery of outage alerts to hello@heymonty.co.uk — blocked: needs heymonty.co.uk set up as an email domain
 - [ ] New utility WhatsApp template "Monty system alert" — blocked: Matt to submit in Twilio
+
+## Rebuild Stage 2 — reminders on getWhatsOn (20 Oct)
+- [x] Opt-in school-event flag + free tests; parent-saved event shown once
+- [x] Shadow re-run with filter (0 old-only)
+- [x] send-reminders reads app_settings.whats_on_source (legacy/new), full suite both ways
+- [x] Switched whats_on_source='new'; tonight's 18:00 previewed
+- [x] Reminder line tidies (short headline, no links/phones, title tidy everywhere, 🏊)
+- [ ] Data check for Matt: "PTA KS1 Disco" is tagged whole-school; two "school closes" events on 22 Oct
