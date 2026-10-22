@@ -53,3 +53,10 @@
 - [x] Same-day school-event markers: shorter title contained in longer → one line
 - [x] Chat duplicate check picks the event sharing most words with the parent's message (+ girls test)
 - [x] Free tests, quick suite, shadow re-run, Thursday 22nd evening dry-run examples
+
+## Reminder polish (live before Sun 1 Nov 18:00)
+- [x] Shared school event once per family ("Everyone" / "A & B"), right school only, Everyone first, template too
+- [x] Deadline words kept; relative days → real day from the item's date
+- [x] Parent item + school event on the same topic → one school line with the parent's extra detail
+- [x] Always-include words beat club/activity words
+- [x] Free tests; dry-run Sun 1 Nov 18:00 and Mon 2 Nov 07:00

@@ -67,16 +67,37 @@ function ukMinutes(ts: string | Date): number {
   return n("hour") * 60 + n("minute");
 }
 
-/** Opt-in = an OPT_IN_WORDS or ACTIVITY_WORDS phrase (whole words), or a year-group event from 15:15 UK without an
- *  always-include word. "Party" doesn't count for a whole-school disco. */
+/** Opt-in = an OPT_IN_WORDS or ACTIVITY_WORDS phrase (whole words), or a year-group event from 15:15 UK — and in every
+ *  case NO always-include word ("Choir concert", "Dance performance", "Football match vs parents (assembly)" are in). */
 export function isOptInEvent(title: string, yearGroup: string | null, startAt?: string | Date | null): boolean {
   const t = ` ${norm(title)} `;
-  const has = (list: string[]) => list.filter((w) => t.includes(` ${w} `));
+  const has = (list: string[]) => list.some((w) => t.includes(` ${w} `));
+  if (has(ALWAYS_INCLUDE_WORDS)) return false;
+  if (has(OPT_IN_WORDS) || has(ACTIVITY_WORDS)) return true;
   const wholeSchool = eventYearGroups(yearGroup, title) === null;
-  const hits = has(OPT_IN_WORDS);
-  if (hits.length && !(wholeSchool && / disco /.test(t) && hits.every((w) => w === "party" || w === "parties"))) return true;
-  if (has(ACTIVITY_WORDS).length) return true;
-  if (!wholeSchool && startAt && ukMinutes(startAt) >= OPT_IN_AFTER.hour * 60 + OPT_IN_AFTER.minute && !has(ALWAYS_INCLUDE_WORDS).length) return true;
+  return !wholeSchool && !!startAt && ukMinutes(startAt) >= OPT_IN_AFTER.hour * 60 + OPT_IN_AFTER.minute;
+}
+
+// ── Topic words: a parent's own item and a school event on the same day for the same child are the same thing ──
+export const TOPIC_WORDS = [
+  "disco", "trip", "photo", "swimming", "football", "netball", "rugby", "hockey", "cricket", "athletics", "gymnastics", "dance",
+  "choir", "concert", "nativity", "panto", "pantomime", "assembly", "performance", "fair", "harvest", "forest school", "non uniform",
+  "sports day", "parents evening", "cake sale", "bake sale", "workshop", "theatre", "museum", "christmas jumper", "flu", "vaccination", "cinema",
+];
+const TOPIC_FOLD: [RegExp, string][] = [
+  [/\bphoto(?:s|graphs?)\b/g, "photo"], [/\btrips\b/g, "trip"], [/\bswim(?:s|mers?)?\b/g, "swimming"], [/\bdiscos\b/g, "disco"],
+  [/\bconcerts\b/g, "concert"], [/\bperformances\b/g, "performance"], [/\bassemblies\b/g, "assembly"], [/\bfairs\b/g, "fair"],
+  [/\bparent s\b|\bparents\b|\bparent\b/g, "parents"], [/\bnon\s?uniform\b/g, "non uniform"], [/\bworkshops\b/g, "workshop"],
+];
+export function topicWords(title: string): Set<string> {
+  let t = norm(title);
+  for (const [re, to] of TOPIC_FOLD) t = t.replace(re, to);
+  t = ` ${t} `;
+  return new Set(TOPIC_WORDS.filter((w) => t.includes(` ${w} `)));
+}
+export function sharesTopic(a: string, b: string): boolean {
+  const ta = topicWords(a);
+  for (const w of topicWords(b)) if (ta.has(w)) return true;
   return false;
 }
 

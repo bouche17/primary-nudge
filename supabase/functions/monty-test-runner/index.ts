@@ -7,8 +7,8 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
-import { formatFreeform, formatLines, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
-import { computeWhatsOn, getWhatsOn, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
+import { fmtFromWhatsOn, formatFreeform, formatLines, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
+import { computeWhatsOn, getWhatsOn, isOptInEvent, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
 import { runWhatsOnShadow } from "./shadow.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -602,8 +602,8 @@ function runFormatTests(): Result[] {
       want: "Good evening! 🌙 A few things to get ready for tomorrow:\n📖 Ivy: reading books returned\n🥪 Ivy: packed lunch\n👟 Caspian: PE kit\nHope you have a lovely evening!" })],
     ["Reminder layout: item with no emoji gets a default by type", () => ({ got: formatFreeform([it("Caspian", "Harvest festival", "", "event"), it("Caspian", "Bring a jumper", "", "reminder")], "morning"),
       want: "Good morning! ☀️ Here's what's on today:\n🏫 Caspian: harvest festival\n✅ Caspian: bring a jumper\nHave a great day!" })],
-    ["Reminder layout: long note cut to a short headline at a natural break", () => ({ got: formatLines([it("Caspian", "Caspian needs to bring £2 for the cake sale on Friday, please send it in a named envelope to the office by 9am", "📝", "note")]).join("\n"),
-      want: "🪙 Caspian: £2 for the cake sale on Friday" })],
+    ["Reminder layout: long note cut to a short headline at a natural break, its deadline kept", () => ({ got: formatLines([it("Caspian", "Caspian needs to bring £2 for the cake sale on Friday, please send it in a named envelope to the office by 9am", "📝", "note")]).join("\n"),
+      want: "🪙 Caspian: £2 for the cake sale on Friday… by 9am" })],
     ["Reminder layout: no links or phone numbers in the line", () => ({ got: formatLines([it("Ivy", "Jodrell Bank trip money due, pay at https://pay.example.uk/trip or call 01625 383838", "📝", "note"),
       it("Ivy", "Call the school office on 01625 383 838 about the Jodrell Bank trip, details at https://deanvalley.example/trip", "📝", "note")]).join("\n"),
       want: "🪙 Ivy: Jodrell Bank trip money due\n🚌 Ivy: call the school office about the Jodrell Bank trip" })],
@@ -624,6 +624,56 @@ function runFormatTests(): Result[] {
       return { got: /[\r\n]/.test(got) ? "CONTAINS NEWLINE: " + got : got, want: "Caspian: 📚 homework due • 🥪 packed lunch • 🪙 change for the Poppy Appeal; Ivy: 👟 PE kit" };
     }],
   ];
+  // ── Reminder polish (1 Nov): shared events once per family, deadline words kept, one line per topic, always-include wins ──
+  const kid = (id: string, first_name: string, year_group: string, school_id = "s1") => ({ id, first_name, school_id, year_group });
+  const ev = (id: string, title: string, start_at: string, year_group = "all", school_id = "s1") => ({ id, school_id, title, start_at, year_group });
+  const lines = (f: FamilyData, d: string, tmpl = false) => {
+    const w = computeWhatsOn(f, d, d).filter((i) => !i.optIn);
+    const fi = w.map((i) => fmtFromWhatsOn(i, i.childName ?? (f.children.length === 1 ? f.children[0].first_name : "the children")));
+    const fam = f.children.map((c) => c.first_name);
+    return tmpl ? formatTemplateVar(fi, fam) : formatLines(fi, fam).join("\n");
+  };
+  const closes = ev("c", "October Half Term begins (school closes)", "2026-10-22T15:20:00Z");
+  cases.push(
+    ["Shared events: two children, same school, whole-school event → one 'Everyone' line", () => ({
+      got: lines(famFixture({ children: [kid("k1", "Freddie", "Year 6"), kid("k2", "Tommy", "Year 4")], schoolEvents: [closes] }), "2026-10-22"),
+      want: "🏫 Everyone: school closes for half term" })],
+    ["Shared events: three children, event reaches two → 'Freddie & Tommy:' line, Everyone first", () => ({
+      got: lines(famFixture({ children: [kid("k1", "Amy", "Year 1"), kid("k2", "Freddie", "Year 6"), kid("k3", "Tommy", "Year 4")],
+        schoolEvents: [ev("d", "PTA KS2 Disco", "2026-10-22T17:15:00Z"), closes] }), "2026-10-22"),
+      want: "🏫 Everyone: school closes for half term\n🎉 Freddie & Tommy: PTA KS2 Disco" })],
+    ["Shared events: children at two schools → only the event's school's children grouped", () => ({
+      got: lines(famFixture({ children: [kid("k1", "Amy", "Year 1", "s1"), kid("k2", "Ben", "Year 3", "s1"), kid("k3", "Cal", "Year 5", "s2")],
+        schoolEvents: [ev("c1", "Inset Day", "2026-11-02T08:50:00Z", "all", "s1"), ev("c2", "Book Fair", "2026-11-02T08:50:00Z", "all", "s2")] }), "2026-11-02"),
+      want: "🏫 Amy & Ben: Inset Day\n📖 Cal: Book Fair" })],
+    ["Shared events: template one-line version uses 'Everyone:' too (no newlines)", () => {
+      const got = lines(famFixture({ children: [kid("k1", "Freddie", "Year 6"), kid("k2", "Tommy", "Year 4")], schoolEvents: [closes],
+        lunchPlans: [{ id: "l", child_id: "k2", week_start: "2026-10-19", packed_lunch_days: ["Thursday"] }] }), "2026-10-22", true);
+      return { got: /[\r\n]/.test(got) ? "NEWLINE: " + got : got, want: "Everyone: 🏫 school closes for half term; Tommy: 🥪 packed lunch" };
+    }],
+    ["Deadline words kept: 'selections lock tomorrow' on a Wednesday item → 'selections lock Thursday'", () => ({
+      got: formatLines([{ childName: "the children", title: "Book next week's school meals on the Parent Portal — selections lock tomorrow", emoji: "", type: "announcement", date: "2026-11-04" }]).join("\n"),
+      want: "📖 Everyone: book next week's school meals on the Parent Portal — selections lock Thursday" })],
+    ["Deadline words kept: 'by 3pm today' on a long note is never cut off", () => {
+      const got = formatLines([{ childName: "Toby", title: "Deadline: Consent and payment of £12.66 for Safety Central trip must be completed on Arbor by 3pm today.", emoji: "📝", type: "note", date: "2026-10-26" }])[0];
+      return { got: /by 3pm Monday$/.test(got) ? "ok" : got, want: "ok" };
+    }],
+    ["One line per topic: parent note 'Halloween disco' + school 'PTA KS2 Disco' same child/day → one line", () => ({
+      got: lines(famFixture({ schoolEvents: [ev("d", "PTA KS2 Disco", "2026-10-22T17:15:00Z")], notes: [{ id: "n", summary: "Halloween disco", child_name: "Harry", extracted_dates: [{ date: "2026-10-22" }] }] }), "2026-10-22"),
+      want: "🎉 Harry: PTA KS2 Disco" })],
+    ["One line per topic: parent note 'disco, bring £2' + school disco → one line containing '£2'", () => ({
+      got: lines(famFixture({ schoolEvents: [ev("d", "PTA KS2 Disco", "2026-10-22T17:15:00Z")], notes: [{ id: "n", summary: "Disco, bring £2", child_name: "Harry", extracted_dates: [{ date: "2026-10-22" }] }] }), "2026-10-22"),
+      want: "🎉 Harry: PTA KS2 Disco, bring £2" })],
+    ["One line per topic: weekly 'Swimming kit needed' + 'Y4/5/6 Swimming' → one line keeping the kit", () => ({
+      got: lines(famFixture({ children: [kid("k1", "Rosa", "Year 6")], schoolEvents: [ev("s", "Y4/5/6 Swimming", "2026-11-03T00:00:00Z", "Year 4,Year 5,Year 6")],
+        childReminders: [{ id: "r", child_id: "k1", title: "Swimming kit needed", emoji: "🩴", day_of_week: "Tuesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }] }), "2026-11-03"),
+      want: "🏊 Rosa: swimming, bring kit" })],
+    ["Always-include beats club words: 'Choir concert', 'Football match vs parents (assembly)', 'Dance performance' in; 'Choir' at 15:30 opt-in", () => {
+      const got = [isOptInEvent("Choir concert", "Year 3", "2026-11-05T15:30:00Z"), isOptInEvent("Football match vs parents (assembly)", "all", "2026-11-05T09:00:00Z"),
+        isOptInEvent("Dance performance", "Year 4", "2026-11-05T16:00:00Z"), isOptInEvent("Choir", "Year 3", "2026-11-05T15:30:00Z")].map((x) => (x ? "opt-in" : "in")).join(", ");
+      return { got, want: "in, in, in, opt-in" };
+    }],
+  );
   const em = (o: Partial<SchoolEmailInfo>): SchoolEmailInfo => ({ message: "⚽ The football tournament is on Wednesday 21st October.", yearGroups: ["Year 3", "Year 4"], links: [], ...o });
   cases.push(
     ["School email: targeted email starts with the family's children", () => ({ got: buildSchoolMessage(em({}), ["Caspian", "Ivy"]), want: "For Caspian and Ivy: ⚽ The football tournament is on Wednesday 21st October." })],

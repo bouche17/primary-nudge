@@ -68,7 +68,9 @@ export async function runWhatsOnShadow(db: SupabaseClient, opts: { days?: number
     for (const u of famUsers) userToFamily.set(u, w?.familyId ?? "test");
     if (isTest || !w) { skippedTest++; continue; }
     const label = (kids ?? []).filter((k) => famUsers.includes(k.parent_id)).map((k) => k.first_name).sort().join(" & ");
-    newByFamily.set(w.familyId, { label, items: w.items.filter((x) => !x.optIn) }); // reminders never send opt-in events
+    // Reminders never send opt-in events; a parent's item shown as a school event's line still counts as present.
+    const visible = w.items.filter((x) => !x.optIn).flatMap((x) => [x, ...(x.absorbed ?? []).map((a) => ({ ...x, title: a.title, kind: (a.table === "parent_notes" ? "one-off" : "weekly") as WhatsOnItem["kind"] }))]);
+    newByFamily.set(w.familyId, { label, items: visible });
   }
 
   // ── Old side: morning of each date + evening before it (both target that date) ──
