@@ -3,8 +3,8 @@
 // Morning/evening reminders read this when app_settings.whats_on_source = 'new' (send-reminders);
 // they skip items flagged optIn. Year-group/opt-in rules live in schoolEventRules.ts (also used by the dashboard and chat).
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { isOptInEvent, markerContained, norm, yearGroupMatches } from "./schoolEventRules.ts";
-export { ACTIVITY_WORDS, ALWAYS_INCLUDE_WORDS, eventYearGroups, isOptInEvent, markerContained, normaliseYearGroups, OPT_IN_WORDS, yearGroupMatches } from "./schoolEventRules.ts";
+import { isOptInEvent, markerContained, norm, sharesTopic, topicWords, yearGroupMatches } from "./schoolEventRules.ts";
+export { ACTIVITY_WORDS, ALWAYS_INCLUDE_WORDS, eventYearGroups, isOptInEvent, markerContained, normaliseYearGroups, OPT_IN_WORDS, sharesTopic, yearGroupMatches } from "./schoolEventRules.ts";
 
 export type WhatsOnKind = "weekly" | "fortnightly" | "one-off" | "school event" | "school reminder" | "lunch";
 export interface WhatsOnItem {
@@ -17,6 +17,33 @@ export interface WhatsOnItem {
   slot: "morning" | "evening" | "both";
   source: { table: string; id: string };
   optIn?: boolean;              // school event for an opt-in activity (club, tournament…) the parent hasn't saved: shown in lists, never in reminders
+  details?: string[];           // school event only: extra detail from the parent's own item it replaced ("bring £2", "at 6pm")
+  absorbed?: { table: string; id: string; title: string }[]; // parent's own items shown as this school event's line instead
+}
+
+// ── Parent's own item + school event on the same topic → one line (the school's), with the parent's extra detail ──
+const MONEY_RE = /(?:\b(bring|send in|send|pay)\s+)?£\s?\d+(?:\.\d{2})?/gi;
+const TIME_RE = /(?:\b(at|from|by|until|till|leaving|leaves|starts?|finish(?:es)?|ends?)\s+)?\b\d{1,2}(?:[:.]\d{2})?\s?(?:am|pm)\b|\b(at|from|by|until|till|leaving|leaves)\s+\d{1,2}[:.]\d{2}\b/gi;
+const BRING_RE = /\b(?:bring|wear|pack|take)\s+(?:in\s+)?(?:a |an |their |his |her |some )?[a-z][\w' -]{1,30}?(?=$|[,.;:()—–]|\s(?:and then|for|to|by|on|at|so)\s)/gi;
+const KIT_RE = /\b(?:(?:pe|swimming|swim|football|forest school|sports?)\s+)?(?:kit|bag|costume|towel|goggles|wellies|waterproofs|packed lunch|snack|water bottle|drink)\b/gi;
+
+/** Short pieces of the parent's text the school event's title doesn't already say: money, "bring …"/kit, times. */
+export function extraDetails(parentText: string, eventTitle: string): string[] {
+  const ev = ` ${norm(eventTitle)} `;
+  const topics = [...topicWords(eventTitle)];
+  const out: string[] = [];
+  const add = (d: string) => {
+    const x = d.replace(/\s+/g, " ").trim();
+    if (!x || ev.includes(` ${norm(x)} `) || out.some((o) => norm(o) === norm(x) || norm(o).includes(norm(x)))) return;
+    out.push(x);
+  };
+  for (const m of parentText.matchAll(MONEY_RE)) add(m[1] ? m[0] : m[0].replace(/^.*?(£)/, "$1"));
+  const bring = [...parentText.matchAll(BRING_RE)].map((m) => m[0].replace(/\s+(?:needed|required)$/i, ""));
+  const kit = [...parentText.matchAll(KIT_RE)].map((m) => topics.reduce((s, w) => s.replace(new RegExp(`^${w}\\s+`, "i"), ""), m[0].toLowerCase()));
+  if (bring.length) bring.forEach(add);
+  else if (kit.length) add("bring " + [...new Set(kit)].join(", ").replace(/, ([^,]+)$/, " & $1"));
+  for (const m of parentText.matchAll(TIME_RE)) add(m[0]);
+  return out;
 }
 
 export interface FamilyData {
@@ -145,7 +172,23 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
       if (bWins) { hidden.add(a); break; }
     }
   }
-  return unique.filter((i) => !hidden.has(i));
+  const kept = unique.filter((i) => !hidden.has(i));
+  // A parent's own note/child reminder sharing a topic word with a reminder-visible school event for the same child
+  // that day ("Halloween disco" + "PTA KS2 Disco") → only the school line, carrying the parent's extra detail.
+  const gone = new Set<WhatsOnItem>();
+  for (const e of kept) {
+    if (e.kind !== "school event" || e.optIn) continue;
+    for (const p of kept) {
+      if (gone.has(p) || p.date !== e.date || (p.source.table !== "parent_notes" && p.source.table !== "child_reminders")) continue;
+      if (!(p.childId === e.childId || (p.childId === null && kids.length === 1))) continue;
+      if (!sharesTopic(p.title, e.title)) continue;
+      gone.add(p);
+      (e.absorbed ??= []).push({ table: p.source.table, id: p.source.id, title: p.title });
+      for (const d of extraDetails(p.title, e.title)) if (!(e.details ??= []).some((x) => norm(x) === norm(d))) e.details.push(d);
+    }
+    if (e.details && !e.details.length) delete e.details;
+  }
+  return kept.filter((i) => !gone.has(i));
 }
 
 /** Reads everything for the family of `userId` (the user plus every linked partner). */

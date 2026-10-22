@@ -1,7 +1,7 @@
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
 import { filterOptedOut } from "../_shared/optOut.ts";
-import { formatTemplateVar, formatFreeform } from "../_shared/reminderFormat.ts";
-import { computeWhatsOn, loadFamilyDataForUsers, stripYearPrefix } from "../_shared/whatsOn.ts";
+import { fmtFromWhatsOn, formatTemplateVar, formatFreeform } from "../_shared/reminderFormat.ts";
+import { computeWhatsOn, loadFamilyDataForUsers } from "../_shared/whatsOn.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -32,6 +32,8 @@ interface ReminderItem {
   type: "reminder" | "event" | "note" | "announcement";
   refId: string;
   childId?: string | null; // shadow comparison only
+  date?: string;           // item's date: relative words ("tomorrow") become the real day
+  shareKey?: string;       // same school event for several children → one line
 }
 
 // ── Year group filter ─────────────────────────────────────────────────────────
@@ -269,18 +271,18 @@ async function buildItemsFromWhatsOn(
     if (w.optIn) continue;
     if (w.slot !== "both" && w.slot !== period) continue;
     const t = w.source.table, id = w.source.id;
-    const [refId, logType, type, title] =
-      t === "child_reminders" ? [`childreminder_${id}_${w.date}_${period}`, "child_reminder", "reminder", w.title] :
-      t === "weekly_lunch_plans" ? [`lunch_${w.childId}_${w.date}_${period}`, "lunch_plan", "reminder", w.title] :
-      t === "school_reminders" ? [`reminder_${id}_${w.childId ?? "family"}_${w.date}_${period}`, "weekly", "announcement", w.title] :
-      t === "school_events" ? [`event_${id}_${w.childId}_${w.date}_${period}`, "event", "event", stripYearPrefix(w.title)] :
-      [`note_${id}_${w.date}_${period}`, "note", "note", w.title];
+    const [refId, logType] =
+      t === "child_reminders" ? [`childreminder_${id}_${w.date}_${period}`, "child_reminder"] :
+      t === "weekly_lunch_plans" ? [`lunch_${w.childId}_${w.date}_${period}`, "lunch_plan"] :
+      t === "school_reminders" ? [`reminder_${id}_${w.childId ?? "family"}_${w.date}_${period}`, "weekly"] :
+      t === "school_events" ? [`event_${id}_${w.childId}_${w.date}_${period}`, "event"] :
+      [`note_${id}_${w.date}_${period}`, "note"];
     if (await alreadySent(anchorPhone, refId, period, today)) continue;
-    items.push({ childName: w.childName ?? onlyChild ?? "the children", title, emoji: t === "school_events" ? "" : w.emoji, // events: emoji by topic (🚌 trip, 📸 photos…)
-      type: type as ReminderItem["type"], refId, childId: w.childId });
+    // Layout fields (event title without year prefix + parent's extra detail, emoji by topic, share key) from the shared formatter.
+    items.push({ ...fmtFromWhatsOn(w, w.childName ?? onlyChild ?? "the children"), refId, childId: w.childId });
     refIdsToLog.push({ refId, title: w.title, type: logType });
   }
-  return { items, refIdsToLog };
+  return { items, refIdsToLog, family: data.children.map((c) => c.first_name) };
 }
 
 interface BuildOptions {
@@ -388,12 +390,13 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
     let reminderItems: ReminderItem[] = [];
     let refIdsToLog: Array<{ refId: string; title: string; type: string }> = [];
+    let familyNames: string[] = familyChildren.map((c: { first_name: string }) => c.first_name);
 
     let useLegacy = source !== "new";
     if (!useLegacy) {
       try {
         const familyUsers = [...allUsers].filter((u) => find(u) === familyId);
-        ({ items: reminderItems, refIdsToLog } = await buildItemsFromWhatsOn(familyUsers, familyChildren, period, targetDateStr, today, anchorPhone));
+        ({ items: reminderItems, refIdsToLog, family: familyNames } = await buildItemsFromWhatsOn(familyUsers, familyChildren, period, targetDateStr, today, anchorPhone));
       } catch (e) {
         // Never skip a family's reminders because the new reader failed: fall back to the legacy build for this family.
         console.error(`[${period}] what's-on build failed for family ${familyId} — using legacy:`, (e as Error).message);
@@ -542,8 +545,9 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
 
     if (reminderItems.length === 0) continue;
 
-    const message = formatTemplateVar(reminderItems);
-    const freeform = formatFreeform(reminderItems, period);
+    for (const i of reminderItems) i.date ??= targetDateStr;
+    const message = formatTemplateVar(reminderItems, familyNames);
+    const freeform = formatFreeform(reminderItems, period, familyNames);
 
     for (const phone of familyPhones) {
       if (testMode && phone !== TEST_PHONE_NUMBER) continue;
