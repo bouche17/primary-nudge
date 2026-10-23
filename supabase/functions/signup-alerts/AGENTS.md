@@ -1,0 +1,2 @@
+# signup-alerts rules
+- Sign-up alerts: triggers on profiles/children write `signup_events` (test numbers never recorded); each new row wakes `signup-alerts`, which waits ~90s for the sign-up to settle and sends one alert via `sendAlertWhatsApp` (Matt's 24h window, else `email_pending`) with text from `buildSignupAlert` (scrubbed of phones/emails); /admin/signups reads `admin_signups`; delete-parent removes the rows — why: Matt must know when a family from a new school joins, without polling.
