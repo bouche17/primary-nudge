@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -6,24 +6,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Search, Plus, Trash2, ArrowRight, CheckCircle2, MessageCircle } from "lucide-react";
+import { Sparkles, Plus, Trash2, ArrowRight, CheckCircle2, MessageCircle } from "lucide-react";
+import SchoolPicker, { type PickedSchool } from "@/components/SchoolPicker";
+import { schoolOneLine } from "../../supabase/functions/_shared/schoolLabel.ts";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
 import { isValidPhone, normalizePhone } from "@/lib/phone";
 
-interface School {
-  id: string;
-  name: string;
-  postcode: string;
-  address: string | null;
-  local_authority: string | null;
-}
+type School = PickedSchool;
 
 interface ChildEntry {
   first_name: string;
   year_group: string;
   school_id: string;
   school_name: string;
+  school_line: string;
 }
 
 const YEAR_GROUPS = [
@@ -52,9 +49,6 @@ const Onboarding = () => {
   const [step, setStep] = useState<"phone" | "school" | "children" | "done">("phone");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [savingPhone, setSavingPhone] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [schools, setSchools] = useState<School[]>([]);
-  const [searching, setSearching] = useState(false);
   const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
 
   const [children, setChildren] = useState<ChildEntry[]>([]);
@@ -114,26 +108,6 @@ const Onboarding = () => {
     }
   }, [user, navigate]);
 
-  const searchSchools = useCallback(async (query: string) => {
-    if (query.length < 2) {
-      setSchools([]);
-      return;
-    }
-    setSearching(true);
-    const { data } = await supabase
-      .from("schools")
-      .select("id, name, postcode, address, local_authority")
-      .or(`name.ilike.%${query}%,postcode.ilike.%${query}%`)
-      .limit(10);
-    setSchools(data || []);
-    setSearching(false);
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => searchSchools(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery, searchSchools]);
-
   const savePhone = async () => {
     if (!phoneNumber.trim()) {
       toast({ title: "Phone number required", description: "Please enter your WhatsApp number so Monty can send you reminders.", variant: "destructive" });
@@ -167,7 +141,7 @@ const Onboarding = () => {
 
   const selectSchool = (school: School) => {
     setSelectedSchool(school);
-    setCurrentChild((prev) => ({ ...prev, school_id: school.id, school_name: school.name }));
+    setCurrentChild((prev) => ({ ...prev, school_id: school.id, school_name: school.name, school_line: schoolOneLine(school) }));
     setStep("children");
   };
 
@@ -177,7 +151,7 @@ const Onboarding = () => {
       return;
     }
     setChildren((prev) => [...prev, currentChild as ChildEntry]);
-    setCurrentChild({ school_id: selectedSchool?.id, school_name: selectedSchool?.name });
+    setCurrentChild({ school_id: selectedSchool?.id, school_name: selectedSchool?.name, school_line: selectedSchool ? schoolOneLine(selectedSchool) : undefined });
   };
 
   const removeChild = (index: number) => {
@@ -187,8 +161,6 @@ const Onboarding = () => {
   const addChildAtDifferentSchool = () => {
     setSelectedSchool(null);
     setCurrentChild({});
-    setSearchQuery("");
-    setSchools([]);
     setStep("school");
   };
 
@@ -318,42 +290,8 @@ const Onboarding = () => {
               className="bg-card rounded-2xl p-6 border border-border shadow-sm"
             >
               <h2 className="font-heading font-bold text-lg text-foreground mb-1">Find your school</h2>
-              <p className="text-muted-foreground text-sm mb-4">Search by school name or postcode</p>
-
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="e.g. St Mary's or SW1A 1AA"
-                  className="pl-10"
-                  autoFocus
-                />
-              </div>
-
-              {searching && <p className="text-xs text-muted-foreground mt-2">Searching…</p>}
-
-              {schools.length > 0 && (
-                <div className="mt-3 space-y-1 max-h-64 overflow-y-auto">
-                  {schools.map((school) => (
-                    <button
-                      key={school.id}
-                      onClick={() => selectSchool(school)}
-                      className="w-full text-left p-3 rounded-xl hover:bg-secondary transition-colors"
-                    >
-                      <p className="font-semibold text-sm text-foreground">{school.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {school.postcode}
-                        {school.local_authority && ` · ${school.local_authority}`}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {searchQuery.length >= 2 && !searching && schools.length === 0 && (
-                <p className="text-sm text-muted-foreground mt-3">No schools found. Try a different search.</p>
-              )}
+              <p className="text-muted-foreground text-sm mb-4">Search by school name, town or postcode, then check it's the right one.</p>
+              <SchoolPicker onConfirm={selectSchool} onCancel={children.length > 0 && selectedSchool ? () => setStep("children") : undefined} />
             </motion.div>
           )}
 
@@ -368,7 +306,8 @@ const Onboarding = () => {
             >
               <h2 className="font-heading font-bold text-lg text-foreground mb-1">Add your children</h2>
               <p className="text-muted-foreground text-sm mb-4">
-                At <strong>{selectedSchool?.name}</strong>
+                At <strong>{selectedSchool ? schoolOneLine(selectedSchool) : ""}</strong>{" "}
+                <button type="button" onClick={addChildAtDifferentSchool} className="text-primary hover:underline">Change school</button>
               </p>
 
               {/* Existing children list */}
@@ -382,7 +321,7 @@ const Onboarding = () => {
                       <div>
                         <p className="font-semibold text-sm text-foreground">{child.first_name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {child.year_group} · {child.school_name}
+                          {child.year_group} · {child.school_line || child.school_name}
                         </p>
                       </div>
                       <button onClick={() => removeChild(i)} className="text-muted-foreground hover:text-destructive transition-colors">

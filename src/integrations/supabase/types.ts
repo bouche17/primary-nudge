@@ -853,6 +853,21 @@ export type Database = {
         }
         Relationships: []
       }
+      postcode_district_towns: {
+        Row: {
+          district: string
+          town: string
+        }
+        Insert: {
+          district: string
+          town: string
+        }
+        Update: {
+          district?: string
+          town?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           created_at: string
@@ -1095,6 +1110,7 @@ export type Database = {
           local_authority: string | null
           name: string
           postcode: string
+          town: string | null
           urn: string
         }
         Insert: {
@@ -1104,6 +1120,7 @@ export type Database = {
           local_authority?: string | null
           name: string
           postcode: string
+          town?: string | null
           urn: string
         }
         Update: {
@@ -1113,7 +1130,44 @@ export type Database = {
           local_authority?: string | null
           name?: string
           postcode?: string
+          town?: string | null
           urn?: string
+        }
+        Relationships: []
+      }
+      signup_events: {
+        Row: {
+          alert_text: string | null
+          channel: string | null
+          child_id: string | null
+          created_at: string
+          delivered: boolean
+          id: string
+          kind: string
+          processed_at: string | null
+          user_id: string
+        }
+        Insert: {
+          alert_text?: string | null
+          channel?: string | null
+          child_id?: string | null
+          created_at?: string
+          delivered?: boolean
+          id?: string
+          kind: string
+          processed_at?: string | null
+          user_id: string
+        }
+        Update: {
+          alert_text?: string | null
+          channel?: string | null
+          child_id?: string | null
+          created_at?: string
+          delivered?: boolean
+          id?: string
+          kind?: string
+          processed_at?: string | null
+          user_id?: string
         }
         Relationships: []
       }
@@ -1372,6 +1426,43 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_school_changes: {
+        Args: { _days?: number }
+        Returns: {
+          change: string
+          child_name: string
+          created_at: string
+          new_school: string
+          tool: string
+        }[]
+      }
+      admin_signups: {
+        Args: { _days?: number }
+        Returns: {
+          channel: string
+          child_first_name: string
+          child_id: string
+          created_at: string
+          delivered: boolean
+          event_id: string
+          kind: string
+          known_school: boolean
+          parent_first_name: string
+          processed_at: string
+          school_address: string
+          school_name: string
+          school_postcode: string
+          school_town: string
+          school_urn: string
+          user_id: string
+          year_group: string
+        }[]
+      }
+      backfill_school_towns: { Args: never; Returns: number }
+      change_child_school: {
+        Args: { _child_id: string; _school_id: string; _source?: string }
+        Returns: boolean
+      }
       claim_family_updates: {
         Args: { _cap_minutes?: number; _quiet_minutes?: number }
         Returns: {
@@ -1420,9 +1511,22 @@ export type Database = {
         }
         Returns: boolean
       }
+      is_test_phone: { Args: { _phone: string }; Returns: boolean }
       queue_suite_chunk: { Args: { _body: Json }; Returns: number }
       queue_whats_on_shadow: { Args: never; Returns: number }
       rollover_year_groups: { Args: never; Returns: undefined }
+      search_schools: {
+        Args: { _limit?: number; _q: string }
+        Returns: {
+          address: string
+          id: string
+          local_authority: string
+          name: string
+          postcode: string
+          town: string
+          urn: string
+        }[]
+      }
       test_send_reminders: { Args: { p?: string }; Returns: undefined }
     }
     Enums: {

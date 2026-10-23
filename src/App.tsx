@@ -21,6 +21,7 @@ import FamilyAudit from "./pages/FamilyAudit";
 import AdminTests from "./pages/AdminTests";
 import AdminCosts from "./pages/AdminCosts";
 import AdminWhatsOnDiffs from "./pages/AdminWhatsOnDiffs";
+import AdminSignups from "./pages/AdminSignups";
 import AcceptInvite from "./pages/AcceptInvite";
 import NotFound from "./pages/NotFound";
 import OAuthConsent from "./pages/OAuthConsent";
@@ -71,6 +72,7 @@ const App = () => (
               <Route path="/admin/tests" element={<AdminTests />} />
               <Route path="/admin/costs" element={<AdminCosts />} />
               <Route path="/admin/whats-on-diffs" element={<AdminWhatsOnDiffs />} />
+              <Route path="/admin/signups" element={<AdminSignups />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/invite/:token" element={<AcceptInvite />} />
               <Route path="/privacy" element={<Privacy />} />

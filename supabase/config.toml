@@ -34,3 +34,7 @@ verify_jwt = false
 verify_jwt = false
 [functions.whats-on]
 verify_jwt = false
+[functions.signup-alerts]
+verify_jwt = false
+[functions.school-towns]
+verify_jwt = false

@@ -150,6 +150,7 @@ Deno.serve(async (req) => {
       { table: "linked_accounts", kind: "delete", apply: (q) => q.or(`primary_user_id.eq.${uid},linked_user_id.eq.${uid}`) },
       { table: "pending_family_updates", kind: "delete", apply: (q) => q.or(`actor_user_id.eq.${uid},family_key.eq.${uid}`) },
       { table: "user_roles", kind: "delete", apply: (q) => q.eq("user_id", uid) },
+      { table: "signup_events", kind: "delete", apply: (q) => q.eq("user_id", uid) },
       { table: "onboarding_state", label: "onboarding_state (by user)", kind: "delete", apply: (q) => phoneScoped ? q.eq("user_id", uid).neq("phone_number", phone) : q.eq("user_id", uid) },
       { table: "test_runs", label: "test_runs (who-ran cleared)", kind: "reassign", set: { triggered_by: null }, apply: (q) => q.eq("triggered_by", uid) },
       { table: "profiles", kind: "delete", apply: (q) => q.eq("user_id", uid) },
