@@ -1285,6 +1285,12 @@ Deno.serve(async (req) => {
   }
 
   // Read-only preview of a real reminder run (send-reminders real_readonly: builds only, never sends, phones masked).
+  // Read-only preview of a real Sunday check-in (build only, never sends, phones masked).
+  if (action === "sunday_preview") {
+    const { status, data } = await callFn("sunday-lunch-checkin", { scenario: "sunday preview", scope: "real_readonly", now: body.now, ignore_sent_log: body.ignore_sent_log === true });
+    return json(data, status === 200 ? 200 : 500);
+  }
+
   if (action === "reminder_preview") {
     const period = body.period === "morning" ? "morning" : "evening";
     const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/send-reminders`, {
