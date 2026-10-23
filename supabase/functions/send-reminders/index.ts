@@ -698,6 +698,9 @@ Deno.serve(async (req: Request) => {
 
     // --- Holiday pause guard --------------------------------------------------
     // Reminders are paused for the summer break and resume automatically on 2 Sep.
+    // TODO: hard-coded summer 2026 pause; the date has passed so it no longer
+    // does anything. Remove it (or replace it with the school_holidays checks
+    // that already skip holiday items) in a separate, tested change.
     const RESUME_DATE = "2026-09-02"; // first day back; reminders fire from this date onward
     // Today's date in UK local time as YYYY-MM-DD (en-CA gives ISO-style output,
     // timeZone keeps it correct through BST/GMT so it flips on the right morning)

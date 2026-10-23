@@ -85,6 +85,7 @@ async function resetTestData() {
       await admin.from("event_exclusions").delete().in("child_id", kidIds);
       await admin.from("children").delete().in("id", kidIds);
     }
+    await admin.from("lunch_checkin_log").delete().in("parent_id", ids);
   }
   await admin.from("school_holidays").delete().eq("school_id", TEST_SCHOOL_ID);
   await admin.from("school_reminders").delete().eq("school_id", TEST_SCHOOL_ID);
@@ -732,7 +733,92 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
     status: refused.status === 403 ? "pass" : "fail", reply: null,
     reason: refused.status === 403 ? null : `expected 403, got ${refused.status}`,
   });
+  results.push(...(await runSundayCheckinTests()));
   return results;
+}
+
+// ── Sunday week-ahead check-in: whole-week holiday skip (no AI, stub send, never Twilio) ──
+const SECOND_TEST_SCHOOL_ID = "6eebb5e3-5e2e-436f-ac72-c5c64d6ee8ff"; // registry school with no holidays/children/events
+const SUNDAY_PHONE = "+447000000003";
+async function runSundayCheckinTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const parentId = await ensureTestUser(SUNDAY_PHONE);
+  const clearLog = () => admin.from("lunch_checkin_log").delete().eq("parent_id", parentId);
+  const logRows = async (week: string) => (await admin.from("lunch_checkin_log").select("id").eq("parent_id", parentId).eq("week_start", week)).data?.length ?? -1;
+  const run = (scenario: string, now: string) => callFn("sunday-lunch-checkin", { scenario, now, scope: "test", only_phones: [SUNDAY_PHONE], stub_send: true });
+  const push = (scenario: string, reason: string | null, reply: string | null, details?: unknown) =>
+    out.push({ scenario, category: "sender", status: reason ? "fail" : "pass", reply, reason, details } as Result);
+  const holidayIds: string[] = [];
+  const kidIds: string[] = [];
+  try {
+    await clearLog();
+    const { data: mila, error } = await admin.from("children").insert({ parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Mila", year_group: "Year 5" }).select("id").single();
+    if (error) throw new Error(`seed child: ${error.message}`);
+    kidIds.push(mila.id);
+    const r = (child_id: string, title: string, emoji: string, day: string) => ({ child_id, parent_id: parentId, title, emoji, day_of_week: day, reminder_time: "both", active: true, recurrence_interval: 1 });
+    await admin.from("child_reminders").insert([r(mila.id, "PE kit", "👟", "Monday"), r(mila.id, "Library books", "📚", "Wednesday")]);
+    const { data: hs } = await admin.from("school_holidays").insert([
+      { school_id: TEST_SCHOOL_ID, label: "Test October half term", start_date: "2026-10-24", end_date: "2026-11-01" },
+      { school_id: TEST_SCHOOL_ID, label: "Test INSET day", start_date: "2026-11-09", end_date: "2026-11-09" },
+    ]).select("id");
+    holidayIds.push(...(hs ?? []).map((h) => h.id));
+
+    // 1) Whole week is a holiday → no message, no log row.
+    const a = await run("sunday: whole-week holiday", "2026-10-25T17:00:00Z");
+    const aRows = await logRows("2026-10-26");
+    push("Sunday check-in: school on holiday all week (26–30 Oct) → no message, no log row",
+      a.status !== 200 ? `HTTP ${a.status}: ${JSON.stringify(a.data).slice(0, 200)}`
+        : a.data.week_start !== "2026-10-26" ? `week ${a.data.week_start}`
+        : (a.data.delivered?.length ?? -1) !== 0 ? `expected no message, got ${JSON.stringify(a.data.delivered)}`
+        : a.data.skipped_holiday !== 1 ? `skipped_holiday ${a.data.skipped_holiday}, expected 1`
+        : aRows !== 0 ? `expected no lunch_checkin_log row, found ${aRows}` : null,
+      null, a.data);
+
+    // 2) Following week, school back → sent (and logged).
+    const b = await run("sunday: school back", "2026-11-01T17:00:00Z");
+    const bMsg = b.data.delivered?.[0]?.summary ?? null;
+    const bWant = "*Monday:* 👟 Mila's PE kit | *Wednesday:* 📚 Mila's Library books";
+    push("Sunday check-in: same family the following week (school back, 2 Nov) → message sent",
+      b.status !== 200 ? `HTTP ${b.status}` : b.data.week_start !== "2026-11-02" ? `week ${b.data.week_start}`
+        : (b.data.delivered?.length ?? 0) !== 1 ? `expected 1 message, got ${b.data.delivered?.length}`
+        : bMsg !== bWant ? `expected "${bWant}"` : (await logRows("2026-11-02")) !== 1 ? "expected one log row for 2 Nov" : null,
+      bMsg, b.data);
+
+    // 3) One INSET day (Mon 9 Nov) → sent, Monday left out.
+    const c = await run("sunday: one INSET day", "2026-11-08T17:00:00Z");
+    const cMsg = c.data.delivered?.[0]?.summary ?? null;
+    const cWant = "*Wednesday:* 📚 Mila's Library books";
+    push("Sunday check-in: week with one INSET day (Mon 9 Nov) → sent, INSET day left out",
+      c.status !== 200 ? `HTTP ${c.status}` : (c.data.delivered?.length ?? 0) !== 1 ? `expected 1 message, got ${c.data.delivered?.length}`
+        : cMsg !== cWant ? `expected "${cWant}"` : null,
+      cMsg, c.data);
+
+    // 4) Two children at different schools, only one on holiday all week → sent.
+    await clearLog();
+    const { data: tom, error: tErr } = await admin.from("children").insert({ parent_id: parentId, school_id: SECOND_TEST_SCHOOL_ID, first_name: "Tom", year_group: "Year 2" }).select("id").single();
+    if (tErr) throw new Error(`seed child 2: ${tErr.message}`);
+    kidIds.push(tom.id);
+    await admin.from("child_reminders").insert([r(tom.id, "Swimming", "🏊", "Tuesday")]);
+    const d = await run("sunday: two schools, one on holiday", "2026-10-25T17:00:00Z");
+    const dMsg = d.data.delivered?.[0]?.summary ?? null;
+    const dWant = "*Tuesday:* 🏊 Tom's Swimming";
+    push("Sunday check-in: two children at different schools, only one on holiday all week → sent",
+      d.status !== 200 ? `HTTP ${d.status}` : (d.data.delivered?.length ?? 0) !== 1 ? `expected 1 message, got ${d.data.delivered?.length}`
+        : d.data.skipped_holiday !== 0 ? `skipped_holiday ${d.data.skipped_holiday}` : dMsg !== dWant ? `expected "${dWant}"`
+        : d.data.delivered[0].names !== "Mila and Tom" ? `names ${d.data.delivered[0].names}` : null,
+      dMsg, d.data);
+
+    // Safety: the entry point refuses a real number.
+    const refused = await callFn("sunday-lunch-checkin", { scenario: "safety: real number refused", scope: "test", only_phones: ["+447700900123"], stub_send: true });
+    out.push({ scenario: "Sunday check-in test entry refuses a non-test phone number", category: "safety", status: refused.status === 403 ? "pass" : "fail", reply: null, reason: refused.status === 403 ? null : `expected 403, got ${refused.status}` } as Result);
+  } catch (e) {
+    push("Sunday check-in tests: setup", (e as Error).message, null);
+  } finally {
+    await clearLog();
+    if (kidIds.length) { await admin.from("child_reminders").delete().in("child_id", kidIds); await admin.from("children").delete().in("id", kidIds); }
+    if (holidayIds.length) await admin.from("school_holidays").delete().in("id", holidayIds);
+  }
+  return out;
 }
 
 // ── Handler scenarios (real AI, dry run, never Twilio) ──
@@ -1199,6 +1285,12 @@ Deno.serve(async (req) => {
   }
 
   // Read-only preview of a real reminder run (send-reminders real_readonly: builds only, never sends, phones masked).
+  // Read-only preview of a real Sunday check-in (build only, never sends, phones masked).
+  if (action === "sunday_preview") {
+    const { status, data } = await callFn("sunday-lunch-checkin", { scenario: "sunday preview", scope: "real_readonly", now: body.now, ignore_sent_log: body.ignore_sent_log === true });
+    return json(data, status === 200 ? 200 : 500);
+  }
+
   if (action === "reminder_preview") {
     const period = body.period === "morning" ? "morning" : "evening";
     const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/send-reminders`, {
