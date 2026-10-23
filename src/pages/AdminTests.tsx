@@ -98,7 +98,7 @@ const AdminTests = () => {
         <Link to="/dashboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="w-4 h-4" /> Dashboard
         </Link>
-        <div className="flex gap-4 text-sm"><Link to="/admin/costs" className="text-primary hover:underline">AI costs</Link><Link to="/admin/whats-on-diffs" className="text-primary hover:underline">What's on: old vs new</Link></div>
+        <div className="flex gap-4 text-sm"><Link to="/admin/signups" className="text-primary hover:underline">Sign-ups</Link><Link to="/admin/costs" className="text-primary hover:underline">AI costs</Link><Link to="/admin/whats-on-diffs" className="text-primary hover:underline">What's on: old vs new</Link></div>
         {alerts.length > 0 && (
           <div role="alert" className="rounded-2xl border border-destructive bg-destructive text-destructive-foreground p-4 space-y-2">
             <div className="flex items-center justify-between gap-4">

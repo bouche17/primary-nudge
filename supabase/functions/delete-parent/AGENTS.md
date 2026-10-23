@@ -1,0 +1,2 @@
+# delete-parent rules
+- Full deletion goes through the admin-only `delete-parent` function (dry-run preview, then delete across every table + auth user + Twilio logs; shared children/reminders reassigned to a remaining parent; phone-keyed data is skipped if the number now belongs to another live account; `deletion_audit` stores only a salted phone hash and counts) — why: one auditable path that never removes a remaining family's data.

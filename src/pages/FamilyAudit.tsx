@@ -56,7 +56,7 @@ const FamilyAudit = () => {
   const [families, setFamilies] = useState<Family[]>([]);
   const [templates, setTemplates] = useState<Record<string, boolean>>({});
   const [fetching, setFetching] = useState(false);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
 
   useEffect(() => {
     if (!loading && !user) navigate("/login");

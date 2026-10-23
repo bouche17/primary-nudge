@@ -31,6 +31,9 @@ import {
   Sandwich,
 } from "lucide-react";
 import { useAdmin } from "@/hooks/use-admin";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import SchoolPicker, { type PickedSchool } from "@/components/SchoolPicker";
+import { schoolOneLine } from "../../supabase/functions/_shared/schoolLabel.ts";
 
 const WHATSAPP_LINK = "https://wa.me/447455730962";
 const SHOW_GETTING_STARTED_FLAG = "monty_show_getting_started";
@@ -40,7 +43,7 @@ interface ChildWithSchool {
   first_name: string;
   year_group: string;
   school_id: string | null;
-  schools: { name: string; postcode: string } | null;
+  schools: { name: string; postcode: string; address: string | null; town: string | null } | null;
 }
 
 interface UpcomingItem {
@@ -140,6 +143,25 @@ const Dashboard = () => {
   const handleDismissGettingStarted = () => {
     localStorage.removeItem(SHOW_GETTING_STARTED_FLAG);
     setShowGettingStarted(false);
+  };
+
+  const [changingSchool, setChangingSchool] = useState<ChildWithSchool | null>(null);
+  const loadChildren = () =>
+    supabase
+      .from("children")
+      .select("id, first_name, year_group, school_id, schools(name, postcode, address, town)")
+      .then(({ data }) => {
+        if (data) setChildren(data as unknown as ChildWithSchool[]);
+      });
+  const changeSchool = async (child: ChildWithSchool, school: PickedSchool) => {
+    const { data, error } = await supabase.rpc("change_child_school", { _child_id: child.id, _school_id: school.id, _source: "dashboard" });
+    if (error || data !== true) {
+      toast({ title: "Couldn't change the school", description: error?.message ?? "Please try again.", variant: "destructive" });
+      return;
+    }
+    setChangingSchool(null);
+    toast({ title: `${child.first_name}'s school updated`, description: schoolOneLine(school) });
+    await loadChildren();
   };
 
   const removeChild = async (childId: string) => {
@@ -258,12 +280,8 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (!user) return;
-    supabase
-      .from("children")
-      .select("id, first_name, year_group, school_id, schools(name, postcode)")
-      .then(({ data }) => {
-        if (data) setChildren(data as unknown as ChildWithSchool[]);
-      });
+    loadChildren();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   // Fetch dependent data once children are known
@@ -484,6 +502,18 @@ const Dashboard = () => {
         </div>
       </nav>
 
+      <Dialog open={!!changingSchool} onOpenChange={(o) => !o && setChangingSchool(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Change {changingSchool?.first_name}'s school</DialogTitle>
+            <DialogDescription>Search by school name, town or postcode. Your own reminders and notes are kept.</DialogDescription>
+          </DialogHeader>
+          {changingSchool && (
+            <SchoolPicker childName={changingSchool.first_name} onConfirm={(s) => changeSchool(changingSchool, s)} onCancel={() => setChangingSchool(null)} />
+          )}
+        </DialogContent>
+      </Dialog>
+
       <main className="max-w-2xl mx-auto px-6 py-10 space-y-10">
         {/* Children */}
         <section>
@@ -504,8 +534,14 @@ const Dashboard = () => {
                   <p className="font-heading font-bold text-foreground">{child.first_name}</p>
                   <p className="text-sm text-muted-foreground">
                     {child.year_group}
-                    {child.schools?.name ? ` · ${child.schools.name}` : ""}
+                    {child.schools?.name ? ` · ${schoolOneLine(child.schools)}` : ""}
                   </p>
+                  <button
+                    onClick={() => setChangingSchool(child)}
+                    className="text-xs text-primary hover:underline mt-1"
+                  >
+                    Change school
+                  </button>
                 </div>
                 <button
                   onClick={() => removeChild(child.id)}

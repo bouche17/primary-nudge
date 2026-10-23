@@ -6,6 +6,7 @@ import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
 import { eventYearGroups, yearGroupMatches } from "../_shared/whatsOn.ts";
+import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -419,6 +420,7 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
 ## Contact details (never invent any)
 - Monty's ONLY contact details: email hello@heymonty.co.uk, website heymonty.co.uk. Never give any other email, website, domain or phone number for Monty.
 - For a school, only give contact details shown to you in this prompt for that school. You don't have school phone numbers or emails, so if asked say you don't have them and suggest the school's own website or office. Never guess or make up an email, website or phone number for anyone.
+- This parent is signed up with Monty: never say they've messaged the wrong number. If they say you have the wrong school for a child, say sorry, ask which school the child goes to (name and town), and mention they can change it on their dashboard at ${DASHBOARD_URL}.
 
 ## Stopping messages (never say you can't)
 - Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". Questions about their data: hello@heymonty.co.uk. If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
@@ -1592,12 +1594,14 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 }
 
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
+interface SchoolOpt { id: string; name: string; address: string | null; town: string | null; postcode: string; urn: string }
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school";
   dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
+  school?: { stage: "ask_school" | "pick" | "confirm"; child_ids: string[]; options?: SchoolOpt[]; chosen?: SchoolOpt };
   source_text?: string; // the parent's original message, for the one-off/weekly decision
   items: Array<{ tool: string; args: any }>;
   proposed: string[] | null; // proposed child names (for "yes")
@@ -1621,6 +1625,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
   if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
+  if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -2139,15 +2144,145 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
   return ok ? `Got it, ${moveLabel(o, p.move!.to, [])} ✅` : `Sorry, I couldn't move ${tidyItem(o.title, o.child)} just then — could you send it again? 🙏`;
 }
 
+// ── "You've got the wrong school" (decided in code, never "wrong number") ──
+// Ask which school → offer up to 3 matches (name, street, town, postcode) → parent picks → parent confirms → change.
+// The change goes through change_child_school (clears event exclusions, keeps the parent's notes/reminders, logs school_changed).
+const DASHBOARD_URL = "https://heymonty.co.uk/dashboard";
+const andNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
+const orNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} or ${ns[ns.length - 1]}`);
+const possessive = (ns: string[]) => `${andNames(ns)}'s`;
+const SCHOOL_YES = /^\s*(yes|yep|yeah|yea|yup|correct|that'?s (it|right|the one|correct)|right|sure|ok(ay)?|please do|go on|y)\b/i;
+const SCHOOL_NO = /^\s*(no|nope|nah|neither|none|not (that|those|any|it))\b/i;
+const ORDINAL: Record<string, number> = { first: 0, "1st": 0, second: 1, "2nd": 1, third: 2, "3rd": 2 };
+const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function schoolTargets(message: string, context: MontyContext): Child[] | null {
+  const named = context.children.filter((c) => new RegExp(`\\b${reEsc(c.first_name)}\\b`, "i").test(message));
+  if (named.length) return named;
+  if (context.children.length === 1) return context.children;
+  if (new Set(context.children.map((c) => c.school_id)).size === 1) return context.children;
+  return null; // children at different schools and none named
+}
+
+async function startWrongSchool(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!context.children.length || !isWrongSchoolMessage(message)) return null;
+  const kids = schoolTargets(message, context);
+  let q: string;
+  if (kids) {
+    const names = kids.map((k) => k.first_name);
+    q = `Sorry about that! It looks like I've got the wrong school for ${andNames(names)}. Which school ${names.length === 1 ? `does ${names[0]}` : `do ${andNames(names)}`} go to? You can reply with the name and town, or change it on your dashboard: ${DASHBOARD_URL}`;
+  } else {
+    q = `Sorry about that! Which child have I got the wrong school for, ${orNames(context.children.map((c) => c.first_name))}? And which school do they go to? You can reply with the name and town, or change it on your dashboard: ${DASHBOARD_URL}`;
+  }
+  await setPendingAction(phone, { kind: "school", items: [], proposed: null, question: q, created_at: nowD().toISOString(), source_text: message,
+    school: { stage: "ask_school", child_ids: kids ? kids.map((k) => k.id) : [] } });
+  await logDedupDecision({ phone, childName: kids ? kids.map((k) => k.first_name).join(", ") : null, tool: "school_change", newItem: message.slice(0, 300),
+    decision: "wrong_school_reported", match: { table: "schools", id: kids?.[0]?.school_id ?? "no match", text: kids?.[0]?.school_name ?? "" } });
+  return q;
+}
+
+async function searchSchoolsFor(q: string): Promise<SchoolOpt[]> {
+  if (!q || q.replace(/\s/g, "").length < 2) return [];
+  const { data, error } = await supabase.rpc("search_schools", { _q: q, _limit: 4 });
+  if (error) { console.error("[school] search failed:", error.message); return []; }
+  return (data ?? []) as SchoolOpt[];
+}
+
+function pickSchoolOption(message: string, opts: SchoolOpt[]): SchoolOpt | null {
+  const m = message.trim().toLowerCase();
+  const num = m.match(/^\s*(?:number\s*|no\.?\s*|option\s*)?([1-3])\b/) ?? m.match(/\b(?:number|option|no\.?)\s*([1-3])\b/);
+  if (num) return opts[Number(num[1]) - 1] ?? null;
+  const flat = m.replace(/\s/g, "");
+  const hits = opts.filter((o) => {
+    if (flat.includes(o.postcode.toLowerCase().replace(/\s/g, ""))) return true;
+    const words = [o.town ?? "", ...(o.address ?? "").split(",")].map((w) => w.trim().toLowerCase()).filter((w) => w.length >= 3);
+    return words.some((w) => new RegExp(`\\b${reEsc(w)}\\b`).test(m));
+  });
+  if (hits.length === 1) return hits[0];
+  if (m.split(/\s+/).length <= 5) for (const [w, i] of Object.entries(ORDINAL)) if (new RegExp(`\\b${w}\\b`).test(m)) return opts[i] ?? null;
+  return null;
+}
+
+const schoolConfirmQ = (names: string[], s: SchoolOpt) =>
+  `Just to check: is ${names.length ? possessive(names) : "your child's"} school ${schoolOneLine(s)}? Reply yes and I'll change it.`;
+
+async function applySchoolChange(phone: string, kids: Child[], chosen: SchoolOpt): Promise<string> {
+  const names = kids.map((k) => k.first_name);
+  let ok = (testStore.getStore() as any)?.failDb !== true;
+  if (ok) {
+    for (const k of kids) {
+      const { data, error } = await supabase.rpc("change_child_school", { _child_id: k.id, _school_id: chosen.id, _source: "whatsapp" });
+      if (error || data !== true) { console.error("[school] change failed:", error?.message ?? data); ok = false; break; }
+    }
+  }
+  testStore.getStore()?.toolCalls.push({ name: "change_school", input: { child_ids: kids.map((k) => k.id), school_id: chosen.id, urn: chosen.urn }, ok, action: ok ? "updated" : "not_saved", text: "" });
+  if (!ok) return `Sorry, I couldn't change ${possessive(names)} school just then. Could you try again in a little while, or change it on your dashboard: ${DASHBOARD_URL} 🙏`;
+  await setPendingAction(phone, null);
+  return `Done ✅ ${possessive(names)} school is now ${schoolOneLine(chosen)}. Your own reminders and notes are all kept.`;
+}
+
+async function resolveSchoolPending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const s = p.school!;
+  const childNames = context.children.map((c) => c.first_name);
+  if (isWrongSchoolMessage(message)) { await setPendingAction(phone, null); return await startWrongSchool(phone, message, context); }
+  let kids = context.children.filter((c) => s.child_ids.includes(c.id));
+  if (!kids.length) kids = context.children.filter((c) => new RegExp(`\\b${reEsc(c.first_name)}\\b`, "i").test(message));
+  const names = kids.map((k) => k.first_name);
+  const keep = async (patch: Partial<NonNullable<PendingAction["school"]>>, question: string) => {
+    await setPendingAction(phone, { ...p, question, school: { ...s, child_ids: kids.map((k) => k.id), ...patch } });
+    return question;
+  };
+  const askAgain = `No problem. Which school is it? The name and town, or the postcode, is perfect. You can also change it on your dashboard: ${DASHBOARD_URL}`;
+
+  if (s.stage === "confirm" && s.chosen) {
+    if (SCHOOL_YES.test(message)) {
+      if (!kids.length) return await keep({}, `Which child is at ${s.chosen.name}, ${orNames(childNames)}?`);
+      return await applySchoolChange(phone, kids, s.chosen);
+    }
+    if (SCHOOL_NO.test(message) && message.trim().split(/\s+/).length <= 4) return await keep({ stage: "ask_school", chosen: undefined, options: undefined }, askAgain);
+    const o = s.options?.length ? pickSchoolOption(message, s.options) : null;
+    if (o) return await keep({ chosen: o }, schoolConfirmQ(names, o));
+  }
+  if (s.stage === "pick" && s.options?.length) {
+    if (SCHOOL_NO.test(message) && message.trim().split(/\s+/).length <= 4) return await keep({ stage: "ask_school", options: undefined }, askAgain);
+    const o = pickSchoolOption(message, s.options);
+    if (o) return await keep({ stage: "confirm", chosen: o }, schoolConfirmQ(names, o));
+  }
+  // A school name/town/postcode → search and offer up to 3. Anything else drops the question.
+  const words = message.trim().split(/\s+/).length;
+  const q = schoolSearchQuery(message, childNames);
+  const found = words <= 15 && q ? await searchSchoolsFor(q) : [];
+  if (found.length) {
+    await logDedupDecision({ phone, childName: names.join(", ") || null, tool: "school_change", newItem: message.slice(0, 300), decision: "school_options_offered",
+      match: { table: "schools", id: found.slice(0, 3).map((f) => f.id).join(","), text: found.slice(0, 3).map((f) => `${f.name} ${f.postcode}`).join("; ") } });
+    if (found.length === 1) return await keep({ stage: "confirm", options: found, chosen: found[0] }, schoolConfirmQ(names, found[0]));
+    const opts = found.slice(0, 3);
+    const whose = names.length ? `${possessive(names)} school` : "the right school";
+    const list = opts.map((o, i) => `${i + 1}. ${schoolChatOption(o)}`).join("\n");
+    const tail = found.length > 3 ? "Reply 1, 2 or 3, or send the school's postcode if it's not one of these." : `Reply ${opts.map((_, i) => i + 1).join(" or ").replace(/ or (?=\d.* or )/g, ", ")}.`;
+    return await keep({ stage: "pick", options: opts, chosen: undefined }, `I found these. Which one is ${whose}?\n${list}\n${tail}`);
+  }
+  if (words <= 15 && looksLikeSchoolAnswer(message)) {
+    return await keep({ stage: "ask_school" }, `Sorry, I couldn't find that school. Could you send its name and town, or its postcode? You can also change it on your dashboard: ${DASHBOARD_URL}`);
+  }
+  await setPendingAction(phone, null);
+  (context as any).__droppedPending = true;
+  await logDedupDecision({ phone, childName: names.join(", ") || null, tool: "pending_action", newItem: "school question", decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
+  return null;
+}
+
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
   // 1) Image notes awaiting "which child?"
   const clarification = await tryResolvePendingClarification(from, incomingMessage, context);
   if (clarification) return clarification;
-  // 2) Text items awaiting "which child?" / "do you mean…?"
+  // 2) "You've got the wrong school" → ask which school (code, before anything else)
+  const wrongSchool = await startWrongSchool(from, incomingMessage, context);
+  if (wrongSchool) return nameNotPronoun(wrongSchool, context.children.map((c) => c.first_name));
+  // 3) Text items awaiting "which child?" / "do you mean…?" / "which school?"
   const resolved = await tryResolvePendingAction(from, incomingMessage, context);
   if (resolved) return resolved;
-  // 3) "X has moved to Wednesday" → move the existing weekly reminder in code
+  // 4) "X has moved to Wednesday" → move the existing weekly reminder in code
   const moved = await tryMoveReminder(from, incomingMessage, context);
   if (moved) return nameNotPronoun(moved, context.children.map((c) => c.first_name));
 

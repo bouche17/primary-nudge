@@ -7,6 +7,8 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
+import { buildSignupAlert, ukTime } from "../_shared/signupAlert.ts";
+import { isWrongSchoolMessage, repeatedNames, schoolOneLine, schoolResultLabel, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { fmtFromWhatsOn, formatFreeform, formatLines, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
 import { computeWhatsOn, getWhatsOn, isOptInEvent, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
 import { runWhatsOnShadow } from "./shadow.ts";
@@ -93,6 +95,7 @@ async function resetTestData() {
   if (allow.length) {
     await admin.from("parent_notes").delete().in("phone_number", allow);
     await admin.from("reminder_log").delete().in("phone_number", allow);
+    await admin.from("dedup_decisions").delete().in("phone_number", allow).eq("decision", "school_changed");
     // Archived, never deleted: keeps the real error (status, body, step, timing) for diagnosis.
     await admin.from("failed_inbound").update({ archived_at: new Date().toISOString() }).in("phone_number", allow).is("archived_at", null);
     await admin.from("message_send_failures").delete().in("phone_number", allow).eq("function_name", "whatsapp-webhook");
@@ -683,6 +686,40 @@ function runFormatTests(): Result[] {
     ["School email: links appended once (dupes, mailto dropped)", () => ({ got: buildSchoolMessage(em({ yearGroups: ["all"], links: ["https://x.uk/book", "https://x.uk/book", "mailto:a@b.uk"] })), want: "⚽ The football tournament is on Wednesday 21st October. https://x.uk/book" })],
     ["School email: empty message falls back to a plain sentence", () => ({ got: buildSchoolMessage(em({ message: "", yearGroups: ["all"], what: "School photos", when: "Tuesday 3rd November", cost: null, action: "Order online by Friday 13th November" })), want: "School photos on Tuesday 3rd November. Order online by Friday 13th November." })],
   );
+  // Sign-up alerts + school labels (pure, no AI)
+  const stJoe = { name: "St Joseph's Catholic Primary School, a Voluntary Academy", address: "Marlborough Road", town: "Sale", postcode: "M33 3AF" };
+  const stJoeSk = { name: "St Joseph's Catholic Primary School, a Voluntary Academy", address: "Etchells Street, St Petersgate", town: "Stockport", postcode: "SK1 1EF" };
+  const dv = { name: "Dean Valley Community Primary School", address: "Albert Road, Bollington", town: "Macclesfield", postcode: "SK10 5HS" };
+  const at = new Date("2026-09-25T06:29:13Z");
+  cases.push(
+    ["Sign-up alert: exact text (new parent, new school, town + postcode, UK time)", () => ({
+      got: buildSignupAlert({ parentFirstName: "Sarah Jones", newParent: true, children: [{ firstName: "Hallie", yearGroup: "Year 1", school: { ...stJoe, known: false } }], signedUpAt: at }),
+      want: `Monty alert: New sign-up. Sarah added Hallie (Year 1) at St Joseph's Catholic Primary School, a Voluntary Academy, Marlborough Road, Sale M33 3AF: NEW school (no calendar loaded yet). Signed up ${ukTime(at)} (UK time).` })],
+    ["Sign-up alert: known school vs new school wording, two children", () => {
+      const t = buildSignupAlert({ parentFirstName: null, newParent: false, children: [{ firstName: "Ike", yearGroup: "Year 3", school: { ...dv, known: true } }, { firstName: "Hallie", yearGroup: "Year 1", school: { ...stJoe, known: false } }], signedUpAt: at });
+      const ok = /^Monty alert: Child added\. A parent \(no name given\) added Ike \(Year 3\) at Dean Valley[^;]*: known school[^;]*; Hallie \(Year 1\) at St Joseph's[^:]*: NEW school/.test(t);
+      return { got: ok ? "ok" : t, want: "ok" };
+    }],
+    ["Sign-up alert: no phone numbers or email addresses ever in the text", () => {
+      const t = buildSignupAlert({ parentFirstName: "sarah.jones@gmail.com", newParent: true, children: [{ firstName: "Hallie", yearGroup: "Year 1", school: { ...stJoe, address: "Marlborough Road, Tel 0161 973 4938", known: false } }], signedUpAt: at });
+      const bad = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(t) || /\d[\d\s]{8,}\d/.test(t.replace(/Signed up.*$/, ""));
+      return { got: bad ? t : "clean", want: "clean" };
+    }],
+    ["School label: same-name results show town + postcode first", () => {
+      const rep = repeatedNames([stJoe, stJoeSk, dv]);
+      return { got: [schoolResultLabel(stJoe, rep).primary, schoolResultLabel(stJoeSk, rep).primary, schoolResultLabel(dv, rep).primary, schoolResultLabel(dv, rep).secondary].join(" | "),
+        want: "Sale, M33 3AF | Stockport, SK1 1EF | Dean Valley Community Primary School | Albert Road, Bollington, Macclesfield, SK10 5HS" };
+    }],
+    ["School label: one line for confirmations", () => ({ got: schoolOneLine(stJoe), want: "St Joseph's Catholic Primary School, a Voluntary Academy, Marlborough Road, Sale M33 3AF" })],
+    ["Wrong-school phrases caught; ordinary messages ignored", () => {
+      const yes = ["I'm not with that school", "wrong school", "That's not my school", "she doesn't go there", "Hallie doesn't go to that school", "that's not Hallie's school", "We're not at that school"];
+      const no = ["the bus stop moved", "she doesn't go there on Fridays any more, the club stopped", "Is school open on Monday?", "Hallie needs PE kit tomorrow", "What's on at school this week?"];
+      const miss = [...yes.filter((m) => !isWrongSchoolMessage(m)).map((m) => `missed: ${m}`), ...no.filter((m) => isWrongSchoolMessage(m)).map((m) => `false: ${m}`)];
+      return { got: miss.join("; ") || "ok", want: "ok" };
+    }],
+    ["School search words: child names and filler removed, postcode kept", () => ({
+      got: [schoolSearchQuery("Hallie goes to St Joseph's in Stockport", ["Hallie"]), schoolSearchQuery("it's the one at m33 3af", [])].join(" | "), want: "st josephs stockport | M333AF" })],
+  );
   return cases.map(([scenario, fn]) => {
     try { const { got, want } = fn(); return { scenario, category: "sender", status: got === want ? "pass" : "fail", reply: got, reason: got === want ? null : `expected ${JSON.stringify(want)}` } as Result; }
     catch (e) { return { scenario, category: "sender", status: "fail", reply: null, reason: (e as Error).message } as Result; }
@@ -850,6 +887,8 @@ interface Rows {
   inactive: number;
   failedInbound: number;
   inbound: number;
+  schools: Record<string, string>; // child name → school_id
+  schoolChanges: number;           // school_changed decisions logged for this family's phone
 }
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
@@ -909,8 +948,9 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
 async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
   const f = FAMILIES[fam];
   const ids = await testUserIds();
-  const { data: kids } = await admin.from("children").select("id, first_name").in("parent_id", ids);
+  const { data: kids } = await admin.from("children").select("id, first_name, school_id").in("parent_id", ids);
   const kidIds = (kids ?? []).map((k) => k.id);
+  const { count: schoolChanges } = await admin.from("dedup_decisions").select("id", { count: "exact", head: true }).eq("phone_number", f.phone).eq("decision", "school_changed");
   const nameOf = (id: string) => kids?.find((k) => k.id === id)?.first_name ?? "?";
   const [notes, rems, lunches, convo, inact, fin] = await Promise.all([
     admin.from("parent_notes").select("child_name, summary, extracted_dates").eq("phone_number", f.phone),
@@ -930,6 +970,8 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
     inactive: (inact as any).count ?? 0,
     failedInbound: (fin as any).count ?? 0,
     inbound: (inb as any).count ?? 0,
+    schools: Object.fromEntries((kids ?? []).map((k: any) => [k.first_name, k.school_id])),
+    schoolChanges: schoolChanges ?? 0,
   };
 }
 
@@ -1189,6 +1231,32 @@ HANDLER_CASES.push(
     steps: [{ message: CASPIAN_MSG }, { message: "no, it's the same one" }], check: stillAsksCheck(/Mixed Tournament/i, /Mixed Tournament/i) },
 );
 
+// "You've got the wrong school" (family C: Mila, at the test school). Never "wrong number"; change only after confirm.
+const WRONG_SCHOOL_MSG = "I'm not with that school";
+const schoolUnchanged = (r: Rows) => r.schools["Mila"] === TEST_SCHOOL_ID && r.schoolChanges === 0;
+HANDLER_CASES.push(
+  { name: "'I'm not with that school' → asks which school with the dashboard link, never 'wrong number', nothing changed", family: "C", now: MON,
+    steps: [{ message: WRONG_SCHOOL_MSG }],
+    check: ([r], [a]) => firstFail(/wrong number/i.test(a) && `said wrong number: "${a}"`, !/which school/i.test(a) && `didn't ask which school: "${a}"`,
+      !/mila/i.test(a) && "doesn't name Mila", !/heymonty\.co\.uk\/dashboard/.test(a) && "no dashboard link", !schoolUnchanged(r) && "school changed",
+      (r.pending as any)?.kind !== "school" && "school question not stored", total(r) > 0 && "something was saved") },
+  { name: "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)", family: "C", now: MON,
+    steps: [{ message: WRONG_SCHOOL_MSG }, { message: "St Joseph's in Stockport" }, { message: "1" }, { message: "yes" }],
+    check: ([, r2, r3, r4], [, offer, confirm, done]) => {
+      const opts = (r2.pending as any)?.school?.options ?? [];
+      const chosen = (r3.pending as any)?.school?.chosen;
+      return firstFail(!opts.length && `no options stored: "${offer}"`, !/SK1 1EF/.test(offer) || !/Stockport/.test(offer) || !/^1\. /m.test(offer) ? `options lack town/postcode/numbers: "${offer}"` : false,
+        !schoolUnchanged(r2) && "changed before picking", !schoolUnchanged(r3) && "changed before confirming",
+        !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, chosen?.id !== opts[0]?.id && "'1' didn't choose the first option",
+        r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`, r4.schoolChanges !== 1 && `school_changed logged ${r4.schoolChanges} times`,
+        !/done/i.test(done) || !/mila/i.test(done) ? `no confirmation naming Mila: "${done}"` : false, r4.pending !== null && "pending not cleared");
+    } },
+  { name: "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged", family: "C", now: MON,
+    steps: [{ message: WRONG_SCHOOL_MSG }, { message: "What's on tomorrow?" }],
+    check: ([, r2], [, a]) => firstFail(r2.pending !== null && (r2.pending as any)?.kind === "school" && "school question still pending",
+      !schoolUnchanged(r2) && "school changed", /I found these|which school|couldn'?t find that school/i.test(a) && `still on the school question: "${a}"`) },
+);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -1207,6 +1275,9 @@ const QUICK_NAMES = [
   "School event with no shared topic word → still asks, 'yes please' saves one note",
   "School event with no year group → still asks (unknown year isn't a clear match), 'yes please' saves one note",
   "Duplicate question → 'no, it's the same one' saves one note under the school event's title",
+  "'I'm not with that school' → asks which school with the dashboard link, never 'wrong number', nothing changed",
+  "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)",
+  "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged",
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;

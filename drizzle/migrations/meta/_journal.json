@@ -15,6 +15,27 @@
       "when": 1792150276796,
       "tag": "0001_queue_whats_on_shadow",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792739897141,
+      "tag": "0002_school_towns_search_signups",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1792740114014,
+      "tag": "0003_school_search_ranking",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792740152180,
+      "tag": "0004_signup_events_wake_alerts",
+      "breakpoints": true
     }
   ]
 }

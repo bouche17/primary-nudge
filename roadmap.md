@@ -65,3 +65,12 @@
 - [x] Skip a family when the whole Mon–Fri is a holiday for all its schools (no send, no log row); partial weeks unchanged
 - [x] Free tests (whole-week holiday, week after, one INSET day, two schools) + read-only previews for 25 Oct and 1 Nov
 - [ ] Remove send-reminders' hard-coded summer pause (TODO left in code; separate job)
+
+## School accuracy + sign-up alerts (23 Oct)
+- [x] Sign-up school search: name + street/town + postcode, town-first when names repeat, postcode/town search, confirm step; same for add child + "Change school" on dashboard
+- [x] Chat: "wrong school" → ask which school (never "wrong number"), offer up to 3 matches, change only after confirm, clear school-linked data, log `school_changed`; quick-suite tests
+- [x] New sign-up alerts to Matt (no phone/email in text): /admin/signups, WhatsApp in 24h window, free tests
+- [ ] Email alerts to hello@heymonty.co.uk (sign-ups + email_pending outage alerts) — blocked: heymonty.co.uk email domain not set up yet
+- [x] Load Mossley CofE (URN 141152) 2026–27 holidays; dry-run Oscar's family week of 26 Oct + Sunday 25 Oct skip
+- [x] Free tests (83/83), then quick suite once (104/104)
+- [ ] Reply guard turns conditional offers ("tell me and I'll set up a reminder") into "haven't saved anything yet" — waits on Matt's OK (chat change, needs a quick run)
