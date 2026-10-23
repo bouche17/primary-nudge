@@ -16,15 +16,16 @@ const AdminWhatsOnDiffs = () => {
   const [diffs, setDiffs] = useState<Diff[]>([]);
   const [runDate, setRunDate] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [source, setSource] = useState<"reminders" | "chat">("reminders");
 
   const load = useCallback(async () => {
-    const { data: latest } = await supabase.from("whats_on_shadow_diffs").select("run_date").order("run_date", { ascending: false }).limit(1);
+    const { data: latest } = await supabase.from("whats_on_shadow_diffs").select("run_date").eq("source", source).order("run_date", { ascending: false }).limit(1);
     const d = latest?.[0]?.run_date ?? null;
     setRunDate(d);
     if (!d) { setDiffs([]); return; }
-    const { data } = await supabase.from("whats_on_shadow_diffs").select("*").eq("run_date", d).order("item_date").limit(2000);
+    const { data } = await supabase.from("whats_on_shadow_diffs").select("*").eq("run_date", d).eq("source", source).order("item_date").limit(2000);
     setDiffs((data as Diff[]) ?? []);
-  }, []);
+  }, [source]);
   useEffect(() => { if (isAdmin) load(); }, [isAdmin, load]);
 
   const byFamily = useMemo(() => {
@@ -39,10 +40,10 @@ const AdminWhatsOnDiffs = () => {
   };
   const runNow = async () => {
     setRunning(true);
-    const { data, error } = await supabase.functions.invoke("monty-test-runner", { body: { action: "whats_on_shadow" } });
+    const { data, error } = await supabase.functions.invoke("monty-test-runner", { body: { action: source === "chat" ? "chat_shadow" : "whats_on_shadow" } });
     setRunning(false);
     if (error) toast({ title: "Comparison failed", description: error.message, variant: "destructive" });
-    else toast({ title: `Compared ${data.families} families`, description: `${data.differences} differences` });
+    else toast({ title: `Compared ${data.families ?? data.parents} ${source === "chat" ? "parents" : "families"}`, description: `${data.differences} differences` });
     load();
   };
 
@@ -55,7 +56,18 @@ const AdminWhatsOnDiffs = () => {
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-heading font-bold text-foreground">What's on: old vs new</h1>
-            <p className="text-sm text-muted-foreground">Nightly at 9pm. Next 14 days, old reminders (not sent) vs the new shared list. Only differences are shown. {runDate ? `Latest run: ${runDate}` : "No runs yet."}</p>
+            <p className="text-sm text-muted-foreground">
+              {source === "chat"
+                ? "Next 14 days, what Monty's chat saw before replying (old rules) vs the new shared list, per parent number. Run on demand."
+                : "Nightly at 9pm. Next 14 days, old reminders (not sent) vs the new shared list."} Only differences are shown. {runDate ? `Latest run: ${runDate}` : "No runs yet."}
+            </p>
+            <div className="flex gap-1 mt-2">
+              {(["reminders", "chat"] as const).map((s) => (
+                <Button key={s} size="sm" variant={source === s ? "default" : "outline"} className="rounded-full h-7 px-3 text-xs" onClick={() => setSource(s)}>
+                  {s === "reminders" ? "Reminders" : "Chat"}
+                </Button>
+              ))}
+            </div>
           </div>
           <Button onClick={runNow} disabled={running} variant="outline" className="rounded-full">
             {running ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />} Run comparison now

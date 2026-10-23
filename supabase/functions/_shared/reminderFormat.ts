@@ -9,7 +9,9 @@ export interface FmtItem {
   childName: string; title: string; emoji: string; type: "reminder" | "event" | "note" | "announcement";
   date?: string;     // YYYY-MM-DD the item is for: relative words ("tomorrow") are turned into the real day from it
   shareKey?: string; // same key + same text for several children → one line for them
+  meta?: ItemMeta;   // carried through to the line (dashboard/chat lists); never changes the wording
 }
+export interface ItemMeta { optIn?: boolean; kind?: string; sources: { table: string; id: string }[] }
 
 const GENERIC = new Set(["", "✅", "📝"]);
 const KEYWORD_EMOJI: [RegExp, string][] = [
@@ -155,27 +157,29 @@ export function tidyTitle(title: string, childName: string, date?: string, type?
 /** Reminder line for a getWhatsOn item: school events lose their year prefix, get an emoji by topic, carry the parent's
  *  extra detail (as much as fits) and a share key so several children's copies become one line. */
 export function fmtFromWhatsOn(w: WhatsOnItem, childName: string): FmtItem {
+  const meta: ItemMeta = { kind: w.kind, sources: [w.source, ...(w.absorbed ?? []).map((a) => ({ table: a.table, id: a.id }))], ...(w.optIn ? { optIn: true } : {}) };
   if (w.kind !== "school event") {
     const type: FmtItem["type"] = w.source.table === "parent_notes" ? "note" : w.source.table === "school_reminders" ? "announcement" : "reminder";
-    return { childName, title: w.title, emoji: w.emoji, type, date: w.date };
+    return { childName, title: w.title, emoji: w.emoji, type, date: w.date, meta };
   }
   const base = stripYearPrefix(w.title);
   let title = base;
   for (const d of w.details ?? []) if (`${title}, ${d}`.length <= MAX_LINE) title = `${title}, ${d}`;
-  return { childName, title, emoji: itemEmoji({ title: base, emoji: "", type: "event" }), type: "event", date: w.date, shareKey: `event:${w.source.id}:${w.date}` };
+  return { childName, title, emoji: itemEmoji({ title: base, emoji: "", type: "event" }), type: "event", date: w.date, shareKey: `event:${w.source.id}:${w.date}`, meta };
 }
 
 const joinNames = (n: string[]) => (n.length <= 2 ? n.join(" & ") : `${n.slice(0, -1).join(", ")} & ${n[n.length - 1]}`);
 
-function grouped(items: FmtItem[], family?: string[]): { child: string; entries: { emoji: string; text: string }[] }[] {
+type Entry = { emoji: string; text: string; metas: ItemMeta[] };
+function grouped(items: FmtItem[], family?: string[]): { child: string; entries: Entry[] }[] {
   // 1) One row per item; rows with the same share key and text merge their children.
-  const rows: { children: string[]; emoji: string; text: string; key?: string }[] = [];
+  const rows: { children: string[]; emoji: string; text: string; key?: string; metas: ItemMeta[] }[] = [];
   for (const i of items) {
     const child = /^the children$/i.test(i.childName) || !i.childName ? "Everyone" : i.childName;
     const text = tidyTitle(i.title, i.childName, i.date, i.type);
     const same = i.shareKey && rows.find((r) => r.key === i.shareKey && r.text.toLowerCase() === text.toLowerCase());
-    if (same) { if (!same.children.includes(child)) same.children.push(child); continue; }
-    rows.push({ children: [child], emoji: itemEmoji(i), text, key: i.shareKey });
+    if (same) { if (!same.children.includes(child)) same.children.push(child); if (i.meta) same.metas.push(i.meta); continue; }
+    rows.push({ children: [child], emoji: itemEmoji(i), text, key: i.shareKey, metas: i.meta ? [i.meta] : [] });
   }
   // 2) Label: every child of the family → "Everyone"; several → "A & B" (family order); one → the name.
   const order = (n: string) => { const k = family?.indexOf(n) ?? -1; return k < 0 ? 999 : k; };
@@ -184,13 +188,14 @@ function grouped(items: FmtItem[], family?: string[]): { child: string; entries:
     if (cs.length > 1 && family && family.length > 1 && family.every((f) => cs.includes(f))) return "Everyone";
     return joinNames([...cs].sort((a, b) => order(a) - order(b)));
   };
-  const out: { child: string; size: number; entries: { emoji: string; text: string }[] }[] = [];
+  const out: { child: string; size: number; entries: Entry[] }[] = [];
   for (const r of rows) {
     const child = label(r.children);
     let g = out.find((x) => x.child === child);
     if (!g) { g = { child, size: child === "Everyone" ? 0 : r.children.length > 1 ? 1 : 2, entries: [] }; out.push(g); }
-    if (g.entries.some((e) => e.text.toLowerCase() === r.text.toLowerCase())) continue;
-    g.entries.push({ emoji: r.emoji, text: r.text });
+    const dup = g.entries.find((e) => e.text.toLowerCase() === r.text.toLowerCase());
+    if (dup) { dup.metas.push(...r.metas); continue; }
+    g.entries.push({ emoji: r.emoji, text: r.text, metas: r.metas });
   }
   // 3) "Everyone" first, then shared lines, then each child's own (stable within each).
   return out.map((g, i) => ({ g, i })).sort((a, b) => a.g.size - b.g.size || a.i - b.i).map(({ g }) => ({ child: g.child, entries: g.entries }));
@@ -199,6 +204,32 @@ function grouped(items: FmtItem[], family?: string[]): { child: string; entries:
 /** One line per item: "📚 Caspian: homework due". Pass the family's child names so shared lines can say "Everyone". */
 export function formatLines(items: FmtItem[], family?: string[]): string[] {
   return grouped(items, family).flatMap((g) => g.entries.map((e) => `${e.emoji} ${g.child}: ${e.text}`));
+}
+
+// ── Lists for browsing (dashboard "upcoming", chat lookups): same wording as reminders, opt-in items kept and flagged ──
+export interface DayLine {
+  child: string; emoji: string; text: string; line: string;  // line = "🏫 Everyone: Halloween disco" (reminder wording)
+  optIn: boolean;                                             // every item on the line is an opt-in school activity
+  tag: "school" | "saved" | "weekly" | "lunch";
+  sources: { table: string; id: string }[];                   // rows behind the line (incl. parent items folded into a school line)
+}
+export interface DayList { date: string; lines: DayLine[] }
+
+/** getWhatsOn items → one list per date in reminder wording. `family` = the family's child first names. */
+export function whatsOnDays(items: WhatsOnItem[], family: string[]): DayList[] {
+  const onlyChild = family.length === 1 ? family[0] : null;
+  const dates = [...new Set(items.map((i) => i.date))].sort();
+  return dates.map((date) => {
+    const fi = items.filter((i) => i.date === date).map((w) => fmtFromWhatsOn(w, w.childName ?? onlyChild ?? "the children"));
+    const lines = grouped(fi, family).flatMap((g) => g.entries.map((e): DayLine => {
+      const tables = new Set(e.metas.flatMap((m) => m.sources.map((s) => s.table)));
+      const tag: DayLine["tag"] = tables.has("school_events") || tables.has("school_reminders") ? "school" : tables.has("weekly_lunch_plans") ? "lunch" : tables.has("child_reminders") ? "weekly" : "saved";
+      const seen = new Set<string>();
+      const sources = e.metas.flatMap((m) => m.sources).filter((s) => { const k = `${s.table}:${s.id}`; if (seen.has(k)) return false; seen.add(k); return true; });
+      return { child: g.child, emoji: e.emoji, text: e.text, line: `${e.emoji} ${g.child}: ${e.text}`, optIn: e.metas.length > 0 && e.metas.every((m) => m.optIn), tag, sources };
+    }));
+    return { date, lines };
+  });
 }
 
 export const HEADERS = {

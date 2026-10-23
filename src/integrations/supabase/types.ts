@@ -104,6 +104,35 @@ export type Database = {
         }
         Relationships: []
       }
+      child_reminder_skips: {
+        Row: {
+          created_at: string
+          id: string
+          reminder_id: string
+          skip_date: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          reminder_id: string
+          skip_date: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          reminder_id?: string
+          skip_date?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "child_reminder_skips_reminder_id_fkey"
+            columns: ["reminder_id"]
+            isOneToOne: false
+            referencedRelation: "child_reminders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       child_reminders: {
         Row: {
           active: boolean | null
@@ -1390,6 +1419,7 @@ export type Database = {
           likely_reason: string | null
           run_date: string
           side: string
+          source: string
           verdict: string | null
           verdict_at: string | null
         }
@@ -1403,6 +1433,7 @@ export type Database = {
           likely_reason?: string | null
           run_date: string
           side: string
+          source?: string
           verdict?: string | null
           verdict_at?: string | null
         }
@@ -1416,6 +1447,7 @@ export type Database = {
           likely_reason?: string | null
           run_date?: string
           side?: string
+          source?: string
           verdict?: string | null
           verdict_at?: string | null
         }
