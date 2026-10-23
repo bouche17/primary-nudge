@@ -55,6 +55,22 @@ interface UpcomingItem {
   noteIds?: string[];
 }
 
+// Shared "what's on" list (whats-on function, dashboard_source = 'new'): one line per item in reminder wording.
+interface SharedLine {
+  child: string; emoji: string; text: string; line: string; optIn: boolean;
+  tag: "school" | "saved" | "weekly" | "lunch"; sources: { table: string; id: string }[];
+}
+interface SharedDay { date: string; lines: SharedLine[] }
+const TAG_LABEL: Record<SharedLine["tag"], string> = { school: "School", saved: "Saved", weekly: "Weekly", lunch: "Lunch" };
+
+/** "Today"/"Tomorrow" from the UK date the server worked out, else the weekday + date. */
+const formatUkHeading = (iso: string, today: string) => {
+  const add = (d: string, n: number) => new Date(new Date(`${d}T12:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+  if (iso === today) return "Today";
+  if (iso === add(today, 1)) return "Tomorrow";
+  return new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short", timeZone: "UTC" });
+};
+
 interface RecurringItem {
   id: string;
   child_id: string;
@@ -131,6 +147,7 @@ const Dashboard = () => {
 
   const [children, setChildren] = useState<ChildWithSchool[]>([]);
   const [upcoming, setUpcoming] = useState<UpcomingItem[]>([]);
+  const [sharedDays, setSharedDays] = useState<{ today: string; days: SharedDay[] } | null>(null);
   const [recurring, setRecurring] = useState<RecurringItem[]>([]);
   const [lunchPlans, setLunchPlans] = useState<LunchPlanRow[]>([]);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
@@ -228,6 +245,24 @@ const Dashboard = () => {
     }
   };
 
+  const deleteSharedNote = async (noteIds: string[], text: string, date: string) => {
+    const results = await Promise.all(noteIds.map((id) => supabase.rpc("delete_parent_note", { _note_id: id })));
+    const failed = results.find((r) => r.error || r.data === false);
+    if (failed) {
+      toast({ title: "Couldn't remove that note", description: failed.error?.message ?? "Only the parent who saved it can remove it.", variant: "destructive" });
+      return;
+    }
+    setSharedDays((prev) => prev && {
+      ...prev,
+      days: prev.days
+        .map((d) => ({ ...d, lines: d.lines.filter((l) => !l.sources.some((s) => noteIds.includes(s.id))) }))
+        .filter((d) => d.lines.length > 0),
+    });
+    toast({ title: "Note removed" });
+    const when = new Date(`${date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+    notifyFamily(`Note removed: "${text}" on ${when}`, `note:${noteIds[0]}`);
+  };
+
   const deleteRecurring = async (id: string) => {
     const label = reminderLabel(id);
     const { error } = await supabase.from("child_reminders").delete().eq("id", id);
@@ -289,6 +324,7 @@ const Dashboard = () => {
     if (!user) return;
     if (children.length === 0) {
       setUpcoming([]);
+      setSharedDays(null);
       setRecurring([]);
       setLunchPlans([]);
       setLastSyncedAt(null);
@@ -340,6 +376,13 @@ const Dashboard = () => {
 
     // Upcoming events + parent notes — merged across children
     const buildItems = async () => {
+      // dashboard_source = 'new': the shared "what's on" list (family incl. partner, UK dates, 14 days, reminder wording).
+      const { data: shared, error: sharedErr } = await supabase.functions.invoke("whats-on", { body: { mode: "dashboard" } });
+      if (!sharedErr && shared?.source === "new" && Array.isArray(shared.days)) {
+        setSharedDays({ today: shared.today, days: shared.days });
+        return;
+      }
+      setSharedDays(null);
       const merged = new Map<string, UpcomingItem>();
 
       const addItem = (dedupeKey: string, item: UpcomingItem) => {
@@ -576,14 +619,63 @@ const Dashboard = () => {
         {/* Upcoming reminders */}
         <section>
           <div className="flex items-end justify-between mb-3 gap-3">
-            <h2 className="text-lg font-bold text-foreground">Next 7 days</h2>
+            <h2 className="text-lg font-bold text-foreground">{sharedDays ? "Next 14 days" : "Next 7 days"}</h2>
             {syncedLabel && (
               <span className="text-xs text-muted-foreground">
                 School calendar synced {syncedLabel}
               </span>
             )}
           </div>
-          {upcomingByDate.length === 0 ? (
+          {sharedDays ? (
+            sharedDays.days.length === 0 ? (
+              <div className="bg-card rounded-2xl p-5 border border-border text-sm text-muted-foreground">
+                Nothing coming up — forward a school letter or message to Monty on WhatsApp to add reminders.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {sharedDays.days.map((day) => (
+                  <div key={day.date} className="bg-card rounded-2xl border border-border overflow-hidden">
+                    <div className="px-5 py-2 bg-muted/40 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {formatUkHeading(day.date, sharedDays.today)}
+                    </div>
+                    <ul className="divide-y divide-border">
+                      {day.lines.map((l, idx) => {
+                        const noteIds = l.sources.every((s) => s.table === "parent_notes") ? l.sources.map((s) => s.id) : [];
+                        return (
+                          <li key={`${day.date}-${idx}`} className={`px-5 py-3 flex items-start justify-between gap-3 ${l.optIn ? "opacity-80" : ""}`}>
+                            <div className="min-w-0 flex-1 flex items-start gap-3">
+                              <span className="text-base leading-5">{l.emoji}</span>
+                              <div className="min-w-0">
+                                <p className="font-medium text-foreground text-sm">{l.text}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5">{l.child}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {l.optIn && (
+                                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground border border-border rounded-full px-2 py-0.5">
+                                  Optional
+                                </span>
+                              )}
+                              <span className="text-[10px] font-semibold uppercase tracking-wide text-primary">{TAG_LABEL[l.tag]}</span>
+                              {noteIds.length > 0 && (
+                                <button
+                                  onClick={() => deleteSharedNote(noteIds, l.text, day.date)}
+                                  className="text-muted-foreground hover:text-destructive transition-colors"
+                                  aria-label="Remove note"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )
+          ) : upcomingByDate.length === 0 ? (
             <div className="bg-card rounded-2xl p-5 border border-border text-sm text-muted-foreground">
               Nothing coming up — forward a school letter or message to Monty on WhatsApp to add reminders.
             </div>

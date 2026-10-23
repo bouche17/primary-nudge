@@ -10,8 +10,11 @@ import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmail
 import { buildSignupAlert, ukTime } from "../_shared/signupAlert.ts";
 import { isWrongSchoolMessage, repeatedNames, schoolOneLine, schoolResultLabel, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { fmtFromWhatsOn, formatFreeform, formatLines, formatTemplateVar, type FmtItem } from "../_shared/reminderFormat.ts";
-import { computeWhatsOn, getWhatsOn, isOptInEvent, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
-import { runWhatsOnShadow } from "./shadow.ts";
+import { computeWhatsOn, getWhatsOn, isOptInEvent, loadFamilyData, yearGroupMatches, type FamilyData } from "../_shared/whatsOn.ts";
+import { runChatShadow, runWhatsOnShadow } from "./shadow.ts";
+import { whatsOnDays } from "../_shared/reminderFormat.ts";
+import { confirmQuestion, doneLine, lookupReply, matchesQuery, rangePhrase } from "../_shared/askMonty.ts";
+import { legacyUpcoming, loadChatWhatsOn, loadLegacyChatContext } from "../_shared/chatContext.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -51,6 +54,8 @@ async function requireAdmin(req: Request): Promise<string | null> {
 
 // Set per request from body.whats_on_source (test runs only): every send-reminders call in the run uses that source.
 let SENDER_SOURCE: "legacy" | "new" | null = null;
+// Same for Monty's chat (body.chat_source): every whatsapp-webhook test call in the run uses that setting.
+let CHAT_SOURCE: "legacy" | "new" | null = null;
 async function callFn(name: string, body: unknown) {
   if (name === "send-reminders" && SENDER_SOURCE && body && typeof body === "object" && !("whats_on_source" in (body as any))) body = { ...(body as any), whats_on_source: SENDER_SOURCE };
   const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
@@ -88,6 +93,8 @@ async function resetTestData() {
       await admin.from("children").delete().in("id", kidIds);
     }
     await admin.from("lunch_checkin_log").delete().in("parent_id", ids);
+    await admin.from("linked_accounts").delete().in("primary_user_id", ids);
+    await admin.from("linked_accounts").delete().in("linked_user_id", ids);
   }
   await admin.from("school_holidays").delete().eq("school_id", TEST_SCHOOL_ID);
   await admin.from("school_reminders").delete().eq("school_id", TEST_SCHOOL_ID);
@@ -595,6 +602,122 @@ async function runWhatsOnTests(): Promise<Result[]> {
   return out;
 }
 
+// ── Dashboard list through the real whats-on function (test users' own JWTs; no AI, no sends) ──
+async function testUserJwt(userId: string): Promise<string> {
+  const { data: u } = await admin.auth.admin.getUserById(userId);
+  const email = u.user?.email;
+  if (!email?.endsWith(TEST_EMAIL_DOMAIN)) throw new Error("not a test user");
+  const { data, error } = await admin.auth.admin.generateLink({ type: "magiclink", email }); // generates only, never emails
+  if (error || !data.properties?.hashed_token) throw new Error(`generateLink: ${error?.message}`);
+  const anon = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_ANON_KEY")!, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data: s, error: e2 } = await anon.auth.verifyOtp({ type: "magiclink", token_hash: data.properties.hashed_token });
+  if (e2 || !s.session) throw new Error(`verifyOtp: ${e2?.message}`);
+  return s.session.access_token;
+}
+async function callWhatsOnAs(userId: string, body: Record<string, unknown>) {
+  const jwt = await testUserJwt(userId);
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/whats-on`, {
+    method: "POST", body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}`, apikey: Deno.env.get("SUPABASE_ANON_KEY")!, "x-monty-test-secret": TEST_SECRET },
+  });
+  return { status: res.status, data: await res.json().catch(() => ({})) as any };
+}
+const dayLines = (d: any) => ((d?.days ?? []) as { date: string; lines: { line: string; optIn: boolean }[] }[])
+  .map((x) => `${x.date}: ${x.lines.map((l) => l.line + (l.optIn ? " [optional]" : "")).join(" / ")}`).join(" | ");
+
+async function runDashboardTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const kidId = async (name: string) => (await admin.from("children").select("id").in("parent_id", await testUserIds()).eq("first_name", name).limit(1).single()).data!.id;
+  const addRem = async (child: string, title: string, day: string, extra: Record<string, unknown> = {}) => {
+    const parent_id = await ensureTestUser(FAMILIES.A.phone);
+    const { error } = await admin.from("child_reminders").insert({ child_id: await kidId(child), parent_id, title, emoji: null, day_of_week: day, reminder_time: "both", active: true, recurrence_interval: 1, ...extra });
+    if (error) throw new Error(`seed reminder: ${error.message}`);
+  };
+  const cases: [string, () => Promise<{ reason: string | null; reply?: string }>][] = [
+    ["Dashboard (whats-on function): linked partner sees exactly the same list, incl. each other's notes", async () => {
+      await resetTestData();
+      await seedFamily("A", { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-09" }] });
+      const a = await ensureTestUser(FAMILIES.A.phone), b = await ensureTestUser(FAMILIES.C.phone);
+      await admin.from("parent_notes").insert({ phone_number: FAMILIES.C.phone, raw_content: "x", summary: "Harry dentist", extracted_dates: [{ date: "2026-10-08" }], source_type: "whatsapp", child_name: "Harry" });
+      await admin.from("linked_accounts").insert({ primary_user_id: a, linked_user_id: b, status: "accepted" });
+      try {
+        const body = { mode: "dashboard", source: "new", now: "2026-10-05T09:00:00Z", scenario: "dashboard partner" };
+        const [ra, rb] = await Promise.all([callWhatsOnAs(a, body), callWhatsOnAs(b, body)]);
+        const la = dayLines(ra.data), lb = dayLines(rb.data);
+        return { reason: ra.status !== 200 || rb.status !== 200 ? `HTTP ${ra.status}/${rb.status}` : la !== lb ? `A: ${la} || B: ${lb}` :
+          !/2026-10-08: 📝 Harry: dentist/.test(la) || !/Jude: recorder/.test(la) || !/2026-10-06: \S+ Harry: PE kit/.test(la) ? `missing items: ${la}` : null, reply: la };
+      } finally {
+        await admin.from("linked_accounts").delete().eq("primary_user_id", a).eq("linked_user_id", b);
+        await admin.from("parent_notes").delete().eq("phone_number", FAMILIES.C.phone);
+      }
+    }],
+    ["Dashboard: fortnightly off-week and holiday days skipped (Forest School 16 Oct only; Friday PE skipped in half term)", async () => {
+      await resetTestData();
+      await seedFamily("A");
+      await addRem("Harry", "Forest School", "Friday", { recurrence_interval: 2, anchor_date: "2026-10-02" });
+      await addRem("Harry", "PE kit", "Friday");
+      await admin.from("school_holidays").insert({ school_id: TEST_SCHOOL_ID, label: "Test half term", start_date: "2026-10-23", end_date: "2026-11-01" });
+      const r = await callWhatsOnAs(await ensureTestUser(FAMILIES.A.phone), { mode: "dashboard", source: "new", now: "2026-10-12T09:00:00Z", scenario: "dashboard fortnightly" });
+      const got = dayLines(r.data);
+      return { reason: got === "2026-10-16: 👟 Harry: PE kit / 🌳 Harry: Forest School" ? null : `got ${got}`, reply: got };
+    }],
+    ["Dashboard: 23:30 UTC Sat 24 Oct is already Sunday 25 in the UK (today = 25th, Sunday swimming first)", async () => {
+      await resetTestData();
+      await seedFamily("A");
+      await addRem("Harry", "Swimming", "Sunday");
+      const r = await callWhatsOnAs(await ensureTestUser(FAMILIES.A.phone), { mode: "dashboard", source: "new", now: "2026-10-24T23:30:00Z", scenario: "dashboard 23:30" });
+      const first = r.data.days?.[0];
+      return { reason: r.data.today !== "2026-10-25" ? `today = ${r.data.today}` : first?.date !== "2026-10-25" || !/🏊 Harry: swimming/.test(first.lines[0]?.line ?? "") ? `first day: ${JSON.stringify(first)}` : r.data.to !== "2026-11-07" ? `to = ${r.data.to}` : null,
+        reply: `today ${r.data.today}: ${dayLines(r.data).slice(0, 120)}` };
+    }],
+    ["Dashboard: opt-in club shown and marked optional; whole-school event once as 'Everyone'", async () => {
+      await resetTestData();
+      await seedFamily("A", { events: [
+        { title: "Halloween Disco", start: "2026-10-13T17:00:00Z", year_group: "all" },
+        { title: "Y3/4 Football", start: "2026-10-13T15:30:00Z", year_group: "Year 3,Year 4" },
+      ] });
+      const r = await callWhatsOnAs(await ensureTestUser(FAMILIES.A.phone), { mode: "dashboard", source: "new", now: "2026-10-12T09:00:00Z", scenario: "dashboard opt-in" });
+      const got = dayLines(r.data);
+      return { reason: got === "2026-10-13: 🎉 Everyone: Halloween Disco / ⚽ Harry: football [optional]" ? null : `got ${got}`, reply: got };
+    }],
+    ["Dashboard: with no override the function follows app_settings.dashboard_source", async () => {
+      await resetTestData();
+      await seedFamily("A");
+      const { data: setting } = await admin.from("app_settings").select("value").eq("key", "dashboard_source").maybeSingle();
+      const r = await callWhatsOnAs(await ensureTestUser(FAMILIES.A.phone), { mode: "dashboard", scenario: "dashboard setting" });
+      return { reason: r.data.source === (setting?.value === "new" ? "new" : "legacy") ? null : `setting ${setting?.value}, function said ${r.data.source}`, reply: `setting ${setting?.value} → ${r.data.source}` };
+    }],
+    ["Chat context (no AI): new list has partner's note + due-dated school reminder, skips fortnight off-week + holiday; old context doesn't", async () => {
+      await resetTestData();
+      await seedFamily("A", { reminders: [{ child: "Harry", title: "Forest School", day: "Thursday", interval: 2, anchor: "2026-10-01" }, { child: "Jude", title: "PE kit", day: "Tuesday" }],
+        holidays: [{ start: "2026-10-13", end: "2026-10-13" }], partner: "C" });
+      await admin.from("parent_notes").insert({ phone_number: FAMILIES.C.phone, raw_content: "x", summary: "Harry dentist", extracted_dates: [{ date: "2026-10-07" }], source_type: "whatsapp", child_name: "Harry" });
+      await admin.from("school_reminders").insert({ school_id: TEST_SCHOOL_ID, title: "Book fair", emoji: "📚", due_date: "2026-10-09", active: true });
+      const now = new Date("2026-10-05T08:00:00Z");
+      const old = legacyUpcoming((await loadLegacyChatContext(admin as any, FAMILIES.A.phone, now))!, "2026-10-05", 14).map((x) => `${x.date}:${x.title}`);
+      const neu = (await loadChatWhatsOn(admin as any, await ensureTestUser(FAMILIES.A.phone), now)).items.map((x) => `${x.date}:${x.title}`);
+      const has = (l: string[], k: string) => l.includes(k);
+      const reason = firstFail(!has(neu, "2026-10-07:Harry dentist") && "new: partner note missing", has(old, "2026-10-07:Harry dentist") && "old saw the partner note?",
+        !has(neu, "2026-10-09:Book fair") && "new: due-dated school reminder missing", !has(neu, "2026-10-15:Forest School") && "new: Forest School on-week missing",
+        has(neu, "2026-10-08:Forest School") && "new: off-week Forest School listed", !has(old, "2026-10-08:Forest School") && "old should list it every week",
+        has(neu, "2026-10-13:PE kit") && "new: PE kit on the holiday", !has(neu, "2026-10-06:PE kit") && "new: normal PE kit missing");
+      return { reason, reply: `new: ${neu.join(", ")} | old: ${old.join(", ")}` };
+    }],
+    ["Dashboard: dashboard_source 'legacy' → function says legacy (dashboard keeps its old list)", async () => {
+      await resetTestData();
+      await seedFamily("A");
+      const r = await callWhatsOnAs(await ensureTestUser(FAMILIES.A.phone), { mode: "dashboard", source: "legacy", scenario: "dashboard legacy" });
+      return { reason: r.data.source === "legacy" && !r.data.days ? null : `got ${JSON.stringify(r.data).slice(0, 200)}` };
+    }],
+  ];
+  for (const [scenario, fn] of cases) {
+    try { const r = await fn(); out.push({ scenario, category: "whats-on", status: r.reason ? "fail" : "pass", reply: r.reply ?? null, reason: r.reason }); }
+    catch (e) { out.push({ scenario, category: "whats-on", status: "fail", reply: null, reason: (e as Error).message }); }
+  }
+  await resetTestData();
+  return out;
+}
+
 // ── Morning/evening layout — pure tests (no AI, no database) ──
 function runFormatTests(): Result[] {
   const it = (childName: string, title: string, emoji: string, type: FmtItem["type"] = "reminder"): FmtItem => ({ childName, title, emoji, type });
@@ -717,6 +840,18 @@ function runFormatTests(): Result[] {
       const miss = [...yes.filter((m) => !isWrongSchoolMessage(m)).map((m) => `missed: ${m}`), ...no.filter((m) => isWrongSchoolMessage(m)).map((m) => `false: ${m}`)];
       return { got: miss.join("; ") || "ok", want: "ok" };
     }],
+    ["What's on: 'just this week' skip drops only that date (weekly carries on)", () => {
+      const f = famFixture({ childReminders: [{ id: "sw", child_id: "k1", title: "Swimming", emoji: "🏊", day_of_week: "Wednesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }], skips: [{ reminder_id: "sw", skip_date: "2026-10-07" }] } as any);
+      return { got: computeWhatsOn(f, "2026-10-05", "2026-10-18").map((i) => i.date).join(","), want: "2026-10-14" };
+    }],
+    ["Ask Monty wording: look-up answer, empty answer, confirm question and done line", () => {
+      const days = [{ date: "2026-10-06", lines: [{ child: "Harry", emoji: "👟", text: "PE kit", line: "👟 Harry: PE kit", optIn: false, tag: "weekly" as const, sources: [] }, { child: "Harry", emoji: "⚽", text: "football", line: "⚽ Harry: football", optIn: true, tag: "school" as const, sources: [] }] }];
+      const plan = { op: { op: "skip_date" as const, reminder_id: "x", date: "2026-11-03" }, child: "Harry", title: "Swimming", needsConfirm: true };
+      return { got: [lookupReply({ from: "2026-10-06", to: "2026-10-06", today: "2026-10-05", days }), lookupReply({ from: "2026-10-05", to: "2026-10-11", today: "2026-10-05", item: "Forest School", days: [] }),
+        lookupReply({ from: "2026-10-09", to: "2026-10-09", today: "2026-10-05", item: "unicorn parade", days: [] }, true), confirmQuestion(plan), doneLine(plan),
+        rangePhrase("2026-10-05", "2026-10-05", "2026-10-05"), String(matchesQuery("Swimming lessons", "swim")) + String(matchesQuery("PE kit", "football"))].join(" | "),
+        want: "Here's what's on tomorrow (Tuesday 6th October):\n👟 Harry: PE kit\n⚽ Harry: football (optional) | There's nothing saved for Forest School between Monday 5th October and Sunday 11th October. | I can't find \"unicorn parade\" on Friday 9th October, so I haven't changed anything. | Cancel Harry's swimming just this Tuesday 3rd? Yes / No | Done, Harry's swimming is off for Tuesday 3rd ✅ | today (Monday 5th October) | truefalse" };
+    }],
     ["School search words: child names and filler removed, postcode kept", () => ({
       got: [schoolSearchQuery("Hallie goes to St Joseph's in Stockport", ["Hallie"]), schoolSearchQuery("it's the one at m33 3af", [])].join(" | "), want: "st josephs stockport | M333AF" })],
   );
@@ -730,6 +865,7 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
   const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
   results.push(...(await runWhatsOnTests()));
+  results.push(...(await runDashboardTests()));
   results.push(...runFormatTests());
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
@@ -871,14 +1007,16 @@ const SYSTEM_WORDS = /NOT SAVED|POSSIBLE_DUPLICATE|ALREADY_SAVED|PENDING|TIMING|
 
 type Msg = { role: "user" | "assistant"; content: string; at: string };
 interface Seed {
-  reminders?: { child: string; title: string; day: string }[];
+  reminders?: { child: string; title: string; day: string; interval?: number; anchor?: string }[];
+  holidays?: { start: string; end: string }[];
+  partner?: keyof typeof FAMILIES; // that family's test number is linked as this family's partner (no children of its own)
   notes?: { child: string | null; summary: string; date: string }[];
   lunches?: { child: string; days: string[]; week: string }[];
   events?: { title: string; start: string; year_group: string | null }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
 }
-interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean }
+interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
   notes: { child: string | null; summary: string; dates: string[] }[];
   reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
@@ -889,10 +1027,14 @@ interface Rows {
   inbound: number;
   schools: Record<string, string>; // child name → school_id
   schoolChanges: number;           // school_changed decisions logged for this family's phone
+  skips: string[];                 // child_reminder_skips dates ("Harry:Swimming:2026-10-07")
+  exclusions: string[];            // event_exclusions ("Harry:Halloween Disco")
 }
+type StepOut = { familyUpdates: unknown[]; toolCalls: any[]; chatSource?: string };
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
-  check: (after: Rows[], replies: string[]) => string | null;
+  check: (after: Rows[], replies: string[], steps: StepOut[]) => string | null | Promise<string | null>;
+  chatSource?: "legacy" | "new"; // forces chat_source for this case (Ask Monty cases need 'new')
 }
 
 async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
@@ -905,7 +1047,7 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
   const id = (n: string) => kids!.find((k) => k.first_name === n)!.id;
   if (seed.reminders?.length) {
     const { error: e } = await admin.from("child_reminders").insert(seed.reminders.map((r) => ({
-      child_id: id(r.child), parent_id: parentId, title: r.title, emoji: "📌", day_of_week: r.day, reminder_time: "both", active: true, recurrence_interval: 1,
+      child_id: id(r.child), parent_id: parentId, title: r.title, emoji: "📌", day_of_week: r.day, reminder_time: "both", active: true, recurrence_interval: r.interval ?? 1, anchor_date: r.anchor ?? null,
     })));
     if (e) throw new Error(`seed reminders: ${e.message}`);
   }
@@ -926,6 +1068,15 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
       school_id: TEST_SCHOOL_ID, title: ev.title, start_at: ev.start, all_day: false, year_group: ev.year_group, uid: `monty-test-${i}-${Date.now()}`,
     })));
     if (e) throw new Error(`seed events: ${e.message}`);
+  }
+  if (seed.holidays?.length) {
+    const { error: e } = await admin.from("school_holidays").insert(seed.holidays.map((h) => ({ school_id: TEST_SCHOOL_ID, label: "Test holiday", start_date: h.start, end_date: h.end })));
+    if (e) throw new Error(`seed holidays: ${e.message}`);
+  }
+  if (seed.partner) {
+    const partnerId = await ensureTestUser(FAMILIES[seed.partner].phone);
+    const { error: e } = await admin.from("linked_accounts").insert({ primary_user_id: parentId, linked_user_id: partnerId, status: "accepted" });
+    if (e) throw new Error(`seed partner: ${e.message}`);
   }
   let history: Msg[] = seed.history ?? [];
   if (seed.realHistory) {
@@ -960,6 +1111,8 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
     kidIds.length ? admin.from("child_reminders").select("id", { count: "exact", head: true }).eq("active", false).in("child_id", kidIds) : Promise.resolve({ count: 0 } as any),
     admin.from("failed_inbound").select("id", { count: "exact", head: true }).eq("phone_number", f.phone).is("archived_at", null),
   ]);
+  const { data: skipRows } = kidIds.length ? await admin.from("child_reminder_skips").select("skip_date, child_reminders!inner(title, child_id)").in("child_reminders.child_id", kidIds) : { data: [] as any[] };
+  const { data: excRows } = kidIds.length ? await admin.from("event_exclusions").select("child_id, keyword").in("child_id", kidIds) : { data: [] as any[] };
   const convoRow = await admin.from("conversations").select("id").eq("phone_number", f.phone).maybeSingle();
   const inb = convoRow.data ? await admin.from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", convoRow.data.id).eq("direction", "inbound") : { count: 0 } as any;
   return {
@@ -972,6 +1125,8 @@ async function familyRows(fam: keyof typeof FAMILIES): Promise<Rows> {
     inbound: (inb as any).count ?? 0,
     schools: Object.fromEntries((kids ?? []).map((k: any) => [k.first_name, k.school_id])),
     schoolChanges: schoolChanges ?? 0,
+    skips: (skipRows ?? []).map((x: any) => `${nameOf(x.child_reminders.child_id)}:${x.child_reminders.title}:${x.skip_date}`).sort(),
+    exclusions: (excRows ?? []).map((x: any) => `${nameOf(x.child_id)}:${x.keyword}`).sort(),
   };
 }
 
@@ -1257,6 +1412,69 @@ HANDLER_CASES.push(
       !schoolUnchanged(r2) && "school changed", /I found these|which school|couldn'?t find that school/i.test(a) && `still on the school question: "${a}"`) },
 );
 
+
+// ── Ask Monty (chat_source 'new'): look up, cancel, stop, hide — rules in code, replies built from real results ──
+const SWIM = [{ child: "Harry", title: "Swimming", day: "Wednesday" }];
+const usedLookup = (o: StepOut) => o.toolCalls.some((t: any) => t.name === "lookup_whats_on");
+/** The exact reply the lookup should give: getWhatsOn's items for the family, in reminder wording. */
+async function expectedLookup(fam: keyof typeof FAMILIES, from: string, to: string, today: string) {
+  const uid = await ensureTestUser(FAMILIES[fam].phone);
+  const data = await loadFamilyData(admin as any, uid, from, to);
+  return lookupReply({ from, to, today, child: null, item: null, days: whatsOnDays(computeWhatsOn(data, from, to), data.children.map((c) => c.first_name)) });
+}
+async function senderLine(now: string): Promise<string> {
+  const { data } = await callFn("send-reminders", { scenario: "ask monty: next week still sent", period: "evening", now, scope: "test", only_phones: [FAMILY_A_PHONE], whats_on_source: "new" });
+  return ((data.messages ?? []) as any[]).map((m) => m.message).join(" | ");
+}
+const ASK_CASES: HandlerCase[] = [
+  { name: "Ask Monty: 'What's on tomorrow?' with mixed items → exactly getWhatsOn's items, in reminder wording", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-06" }], lunches: [{ child: "Jude", days: ["Tuesday"], week: WK }],
+      events: [{ title: "Halloween Disco", start: "2026-10-06T17:00:00Z", year_group: "all" }, { title: "Y3/4 Football", start: "2026-10-06T15:30:00Z", year_group: "Year 3,Year 4" }] },
+    steps: [{ message: "What's on tomorrow?" }],
+    check: async ([r], [a], [o]) => {
+      const want = await expectedLookup("A", "2026-10-06", "2026-10-06", "2026-10-05");
+      return firstFail(!usedLookup(o) && "lookup tool not used", a !== want && `reply differs from getWhatsOn: expected ${JSON.stringify(want)}`, total(r) !== 3 && "rows changed");
+    } },
+  { name: "Ask Monty: fortnightly item on its off-week → not listed", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: [{ child: "Harry", title: "Forest School", day: "Thursday", interval: 2, anchor: "2026-10-01" }] },
+    steps: [{ message: "Is there Forest School this week?" }],
+    check: ([], [a], [o]) => firstFail(!usedLookup(o) && "lookup tool not used", !/nothing saved/i.test(a) && `expected nothing saved: "${a}"`, /8th|🌳/.test(a) && `listed the off-week Forest School: "${a}"`) },
+  { name: "Ask Monty: during a holiday → school items not listed", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], lunches: [{ child: "Jude", days: ["Tuesday"], week: WK }], holidays: [{ start: "2026-10-06", end: "2026-10-06" }] },
+    steps: [{ message: "What's on tomorrow?" }],
+    check: ([], [a], [o]) => firstFail(!usedLookup(o) && "lookup tool not used", !/nothing saved/i.test(a) && `expected nothing saved: "${a}"`, /pe kit|packed lunch/i.test(a) && `listed a holiday item: "${a}"`) },
+  { name: "Ask Monty: 'Cancel Harry's swimming this week' → confirm → 'yes' skips only that date, next week's still sent", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: SWIM }, steps: [{ message: "Cancel Harry's swimming this week" }, { message: "yes" }],
+    check: async ([r1, r2], [q, a]) => {
+      const thisWeek = await senderLine("2026-10-06T17:00:00Z"), nextWeek = await senderLine("2026-10-13T17:00:00Z");
+      return firstFail(r1.skips.length > 0 && "changed before confirming", !/^Cancel Harry's swimming just this Wednesday 7th\? Yes \/ No$/.test(q) && `confirm question: "${q}"`,
+        (r1.pending as any)?.kind !== "edit" && "question not stored", JSON.stringify(r2.skips) !== JSON.stringify(["Harry:Swimming:2026-10-07"]) && `skips: ${JSON.stringify(r2.skips)}`,
+        remFor(r2, "Harry", "Wednesday", /swim/i).length !== 1 && "weekly reminder not kept active", a !== "Done, Harry's swimming is off for Wednesday 7th ✅" && `confirmation: "${a}"`,
+        /swim/i.test(thisWeek) && `still sent this week: ${thisWeek}`, !/swim/i.test(nextWeek) && `next week's not sent: ${nextWeek || "(nothing)"}`, r2.pending !== null && "pending not cleared");
+    } },
+  { name: "Ask Monty: 'Harry's stopped swimming' → confirm → deactivated, partner gets the family update", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: SWIM, partner: "C" }, steps: [{ message: "Harry's stopped swimming" }, { message: "yes" }],
+    check: ([r1, r2], [q, a], [, o2]) => firstFail(r1.inactive !== 0 && "changed before confirming", !/^Stop Harry's swimming for good/.test(q) && `confirm question: "${q}"`,
+      r2.inactive !== 1 || remFor(r2, "Harry", "Wednesday", /swim/i).length !== 0 ? `not deactivated: ${JSON.stringify(r2.reminders)} inactive ${r2.inactive}` : false,
+      !/^Done, Harry's swimming is stopped/.test(a) && `confirmation: "${a}"`, (o2.familyUpdates ?? []).length !== 1 && `family updates: ${JSON.stringify(o2.familyUpdates)}`) },
+  { name: "Ask Monty: 'Delete the school disco' → it's from school, offers to hide it; 'yes' hides it for the children", family: "A", now: MON, chatSource: "new",
+    seed: { events: [{ title: "Halloween Disco", start: "2026-10-09T17:00:00Z", year_group: "all" }] }, steps: [{ message: "Delete the school disco" }, { message: "yes" }],
+    check: ([r1, r2], [q, a]) => firstFail(!/from the school/i.test(q) || !/hide/i.test(q) ? `didn't explain + offer to hide: "${q}"` : false, r1.exclusions.length > 0 && "hidden before confirming",
+      JSON.stringify(r2.exclusions) !== JSON.stringify(["Harry:Halloween Disco", "Jude:Halloween Disco"]) && `exclusions: ${JSON.stringify(r2.exclusions)}`, !/hidden/i.test(a) && `confirmation: "${a}"`) },
+  { name: "Ask Monty: partner asks about an item the other partner saved → found", family: "A", now: MON, chatSource: "new",
+    seed: { notes: [{ child: "Harry", summary: "Harry dentist", date: "2026-10-08" }], partner: "C" }, steps: [{ message: "When is Harry's dentist?", from: "C" }],
+    check: ([], [a], [o]) => firstFail(!usedLookup(o) && "lookup tool not used", !/dentist/i.test(a) || !/Thursday 8th/.test(a) ? `not found: "${a}"` : false) },
+  { name: "Ask Monty: nonsense item → 'I can't find that', nothing changed", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: SWIM }, steps: [{ message: "Cancel Harry's unicorn parade on Friday" }],
+    check: ([r], [a]) => firstFail(!/can'?t find/i.test(a) && `reply: "${a}"`, r.skips.length + r.inactive + r.notes.length + r.exclusions.length > 0 && `something changed: ${JSON.stringify(r)}`,
+      (r.pending as any)?.kind === "edit" && "asked to confirm a change") },
+  { name: "Ask Monty: change fails ('yes' with a forced database failure) → honest 'couldn't', never claims it", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: SWIM }, steps: [{ message: "Cancel Harry's swimming this week" }, { message: "yes", fail_db: true }],
+    check: ([, r2], [, a]) => firstFail(!/couldn'?t/i.test(a) && `reply: "${a}"`, /\bdone\b|is off/i.test(a) && `claimed the change: "${a}"`, r2.skips.length > 0 && "skip written",
+      remFor(r2, "Harry", "Wednesday", /swim/i).length !== 1 && "reminder changed") },
+];
+HANDLER_CASES.push(...ASK_CASES);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -1278,6 +1496,7 @@ const QUICK_NAMES = [
   "'I'm not with that school' → asks which school with the dashboard link, never 'wrong number', nothing changed",
   "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)",
   "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged",
+  ...ASK_CASES.map((c) => c.name),
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;
@@ -1290,19 +1509,20 @@ type CaseOut = { reason: string | null; reply: string | null; details: unknown; 
 async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   await resetTestData();
   await seedFamily(c.family, c.seed);
-  const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = [];
+  const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = []; const outs: StepOut[] = [];
   const usage: CaseOut["usage"] = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0 };
   const turnMs: number[] = [];
   for (const step of c.steps) {
     const { status, data } = await callFn("whatsapp-webhook", {
-      scenario: c.name, phone: FAMILIES[c.family].phone, message: step.message, now: step.now ?? c.now,
+      scenario: c.name, phone: FAMILIES[step.from ?? c.family].phone, message: step.message, now: step.now ?? c.now,
+      ...((c.chatSource ?? CHAT_SOURCE) ? { chat_source: c.chatSource ?? CHAT_SOURCE } : {}),
       fail_db: step.fail_db === true, fail_followup: step.fail_followup === true, fail_claude: step.fail_claude === true, dry_run: true,
     });
     if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
     if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
     usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0;
     usage.ms += data.usage?.ms ?? 0; usage.truncated += data.usage?.truncated ?? 0; if (data.usage?.calls) { usage.turns++; turnMs.push(data.usage.ms ?? 0); } if (data.usage?.model) usage.model = data.usage.model;
-    replies.push(data.reply ?? ""); calls.push(data.tool_calls);
+    replies.push(data.reply ?? ""); calls.push(data.tool_calls); outs.push({ familyUpdates: data.family_updates ?? [], toolCalls: data.tool_calls ?? [], chatSource: data.chat_source });
     after.push(await familyRows(c.family));
   }
   const kidNames = FAMILIES[c.family].kids.map((k) => k.name);
@@ -1312,9 +1532,9 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const sys = replies.find((r) => SYSTEM_WORDS.test(r));
   const pron = replies.find((r) => /\b(he|she|his|her|him)\b/i.test(r));
   const empty = replies.findIndex((r) => !r.trim());
-  const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : badConf ? `confirmation not one short line naming the child: "${badConf.r}"` : c.check(after, replies);
+  const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : badConf ? `confirmation not one short line naming the child: "${badConf.r}"` : await c.check(after, replies, outs);
   const reply = c.steps.length > 1 ? c.steps.map((s, i) => `Parent: ${s.message}\nMonty: ${replies[i]}`).join("\n") : replies[0];
-  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
+  return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, chat_source: outs.map((o) => o.chatSource), family_updates: outs.map((o) => o.familyUpdates), confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
 const usageTotals = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
@@ -1342,6 +1562,7 @@ Deno.serve(async (req) => {
   const action = body.action ?? "full_suite";
   // Test-only override of the reminder rules for this whole run (never touches app_settings).
   SENDER_SOURCE = body.whats_on_source === "new" || body.whats_on_source === "legacy" ? body.whats_on_source : null;
+  CHAT_SOURCE = body.chat_source === "new" || body.chat_source === "legacy" ? body.chat_source : null;
   // Diagnosis helper: run one scenario N times (no retry), return outcomes + any recorded outage errors.
   if (action === "repeat_case") {
     const c = HANDLER_CASES.find((x) => x.name === body.scenario);
@@ -1370,6 +1591,11 @@ Deno.serve(async (req) => {
       body: JSON.stringify({ scenario: "reminder preview", scope: "real_readonly", period, now: body.now, with_freeform: true, ignore_sent_log: true }),
     });
     return json(await res.json().catch(() => ({ error: `HTTP ${res.status}` })), res.ok ? 200 : 500);
+  }
+
+  if (action === "chat_shadow") {
+    try { return json(await runChatShadow(admin, { now: body.now })); }
+    catch (e) { return json({ error: (e as Error).message }, 500); }
   }
 
   if (action === "whats_on_shadow") {
@@ -1448,12 +1674,12 @@ Deno.serve(async (req) => {
   await admin.from("test_runs").update({
     finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
     status: next ? "running" : failed ? "failed" : "passed",
-    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined, whats_on_source: SENDER_SOURCE ?? "setting" }),
+    notes: JSON.stringify({ usage, cost_usd: costUsd, avg_ai_ms_per_reply: avgTurnMs, scenarios: { sender: SENDER_CASES.length + 2, conversation: casesFor(suite).length }, scheduled: body.chain === true || undefined, whats_on_source: SENDER_SOURCE ?? "setting", chat_source: CHAT_SOURCE ?? "setting" }),
   }).eq("id", runId);
 
   // Chained runs: queue the next chunk from the database with a fresh single-use token. No WhatsApp alerts for test runs.
   if (body.chain === true && next) {
-    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...(SENDER_SOURCE ? { whats_on_source: SENDER_SOURCE } : {}), ...next } });
+    const { error } = await admin.rpc("queue_suite_chunk", { _body: { action, run_id: runId, chain: true, ...(SENDER_SOURCE ? { whats_on_source: SENDER_SOURCE } : {}), ...(CHAT_SOURCE ? { chat_source: CHAT_SOURCE } : {}), ...next } });
     if (error) { console.error("[runner] chain failed:", error.message); await admin.from("test_runs").update({ status: "failed", finished_at: new Date().toISOString() }).eq("id", runId); }
   }
   return json({ run_id: runId, next, total: (all ?? []).length, passed, failed, flaky, cost_usd: costUsd, usage, results });

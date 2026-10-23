@@ -36,6 +36,13 @@
       "when": 1792740152180,
       "tag": "0004_signup_events_wake_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792742555830,
+      "tag": "0005_chat_shadow_source_and_reminder_skips",
+      "breakpoints": true
     }
   ]
 }

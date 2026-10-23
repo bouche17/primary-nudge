@@ -3,6 +3,8 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { getWhatsOn, ukDate, type WhatsOnItem } from "../_shared/whatsOn.ts";
 import { isTestPhone } from "../_shared/testGuard.ts";
+import { legacyUpcoming, loadChatWhatsOn, loadLegacyChatContext } from "../_shared/chatContext.ts";
+import { loadFamilyData } from "../_shared/whatsOn.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -118,11 +120,78 @@ export async function runWhatsOnShadow(db: SupabaseClient, opts: { days?: number
       }
     }
   }
-  await db.from("whats_on_shadow_diffs").delete().eq("run_date", runDate);
+  await db.from("whats_on_shadow_diffs").delete().eq("run_date", runDate).eq("source", "reminders");
   for (let i = 0; i < diffs.length; i += 500) {
     const { error } = await db.from("whats_on_shadow_diffs").insert(diffs.slice(i, i + 500));
     if (error) throw new Error(`storing diffs: ${error.message}`);
   }
   const bySide = diffs.reduce((a: Record<string, number>, d: any) => ((a[d.side] = (a[d.side] ?? 0) + 1), a), {});
   return { run_date: runDate, window: { from, to }, families: newByFamily.size, test_families_skipped: skippedTest, differences: diffs.length, by_side: bySide, ms: Date.now() - t0 };
+}
+
+// ── Chat shadow: what Monty "saw" as upcoming before replying — old context vs the shared list (per parent number) ──
+export async function runChatShadow(db: SupabaseClient, opts: { now?: string } = {}) {
+  const t0 = Date.now();
+  const now = opts.now ? new Date(opts.now) : new Date();
+  const runDate = ukDate(now), days = 14, from = runDate, to = addDays(runDate, days - 1);
+  const { data: profs } = await db.from("profiles").select("user_id, phone_number").not("phone_number", "is", null);
+  const diffs: Record<string, unknown>[] = [];
+  let parents = 0, skippedTest = 0;
+  for (const p of profs ?? []) {
+    if (await isTestPhone(p.phone_number)) { skippedTest++; continue; }
+    const old = await loadLegacyChatContext(db as any, p.phone_number!, now);
+    if (!old || !old.children.length) continue;
+    parents++;
+    const fam = await loadFamilyData(db as any, p.user_id, from, to);
+    const neu = await loadChatWhatsOn(db as any, p.user_id, now);
+    const { data: own } = await db.from("parent_notes").select("id").eq("phone_number", p.phone_number!);
+    const ownNotes = new Set((own ?? []).map((n: any) => n.id));
+    const kidName = new Map(fam.children.map((c) => [c.id, c.first_name]));
+    const label = `${fam.children.map((c) => c.first_name).sort().join(" & ")} — parent ${String(p.phone_number).slice(-2)}`;
+    const single = fam.children.length === 1 ? fam.children[0].first_name : null;
+    const oldItems = legacyUpcoming(old, from, days);
+    const newItems = neu.items.flatMap((x) => [x, ...(x.absorbed ?? []).map((a) => ({ ...x, title: a.title, source: { table: a.table, id: a.id }, kind: (a.table === "parent_notes" ? "one-off" : "weekly") as WhatsOnItem["kind"] }))]);
+    const isHol = (date: string) => fam.holidays.some((h) => h.start_date <= date && h.end_date >= date);
+    for (let i = 0; i < days; i++) {
+      const d = addDays(from, i);
+      const o = oldItems.filter((x) => x.date === d), n = newItems.filter((x) => x.date === d);
+      const titles = new Set([...o.map((x) => norm(x.title)), ...n.map((x) => norm(x.title))]);
+      for (const t of titles) {
+        const os = o.filter((x) => norm(x.title) === t), ns = n.filter((x) => norm(x.title) === t);
+        const kind = (ns[0]?.kind ?? os[0]?.kind) as string;
+        const eventish = kind === "school event" || kind === "school reminder";
+        const oKids = [...new Set(os.map((x) => x.child ?? single ?? "family"))].sort().join(", ");
+        const nKids = [...new Set(ns.map((x) => x.childName ?? single ?? "family"))].sort().join(", ");
+        const side = !os.length ? "new only" : !ns.length ? "old only" : !eventish && oKids !== nKids ? "different" : null;
+        if (!side) continue;
+        const title = (ns[0]?.title ?? os[0]?.title)!;
+        let why: string;
+        if (side === "new only") {
+          const x = ns[0];
+          why = x.source.table === "parent_notes" && !ownNotes.has(x.source.id) ? "Partner's note: old chat only saw the sender's own notes."
+            : x.kind === "school reminder" ? "Due-dated school reminder: old chat ignored school reminders with a date."
+            : x.kind === "school event" ? (x.optIn ? "Opt-in school event (flagged optional): old chat missed it (UTC window or 20-event limit)." : "School event: old chat missed it (UTC window/date or 20-event limit).")
+            : x.kind === "lunch" ? "Packed lunch: old chat only showed lunch plans as a separate summary for this/next week."
+            : x.source.table === "parent_notes" ? "Note limit: old chat only loaded the parent's 20 most recent notes." : `Check: only the new list has this (${x.kind}).`;
+        } else if (side === "old only") {
+          const x = os[0];
+          const wkend = ["Saturday", "Sunday"].includes(new Date(d + "T12:00:00Z").toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" }));
+          why = isHol(d) && x.kind !== "school event" ? (wkend ? "Holiday (weekend inside a holiday range): new list skips it — same rule the reminders already use." : "Holiday/INSET: new list skips school-day items on holidays.")
+            : x.kind === "weekly" ? (fam.childReminders.some((r) => norm(r.title) === t && (r.recurrence_interval ?? 1) > 1) ? "Fortnightly off-week: old chat treated it as weekly." : "Check: weekly reminder missing from the new list (skip date or child).")
+            : x.kind === "school event" ? "Year group / class: the event isn't for this family's children (or hidden/merged marker)."
+            : x.kind === "one-off" ? "Note date read differently (old used UTC)." : `Check: only the old context has this (${x.kind}).`;
+        } else why = ns.some((x) => x.kind === "school event") ? "Parent's note shown as the school event's line (one line per topic)." : "Same item, attached to different children (old used the note's child name as written).";
+        diffs.push({ run_date: runDate, family_id: fam.familyId, family_label: label, item_date: d, item: `${title} (${side === "different" ? `old: ${oKids} / new: ${nKids}` : (nKids || oKids)})`.slice(0, 300), side, likely_reason: why, source: "chat" });
+      }
+    }
+    void kidName;
+  }
+  await db.from("whats_on_shadow_diffs").delete().eq("run_date", runDate).eq("source", "chat");
+  for (let i = 0; i < diffs.length; i += 500) {
+    const { error } = await db.from("whats_on_shadow_diffs").insert(diffs.slice(i, i + 500));
+    if (error) throw new Error(`storing chat diffs: ${error.message}`);
+  }
+  const bySide = diffs.reduce((a: Record<string, number>, d: any) => ((a[d.side] = (a[d.side] ?? 0) + 1), a), {});
+  const byReason = diffs.reduce((a: Record<string, number>, d: any) => { const k = String(d.likely_reason).split(":")[0]; a[k] = (a[k] ?? 0) + 1; return a; }, {});
+  return { run_date: runDate, window: { from, to }, parents, test_parents_skipped: skippedTest, differences: diffs.length, by_side: bySide, by_reason: byReason, ms: Date.now() - t0 };
 }

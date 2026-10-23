@@ -5,7 +5,10 @@ import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_sha
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
-import { eventYearGroups, yearGroupMatches } from "../_shared/whatsOn.ts";
+import { computeWhatsOn, eventYearGroups, loadFamilyData, ukDate, yearGroupMatches, type WhatsOnItem } from "../_shared/whatsOn.ts";
+import { loadChatWhatsOn, loadLegacyChatContext, whatsOnPromptSection, type Child, type MontyContext } from "../_shared/chatContext.ts";
+import { whatsOnDays } from "../_shared/reminderFormat.ts";
+import { addDays as addDaysIso, confirmQuestion, dayShort, doneLine, EDIT_CLAIM, EDIT_INTENT, failLine, keptLine, lookupReply, matchesQuery, NOT_FOUND_REPLY, weekdayOf as weekdayOfIso, type EditOp, type EditPlan } from "../_shared/askMonty.ts";
 import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -108,44 +111,7 @@ async function outageReply(phone: string, kind: "text" | "photo", content: strin
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-interface Child {
-  id: string;
-  first_name: string;
-  year_group: string;
-  school_name: string;
-  school_id: string;
-}
-
-interface MontyContext {
-  parentId: string;
-  children: Child[];
-  childReminders: Array<{
-    child_name: string;
-    title: string;
-    emoji: string;
-    day_of_week: string;
-  }>;
-  upcomingEvents: Array<{
-    title: string;
-    start_at: string;
-    school_name: string;
-  }>;
-  upcomingNotes: Array<{
-    summary: string;
-    child_name: string | null;
-    extracted_dates: string[];
-  }>;
-  lunchPlans: Array<{ child_name: string; week_start: string; packed_lunch_days: string[] }>;
-  lunchWeeks: string[];
-  schoolReminders: Array<{
-    title: string;
-    emoji: string;
-    day_of_week: string;
-  }>;
-  isOnboarding: boolean;
-  onboardingStatus: string;
-}
+// Child / MontyContext and the old loader live in _shared/chatContext.ts (also used by the chat shadow comparison).
 
 interface ConversationMessage {
   role: "user" | "assistant";
@@ -155,165 +121,25 @@ interface ConversationMessage {
 
 // ── Context loader ────────────────────────────────────────────────────────────
 
+/** app_settings.chat_source: 'new' = context + duplicate check + Ask Monty tools on the shared getWhatsOn rules.
+ *  The test entry may force it per request; a read error means legacy. */
+async function readChatSource(): Promise<"legacy" | "new"> {
+  const forced = (testStore.getStore() as any)?.chatSource;
+  if (forced === "new" || forced === "legacy") return forced;
+  const { data, error } = await supabase.from("app_settings").select("value").eq("key", "chat_source").maybeSingle();
+  if (error) console.error("chat_source read failed — using legacy:", error.message);
+  return data?.value === "new" ? "new" : "legacy";
+}
+
 async function loadParentContext(phone: string): Promise<MontyContext | null> {
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("user_id")
-    .eq("phone_number", phone)
-    .maybeSingle();
-
-  if (!profile) return null;
-
-  const parentId = profile.user_id;
-
-  // Resolve the full family: the caller plus anyone linked via accepted linked_accounts
-  const { data: linkedRows } = await supabase
-    .from("linked_accounts")
-    .select("primary_user_id, linked_user_id")
-    .eq("status", "accepted")
-    .or(`primary_user_id.eq.${parentId},linked_user_id.eq.${parentId}`);
-
-  const familyUserIds = new Set<string>([parentId]);
-  for (const row of linkedRows || []) {
-    familyUserIds.add(row.primary_user_id);
-    familyUserIds.add(row.linked_user_id);
+  const ctx = await loadLegacyChatContext(supabase as any, phone, nowD());
+  if (!ctx) return null;
+  ctx.chatSource = await readChatSource();
+  if (ctx.chatSource === "new") {
+    try { ctx.whatsOn = await loadChatWhatsOn(supabase as any, ctx.parentId, nowD()); }
+    catch (e) { console.error("[chat] shared what's on failed — old context used:", (e as Error).message); ctx.chatSource = "legacy"; }
   }
-
-  // Load children + schools across the whole family
-  const { data: children } = await supabase
-    .from("children")
-    .select("id, first_name, year_group, school_id, schools(name)")
-    .in("parent_id", Array.from(familyUserIds));
-
-  const enrichedChildren: Child[] = (children || []).map((c: any) => ({
-    id: c.id,
-    first_name: c.first_name,
-    year_group: c.year_group,
-    school_id: c.school_id,
-    school_name: c.schools?.name || "school",
-  }));
-
-  const schoolIds = enrichedChildren.map((c) => c.school_id);
-  const childIds = enrichedChildren.map((c) => c.id);
-
-  // Load child-specific reminders
-  const { data: childRemindersRaw } = childIds.length > 0
-    ? await supabase
-        .from("child_reminders")
-        .select("child_id, title, emoji, day_of_week, children(first_name)")
-        .in("child_id", childIds)
-        .eq("active", true)
-    : { data: [] };
-
-  const childReminders = (childRemindersRaw || []).map((r: any) => ({
-    child_name: r.children?.first_name || "Unknown",
-    title: r.title,
-    emoji: r.emoji,
-    day_of_week: r.day_of_week,
-  }));
-
-  // Load upcoming school events (next 14 days)
-  const now = nowD();
-  const twoWeeksAhead = new Date(now);
-  twoWeeksAhead.setDate(twoWeeksAhead.getDate() + 14);
-
-  const { data: events } = schoolIds.length > 0
-    ? await supabase
-      .from("school_events")
-      .select("title, start_at, school_id, schools(name)")
-      .in("school_id", schoolIds)
-      .gte("start_at", now.toISOString())
-      .lte("start_at", twoWeeksAhead.toISOString())
-      .order("start_at", { ascending: true })
-      .limit(20)
-    : { data: [] };
-
-  const upcomingEvents = (events || []).map((e: any) => ({
-    title: e.title,
-    start_at: e.start_at,
-    school_name: e.schools?.name || "",
-  }));
-
-  // Load parent-saved notes with a date in the next 14 days
-  const { data: notesRaw } = await supabase
-    .from("parent_notes")
-    .select("summary, child_name, extracted_dates, created_at")
-    .eq("phone_number", phone)
-    .order("created_at", { ascending: false })
-    .limit(20);
-
-  const upcomingNotes = (notesRaw || [])
-    .filter((n: any) => {
-      const dates = Array.isArray(n.extracted_dates) ? n.extracted_dates : [];
-      return dates.some((d: any) => {
-        const dateStr = typeof d === "string" ? d : d?.date;
-        if (!dateStr) return false;
-        const dObj = new Date(dateStr);
-        return !isNaN(dObj.getTime()) && dObj >= now && dObj <= twoWeeksAhead;
-      });
-    })
-    .map((n: any) => ({
-      summary: n.summary,
-      child_name: n.child_name || null,
-      extracted_dates: (Array.isArray(n.extracted_dates) ? n.extracted_dates : [])
-        .map((d: any) => (typeof d === "string" ? d : d?.date))
-        .filter((d: any) => typeof d === "string"),
-    }));
-
-  // Load school-wide recurring reminders
-  const { data: schoolReminders } = schoolIds.length > 0
-    ? await supabase
-      .from("school_reminders")
-      .select("title, emoji, day_of_week")
-      .eq("active", true)
-      .or(`school_id.in.(${schoolIds.join(",")}),school_id.is.null`)
-      .not("day_of_week", "is", null)
-    : { data: [] };
-
-  // Check onboarding state
-  const { data: onboardingState } = await supabase
-    .from("onboarding_state")
-    .select("status")
-    .eq("phone_number", phone)
-    .maybeSingle();
-
-  const onboardingStatus = onboardingState?.status || "complete";
-  const isOnboarding = onboardingStatus === "new" || onboardingStatus === "collecting";
-
-  // Saved packed lunch plans for this and next UK week
-  const ukTodayIso = nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
-  const ukNoon = new Date(ukTodayIso + "T12:00:00Z");
-  const dow = ukNoon.getUTCDay();
-  const thisMon = new Date(ukNoon);
-  thisMon.setUTCDate(ukNoon.getUTCDate() - (dow === 0 ? 6 : dow - 1));
-  const nextMon = new Date(thisMon);
-  nextMon.setUTCDate(thisMon.getUTCDate() + 7);
-  const lunchWeeks = [thisMon.toISOString().split("T")[0], nextMon.toISOString().split("T")[0]];
-  const { data: lunchRaw } = childIds.length > 0
-    ? await supabase
-        .from("weekly_lunch_plans")
-        .select("child_id, week_start, packed_lunch_days")
-        .in("child_id", childIds)
-        .in("week_start", lunchWeeks)
-    : { data: [] };
-  const lunchPlans = (lunchRaw || []).map((p: any) => ({
-    child_name: enrichedChildren.find((c) => c.id === p.child_id)?.first_name || "",
-    week_start: p.week_start,
-    packed_lunch_days: (p.packed_lunch_days || []) as string[],
-  }));
-
-  return {
-    parentId,
-    children: enrichedChildren,
-    childReminders,
-    upcomingEvents,
-    upcomingNotes,
-    lunchPlans,
-    lunchWeeks,
-    schoolReminders: schoolReminders || [],
-    isOnboarding,
-    onboardingStatus,
-  };
+  return ctx;
 }
 
 // ── System prompt builder ─────────────────────────────────────────────────────
@@ -415,6 +241,25 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
   }
   const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
 
+  const legacyUpcomingBlock = `## Upcoming school events (next 14 days)
+${upcomingEventsSummary}
+
+IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.
+
+## Things this parent has told you about (upcoming)
+${upcomingNotesSummary}
+`;
+  const upcomingBlock = context.whatsOn ? `## What's on for this family — today + next 13 days (UK dates; the same list the reminders use, partner's items included)
+${whatsOnPromptSection(context.whatsOn)}
+
+This list is the source of truth for what's on. Items marked [optional …] are clubs/activities from the school calendar that are NOT sent as reminders; if the parent asks to be reminded about one, call save_parent_note for that child and date. Items marked [from school] come from the school.
+
+## Looking things up, changing and cancelling (Ask Monty)
+- To answer ANY question about what's on (today, tomorrow, this week, "is there football this week?", "when's the next Forest School?", "anything for Jude?"), call lookup_whats_on with the dates (and child_name / item if asked). The reply to the parent is built from its result automatically — never answer from memory or guess.
+- "This week" = today to Sunday. "Next week" = next Monday to Sunday. "Next <thing>" = today to 8 weeks ahead with item set.
+- To change or cancel something: call lookup_whats_on first in the same turn, then update_item or delete_item with a REF from that result. Never use an item from earlier messages. "Cancel X this week / just Tuesday" = delete_item scope this_date_only; "X has stopped / we don't do X any more" = delete_item scope all_future.
+- Never say you've changed, cancelled, moved or deleted anything yourself — the system asks the parent to confirm and confirms the change.` : legacyUpcomingBlock;
+
   return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
 
 ## Contact details (never invent any)
@@ -488,13 +333,7 @@ Tool results contain internal markers (NOT SAVED, POSSIBLE_DUPLICATE, ALREADY_SA
 - Vague references ("same again next week", "the usual", "she needs her bag") → use the existing reminders, notes and recent conversation to work out the most likely meaning, then call ask_parent_to_confirm with the exact item(s) you'd save and a natural question like "Do you mean Rosa's swimming kit on Tuesday again?". Never save until the parent says yes.
 - If a save result says the item isn't in the latest message: if it was an old request from history, drop it silently and just reply to what the parent actually said; if the latest message is just vague, use ask_parent_to_confirm instead. Never tell the parent something was refused.
 
-## Upcoming school events (next 14 days)
-${upcomingEventsSummary}
-
-IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.
-
-## Things this parent has told you about (upcoming)
-${upcomingNotesSummary}
+${upcomingBlock}
 
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
@@ -835,7 +674,7 @@ async function logDedupDecision(d: {
 const ALREADY_CLAIM = /\balready\s+(got|saved|down|covered|set|on|have|in|booked|noted|there|sorted)\b|\ball set\b|\bgot (that|it) (saved|covered|already)\b/i;
 const SUCCESS_CLAIM = /\b(saved|added|set up|sorted|noted|booked|done|updated|got (that|it|them) down|i'?ll remind)\b/i;
 /** Structured tool outcome. The honesty guard reads `ok`/`failed`, never the text. */
-type ToolAction = "saved" | "updated" | "deleted" | "onboarding_complete" | "no_change" | "not_saved" | "pending" | "unknown_tool";
+type ToolAction = "saved" | "updated" | "deleted" | "onboarding_complete" | "no_change" | "not_saved" | "pending" | "unknown_tool" | "lookup" | "not_found";
 interface ToolResult {
   ok: boolean;          // something genuinely succeeded (or was confirmed already saved)
   action: ToolAction;
@@ -1066,7 +905,30 @@ async function executeTool(
         : null;
       const candidates: Array<{ table: string; id: string; text: string; yg?: string | null }> = [];
 
-      if (validDate && !skipDedup) {
+      if (validDate && !skipDedup && context.whatsOn) {
+        // Shared rules (chat_source 'new'): the family's items that day from getWhatsOn — partner's notes, fortnight
+        // parity, holidays and due-dated school reminders included. School events are judged below (year group).
+        const cache = ((context as any).__famDay ??= {}) as Record<string, Awaited<ReturnType<typeof loadFamilyData>>>;
+        cache[noteDate] ??= await loadFamilyData(supabase as any, context.parentId, noteDate, noteDate);
+        for (const i of computeWhatsOn(cache[noteDate], noteDate, noteDate)) {
+          const rows = [{ table: i.source.table, id: i.source.id, text: i.title }, ...(i.absorbed ?? []).map((a) => ({ table: a.table, id: a.id, text: a.title }))];
+          for (const c of rows) {
+            if (c.table === "school_events" || c.table === "weekly_lunch_plans") continue;
+            if (c.table === "parent_notes" && !(child ? i.childId === child.id : i.childId === null)) continue;
+            if (c.table === "child_reminders" && !(child && i.childId === child.id)) continue;
+            candidates.push(c);
+          }
+        }
+        const schoolIds = child ? [child.school_id] : context.children.map((c) => c.school_id);
+        if (schoolIds.length > 0) {
+          const { data: events } = await supabase.from("school_events").select("id, title, year_group, start_at").in("school_id", schoolIds)
+            .gte("start_at", `${addDaysIso(noteDate, -1)}T00:00:00.000Z`).lte("start_at", `${addDaysIso(noteDate, 1)}T23:59:59.999Z`);
+          for (const ev of events ?? []) {
+            if (ukDate(ev.start_at) !== noteDate) continue; // UK date, not UTC
+            candidates.push({ table: "school_events", id: ev.id, text: ev.title || "", yg: ev.year_group ?? null });
+          }
+        }
+      } else if (validDate && !skipDedup) {
         // 1. Existing notes on the same date for the same child
         const { data: existingNotes } = await supabase
           .from("parent_notes")
@@ -1596,7 +1458,8 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface SchoolOpt { id: string; name: string; address: string | null; town: string | null; postcode: string; urn: string }
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit";
+  edit?: EditPlan;                     // Ask Monty: the change waiting for "yes"
   dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
@@ -1626,6 +1489,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
   if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
+  if (p.kind === "edit") return await resolveEditPending(phone, p, message, context);
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -1862,6 +1726,7 @@ async function generateReply(
   const childNames = context.children.map((c) => c.first_name);
   (context as any).__grounding = grounding;
 
+  const tools = toolsFor(context);
   const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools }, phone);
   const rawText1 = await res.text();
   console.log("[Claude] Raw response text (round 1):", rawText1);
@@ -1973,6 +1838,10 @@ async function generateReply(
             } else structuredResults.push(result);
           }
         }
+      } else if (ASK_TOOL_NAMES.has(block.name) && context.whatsOn) {
+        result = block.name === "lookup_whats_on" ? await lookupWhatsOn(input, context) : await handleAskEdit(block.name, input, context, phone);
+        if (result.ok || result.failed) structuredResults.push(result);
+        testStore.getStore()?.toolCalls.push({ name: block.name, input, ok: result.ok, action: result.action, text: result.text });
       } else {
         result = await executeTool(block.name, input, context, phone);
         structuredResults.push(result);
@@ -2003,6 +1872,24 @@ async function generateReply(
 
   const text = data.content?.find((b: any) => b.type === "text")?.text?.trim() || "";
   const p = pending as PendingAction | null;
+  // Ask Monty: replies are built in code from the lookup / the change actually made (never the AI's wording).
+  const ask = (context as any).__ask as AskState | undefined;
+  if (ask && !p && !dupQuestion) {
+    const saved = structuredResults.filter((r) => r.ok && r.action === "saved");
+    const prefix = saved.length ? buildHonestReply(saved) + " " : "";
+    if (ask.reply) {
+      if (ask.pending) await setPendingAction(phone, ask.pending);
+      return prefix + ask.reply;
+    }
+    if (ask.lookups.length && !structuredResults.some((r) => r.ok || r.failed)) {
+      const total = ask.lookups.reduce((n, v) => n + v.days.reduce((m, d) => m + d.lines.length, 0), 0);
+      if (EDIT_INTENT.test(incomingMessage)) {
+        const modelAsks = text.includes("?") && !EDIT_CLAIM.test(text) && !SUCCESS_CLAIM.test(text) && !SYSTEM_WORDS.test(text) && !FUTURE_ACTION.test(text);
+        return total && modelAsks ? nameNotPronoun(text, childNames) : lookupReply(ask.lookups[ask.lookups.length - 1], true);
+      }
+      return ask.lookups.map((v) => lookupReply(v)).join("\n\n");
+    }
+  }
   if (!p && dupQuestion) return await replaceReply(text, structuredResults, phone, "text", "duplicate_question", dupQuestion);
   if (!p && structuredResults.some((r) => r.ok && r.confirm)) {
     // Clear school-event match: the confirmation is always the code-built line, never the model's wording.
@@ -2037,6 +1924,11 @@ async function generateReply(
   } else {
     reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
   }
+  // Never claim a change/cancel that wasn't made (Ask Monty changes are confirmed by code above).
+  if (context.whatsOn && EDIT_CLAIM.test(reply) && !structuredResults.some((r) => r.ok && (r.action === "updated" || r.action === "deleted"))) {
+    await logDedupDecision({ phone, childName: null, tool: "reply_guard_text", newItem: incomingMessage.slice(0, 300), decision: "edit_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+    reply = "Sorry — I haven't changed anything yet. Tell me what you'd like to change and I'll check it with you first.";
+  }
   if (SYSTEM_WORDS.test(reply)) reply = await replaceReply(reply, structuredResults, phone, "text", "system_words_blocked");
   // A failed save must be named specifically (e.g. "Jude's PE kit"), never a vague "that".
   const vagueFailure = structuredResults.filter((r) => r.failed && r.label).some((r) =>
@@ -2064,6 +1956,274 @@ async function generateReply(
     reply = buildHonestReply(structuredResults) + extra;
   }
   return reply;
+}
+
+// ── Ask Monty (chat_source = 'new'): look up, change and cancel — references, ownership and confirmations in code ──
+const ASK_TOOLS = [
+  {
+    name: "lookup_whats_on",
+    description: "Look up what's on for this family (the same list the reminders use: weekly/fortnightly reminders, one-off notes, packed lunches, school events and school reminders, partner's items included, holidays and off-weeks already removed). Use it for EVERY question about what's on, and before any change or cancel. The reply to the parent is built automatically from the result. Each item has a REF for update_item / delete_item.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from_date: { type: "string", description: "First day, YYYY-MM-DD (UK)" },
+        to_date: { type: "string", description: "Last day, YYYY-MM-DD (UK). Same as from_date for one day." },
+        child_name: { type: "string", description: "Only this child's items (plus whole-family items). Leave out for everyone." },
+        item: { type: "string", description: "Only items matching these words, e.g. 'forest school', 'football', 'swimming'. Leave out to list everything." },
+      },
+      required: ["from_date", "to_date"],
+    },
+  },
+  {
+    name: "update_item",
+    description: "Change an item the parent saved (weekly reminder, one-off note or packed lunch): new_day moves a weekly reminder to another weekday from now on; new_date moves a one-off note or packed lunch to another date; new_time / new_title change a weekly reminder; frequency switches one-off ↔ weekly. ref MUST come from lookup_whats_on in this turn. School items can't be changed. Changes to every future week are confirmed with the parent automatically.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "REF from lookup_whats_on, e.g. r2" },
+        new_day: { type: "string", enum: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] },
+        new_date: { type: "string", description: "YYYY-MM-DD" },
+        new_time: { type: "string", enum: ["morning", "evening", "both"] },
+        new_title: { type: "string" },
+        frequency: { type: "string", enum: ["one-off", "weekly"] },
+      },
+      required: ["ref"],
+    },
+  },
+  {
+    name: "delete_item",
+    description: "Cancel an item. scope this_date_only = just that date (e.g. 'cancel Harry's swimming this week' — the weekly reminder carries on next week); all_future = for good (e.g. 'Harry's stopped swimming'). ref MUST come from lookup_whats_on in this turn. School items can't be deleted (the system offers to hide them for the child). The parent is always asked to confirm first, automatically.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ref: { type: "string", description: "REF from lookup_whats_on, e.g. r1" },
+        scope: { type: "string", enum: ["this_date_only", "all_future"] },
+      },
+      required: ["ref", "scope"],
+    },
+  },
+];
+const ASK_TOOL_NAMES = new Set(ASK_TOOLS.map((t) => t.name));
+const toolsFor = (context: MontyContext) => (context.whatsOn ? [...tools, ...ASK_TOOLS] : tools);
+
+type AskRef = { table: string; id: string; date: string; childId: string | null; child: string | null; title: string; kind: string };
+interface AskState { refs: Map<string, AskRef>; lookups: import("../_shared/askMonty.ts").LookupView[]; reply?: string; pending?: PendingAction; handled?: boolean }
+const askState = (context: MontyContext) => (((context as any).__ask ??= { refs: new Map(), lookups: [] }) as AskState);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const SCHOOL_TABLES = new Set(["school_events", "school_reminders"]);
+
+async function lookupWhatsOn(input: any, context: MontyContext): Promise<ToolResult> {
+  const today = ukDate(nowD());
+  let from = typeof input.from_date === "string" && ISO_DATE.test(input.from_date) ? input.from_date : today;
+  let to = typeof input.to_date === "string" && ISO_DATE.test(input.to_date) ? input.to_date : from;
+  if (to < from) [from, to] = [to, from];
+  if (from < today) from = today;
+  if (to < from) to = from;
+  if (to > addDaysIso(from, 62)) to = addDaysIso(from, 62);
+  const names = context.children.map((c) => c.first_name);
+  const asked = typeof input.child_name === "string" ? input.child_name.trim() : "";
+  const childName = asked ? names.find((n) => n.toLowerCase() === asked.toLowerCase()) ?? null : null;
+  if (asked && !childName) return { ok: false, action: "lookup", summary: "", text: `NOT FOUND: no child called ${asked}. Children: ${names.join(", ")}.` };
+  const kid = childName ? context.children.find((c) => c.first_name === childName)! : null;
+  const item = typeof input.item === "string" && input.item.trim() ? input.item.trim().slice(0, 60) : null;
+  const data = await loadFamilyData(supabase as any, context.parentId, from, to);
+  const items = computeWhatsOn(data, from, to)
+    .filter((i) => !kid || i.childId === kid.id || i.childId === null)
+    .filter((i) => !item || matchesQuery(i.title, item, names) || (i.absorbed ?? []).some((a) => matchesQuery(a.title, item, names)));
+  const st = askState(context);
+  const lines = items.map((i) => {
+    const ref = `r${st.refs.size + 1}`;
+    st.refs.set(ref, { table: i.source.table, id: i.source.id, date: i.date, childId: i.childId, child: i.childName, title: i.title, kind: i.kind });
+    const owner = SCHOOL_TABLES.has(i.source.table) ? "from school (can't be changed; can be hidden for the child)" : "parent's own (can be changed or cancelled)";
+    return `REF ${ref} — ${i.date} (${weekdayOfIso(i.date)}) — ${i.childName ?? "whole family"} — ${i.title} — ${i.kind}${i.optIn ? ", optional club" : ""} — ${owner}`;
+  });
+  st.lookups.push({ from, to, today, child: childName, item, days: whatsOnDays(items, data.children.map((c) => c.first_name)) });
+  return { ok: false, action: "lookup", summary: "", text: `LOOKUP ${from} to ${to}: ${items.length} item(s). The reply listing these is sent automatically — don't list them yourself.\n${lines.join("\n") || "(nothing)"}` };
+}
+
+/** Phones of everyone in the family (the caller plus linked partners). */
+async function familyPhones(context: MontyContext): Promise<string[]> {
+  const { data: ids } = await supabase.rpc("get_family_user_ids", { _user_id: context.parentId });
+  const fam = [...new Set([context.parentId, ...((ids ?? []) as any[]).map((r) => (typeof r === "string" ? r : r.get_family_user_ids))])].filter(Boolean);
+  const { data: profs } = await supabase.from("profiles").select("phone_number").in("user_id", fam).not("phone_number", "is", null);
+  return (profs ?? []).map((p: any) => p.phone_number as string);
+}
+
+/** The row really belongs to this family (never trust the reference alone). */
+async function familyOwns(table: string, id: string, context: MontyContext): Promise<boolean> {
+  const kidIds = context.children.map((c) => c.id);
+  if (table === "child_reminders" || table === "weekly_lunch_plans") {
+    const { data } = await supabase.from(table).select("child_id").eq("id", id).maybeSingle();
+    return !!data && kidIds.includes((data as any).child_id);
+  }
+  if (table === "parent_notes") {
+    const { data } = await supabase.from("parent_notes").select("phone_number").eq("id", id).maybeSingle();
+    return !!data && (await familyPhones(context)).includes((data as any).phone_number);
+  }
+  return false;
+}
+const opTable = (o: EditOp): [string, string] | null =>
+  "reminder_id" in o ? ["child_reminders", o.reminder_id] : "note_id" in o ? ["parent_notes", o.note_id] : "plan_id" in o ? ["weekly_lunch_plans", o.plan_id] : null;
+
+/** Turn the AI's update/delete call into one concrete change (or a reply), all rules in code. */
+async function planAskEdit(name: string, input: any, context: MontyContext): Promise<{ plan?: EditPlan; reply?: string; text: string }> {
+  const st = askState(context);
+  const ref = st.refs.get(String(input.ref ?? "").replace(/^REF\s*/i, "").trim());
+  if (!ref) return { reply: NOT_FOUND_REPLY, text: "NOT FOUND: that REF isn't from lookup_whats_on in this turn. Nothing changed." };
+  const single = context.children.length === 1 ? context.children[0].first_name : null;
+  const child = ref.child ?? single ?? "the family";
+  if (ref.table === "school_reminders") return { reply: `That one's from the school, so I can't change or delete it.`, text: "School reminder: can't be changed. Nothing changed." };
+  if (ref.table === "school_events") {
+    const same = [...st.refs.values()].filter((r) => r.table === ref.table && r.id === ref.id && r.childId);
+    const kids = [...new Map(same.map((r) => [r.childId!, r.child!])).entries()];
+    if (!kids.length) return { reply: `That one's from the school, so I can't change or delete it.`, text: "School event: can't be changed. Nothing changed." };
+    const label = kids.length > 1 ? `${kids.slice(0, -1).map((k) => k[1]).join(", ")} & ${kids[kids.length - 1][1]}` : kids[0][1];
+    return { plan: { op: { op: "hide", child_ids: kids.map((k) => k[0]), keyword: ref.title }, child: label, title: ref.title, needsConfirm: true }, text: "School event: offered to hide it for the child. Nothing changed yet." };
+  }
+  if (!(await familyOwns(ref.table, ref.id, context))) return { reply: NOT_FOUND_REPLY, text: "NOT FOUND: not this family's item. Nothing changed." };
+  const base = { child, title: ref.title };
+  const bad = (why: string) => ({ text: `NOT DONE: ${why}. Nothing changed — ask the parent.` });
+  if (name === "delete_item") {
+    const all = input.scope === "all_future";
+    if (ref.table === "child_reminders") return { plan: { ...base, needsConfirm: true, op: all ? { op: "deactivate", reminder_id: ref.id } : { op: "skip_date", reminder_id: ref.id, date: ref.date } }, text: "Asked to confirm." };
+    if (ref.table === "parent_notes") return { plan: { ...base, needsConfirm: true, op: { op: "note_remove_date", note_id: ref.id, date: ref.date } }, text: "Asked to confirm." };
+    if (ref.table === "weekly_lunch_plans") return { plan: { ...base, title: "packed lunch", needsConfirm: true, op: { op: "lunch_remove_day", plan_id: ref.id, date: ref.date } }, text: "Asked to confirm." };
+    return bad("can't delete this item");
+  }
+  const newDate = typeof input.new_date === "string" && ISO_DATE.test(input.new_date) ? input.new_date : null;
+  if (ref.table === "child_reminders") {
+    if (input.new_day && DAYS.includes(input.new_day)) return { plan: { ...base, needsConfirm: true, op: { op: "reminder_update", reminder_id: ref.id, day_of_week: input.new_day } }, text: "Asked to confirm." };
+    if (["morning", "evening", "both"].includes(input.new_time)) return { plan: { ...base, needsConfirm: true, op: { op: "reminder_update", reminder_id: ref.id, reminder_time: input.new_time } }, text: "Asked to confirm." };
+    if (typeof input.new_title === "string" && input.new_title.trim()) return { plan: { ...base, needsConfirm: true, op: { op: "reminder_update", reminder_id: ref.id, title: input.new_title.trim().slice(0, 80) } }, text: "Asked to confirm." };
+    if (input.frequency === "one-off") return { plan: { ...base, needsConfirm: true, op: { op: "reminder_to_oneoff", reminder_id: ref.id, date: ref.date } }, text: "Asked to confirm." };
+    return bad("for a weekly reminder use new_day, new_time, new_title or frequency one-off");
+  }
+  if (ref.table === "parent_notes") {
+    if (newDate) return newDate < ukDate(nowD()) ? bad("that date has passed") : { plan: { ...base, needsConfirm: false, op: { op: "note_move_date", note_id: ref.id, from: ref.date, to: newDate } }, text: "Moved." };
+    if (typeof input.new_title === "string" && input.new_title.trim()) return { plan: { ...base, needsConfirm: false, op: { op: "note_retitle", note_id: ref.id, title: input.new_title.trim().slice(0, 120) } }, text: "Renamed." };
+    if (input.frequency === "weekly") {
+      if (!ref.childId) return bad("a weekly reminder needs a child — ask which child");
+      return { plan: { ...base, needsConfirm: true, op: { op: "note_to_weekly", note_id: ref.id, date: ref.date, child_id: ref.childId } }, text: "Asked to confirm." };
+    }
+    return bad("give new_date, new_title or frequency weekly");
+  }
+  if (ref.table === "weekly_lunch_plans" && newDate) {
+    const monday = (d: string) => addDaysIso(d, -((new Date(d + "T12:00:00Z").getUTCDay() + 6) % 7));
+    const wd = weekdayOfIso(newDate);
+    if (monday(newDate) !== monday(ref.date) || wd === "Saturday" || wd === "Sunday") return bad("a packed lunch can only move to another school day in the same week");
+    return { plan: { ...base, title: "packed lunch", needsConfirm: false, op: { op: "lunch_move_day", plan_id: ref.id, from: ref.date, to: newDate } }, text: "Moved." };
+  }
+  return bad("nothing to change");
+}
+
+/** Makes the change. Ownership is checked again here (the pending "yes" may arrive in a later message). */
+async function applyEdit(plan: EditPlan, context: MontyContext, phone: string): Promise<boolean> {
+  if ((testStore.getStore() as any)?.failDb === true) return false;
+  const o = plan.op;
+  const t = opTable(o);
+  if (t && !(await familyOwns(t[0], t[1], context))) return false;
+  let error: { message: string } | null = null;
+  const noteDates = async (id: string) => ((await supabase.from("parent_notes").select("extracted_dates").eq("id", id).single()).data?.extracted_dates ?? []) as any[];
+  switch (o.op) {
+    case "skip_date": ({ error } = await supabase.from("child_reminder_skips").upsert({ reminder_id: o.reminder_id, skip_date: o.date }, { onConflict: "reminder_id,skip_date" })); break;
+    case "deactivate": ({ error } = await supabase.from("child_reminders").update({ active: false }).eq("id", o.reminder_id)); break;
+    case "reminder_update": {
+      const f: Record<string, unknown> = {};
+      if (o.day_of_week) f.day_of_week = o.day_of_week; if (o.reminder_time) f.reminder_time = o.reminder_time; if (o.title) f.title = o.title;
+      ({ error } = await supabase.from("child_reminders").update(f).eq("id", o.reminder_id)); break;
+    }
+    case "reminder_to_oneoff": {
+      const { data: r } = await supabase.from("child_reminders").select("title, child_id").eq("id", o.reminder_id).single();
+      const kid = context.children.find((c) => c.id === r?.child_id);
+      ({ error } = await supabase.from("parent_notes").insert({ phone_number: phone, raw_content: r?.title ?? plan.title, summary: r?.title ?? plan.title, extracted_dates: [{ date: o.date }], source_type: "whatsapp", child_name: kid?.first_name ?? null }));
+      if (!error) ({ error } = await supabase.from("child_reminders").update({ active: false }).eq("id", o.reminder_id));
+      break;
+    }
+    case "note_remove_date": {
+      const dates = (await noteDates(o.note_id)).filter((d: any) => (typeof d === "string" ? d : d?.date) !== o.date);
+      ({ error } = dates.length ? await supabase.from("parent_notes").update({ extracted_dates: dates }).eq("id", o.note_id) : await supabase.from("parent_notes").delete().eq("id", o.note_id));
+      break;
+    }
+    case "note_move_date": {
+      const dates = (await noteDates(o.note_id)).map((d: any) => ((typeof d === "string" ? d : d?.date) === o.from ? { ...(typeof d === "object" ? d : {}), date: o.to } : d));
+      ({ error } = await supabase.from("parent_notes").update({ extracted_dates: dates }).eq("id", o.note_id)); break;
+    }
+    case "note_retitle": ({ error } = await supabase.from("parent_notes").update({ summary: o.title }).eq("id", o.note_id)); break;
+    case "note_to_weekly": {
+      ({ error } = await supabase.from("child_reminders").insert({ child_id: o.child_id, parent_id: context.parentId, title: plan.title, emoji: "📌", day_of_week: weekdayOfIso(o.date), reminder_time: "both", active: true, recurrence_interval: 1 }));
+      if (!error) {
+        const dates = (await noteDates(o.note_id)).filter((d: any) => (typeof d === "string" ? d : d?.date) !== o.date);
+        ({ error } = dates.length ? await supabase.from("parent_notes").update({ extracted_dates: dates }).eq("id", o.note_id) : await supabase.from("parent_notes").delete().eq("id", o.note_id));
+      }
+      break;
+    }
+    case "lunch_remove_day": case "lunch_move_day": {
+      const { data: pl } = await supabase.from("weekly_lunch_plans").select("packed_lunch_days").eq("id", o.plan_id).single();
+      const from = o.op === "lunch_remove_day" ? o.date : o.from;
+      let days = ((pl?.packed_lunch_days ?? []) as string[]).filter((d) => d !== weekdayOfIso(from));
+      if (o.op === "lunch_move_day" && !days.includes(weekdayOfIso(o.to))) days = [...days, weekdayOfIso(o.to)];
+      ({ error } = await supabase.from("weekly_lunch_plans").update({ packed_lunch_days: days }).eq("id", o.plan_id)); break;
+    }
+    case "hide": ({ error } = await supabase.from("event_exclusions").insert(o.child_ids.map((child_id) => ({ child_id, keyword: o.keyword })))); break;
+  }
+  await logDedupDecision({ phone, childName: plan.child, tool: "ask_monty_edit", newItem: JSON.stringify(o).slice(0, 500), decision: error ? "chat_edit_failed" : "chat_edit_applied",
+    match: { table: t?.[0] ?? "event_exclusions", id: t?.[1] ?? "no match", text: plan.title.slice(0, 300) } });
+  if (error) { console.error("[ask] edit failed:", error.message); return false; }
+  const summary = doneLine(plan).replace(/^Done,\s*/, "").replace(/\s*✅$/, "");
+  await queueFamilyUpdate(context, phone, summary, t ? `${t[0]}:${t[1]}` : `hide:${plan.title}`).catch((e) => console.error("[ask] family update failed:", e));
+  return true;
+}
+
+/** Same bundled family update the dashboard uses (pending_family_updates → flush-family-updates). Test families never queue. */
+async function queueFamilyUpdate(context: MontyContext, phone: string, summary: string, itemKey: string) {
+  const { data: ids } = await supabase.rpc("get_family_user_ids", { _user_id: context.parentId });
+  const fam = [...new Set([context.parentId, ...((ids ?? []) as any[]).map((r) => (typeof r === "string" ? r : r.get_family_user_ids))])].filter(Boolean) as string[];
+  const { data: profs } = await supabase.from("profiles").select("user_id, phone_number").in("user_id", fam).not("phone_number", "is", null);
+  const others = (profs ?? []).filter((p: any) => p.phone_number !== phone);
+  if (!others.length) return;
+  for (const p of profs ?? []) {
+    if (await isTestPhone((p as any).phone_number)) { (testStore.getStore() as any)?.familyUpdates?.push({ summary, item_key: itemKey, recipients: others.length }); return; }
+  }
+  const familyKey = [...fam].sort()[0];
+  const actor = (profs ?? []).find((p: any) => p.phone_number === phone)?.user_id ?? context.parentId;
+  const clean = summary.replace(/[\r\n]+/g, " ").slice(0, 300);
+  const { data: updated } = await supabase.from("pending_family_updates").update({ actor_user_id: actor, summary: clean, processing_at: null })
+    .eq("family_key", familyKey).eq("item_key", itemKey).is("sent_at", null).is("processing_at", null).select("id");
+  if (!updated?.length) await supabase.from("pending_family_updates").insert({ family_key: familyKey, actor_user_id: actor, actor_first_name: null, item_key: itemKey, summary: clean });
+}
+
+async function handleAskEdit(name: string, input: any, context: MontyContext, phone: string): Promise<ToolResult> {
+  const st = askState(context);
+  if (st.handled) return { ok: false, action: "pending", summary: "", text: "One change per message: the parent is already being asked about another item. Don't mention this one now." };
+  const r = await planAskEdit(name, input, context);
+  if (!r.plan) {
+    if (r.reply) { st.handled = true; st.reply = r.reply; }
+    return { ok: false, action: "not_found", summary: "", text: r.text };
+  }
+  st.handled = true;
+  if (r.plan.needsConfirm) {
+    const question = confirmQuestion(r.plan);
+    st.pending = { kind: "edit", edit: r.plan, items: [], proposed: null, question, created_at: nowD().toISOString() };
+    st.reply = question;
+    return { ok: false, action: "pending", summary: "", text: `WAITING_FOR_PARENT: nothing changed yet. The parent is asked: "${question}"` };
+  }
+  const ok = await applyEdit(r.plan, context, phone);
+  st.reply = ok ? doneLine(r.plan) : failLine(r.plan);
+  return ok ? { ok: true, action: "updated", summary: st.reply, text: `Done: ${st.reply}`, label: r.plan.title } : { ok: false, action: "not_saved", failed: true, summary: st.reply, text: "NOT DONE: the change failed. Nothing changed.", label: r.plan.title };
+}
+
+/** "yes" → make the stored change; "no" → leave it; anything else → drop the question and carry on. */
+async function resolveEditPending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const plan = p.edit!;
+  const short = message.trim().split(/\s+/).length <= 6;
+  const yes = short && /^\s*(yes|yep|yeah|yea|yup|y|ok|okay|sure|please|go ahead|do it|correct|that'?s right|yes please)\b/i.test(message);
+  const no = short && /^\s*(no|nope|nah|n|don'?t|leave it|keep it|cancel that)\b/i.test(message);
+  await setPendingAction(phone, null);
+  if (yes) return (await applyEdit(plan, context, phone)) ? doneLine(plan) : failLine(plan);
+  if (no) return keptLine(plan);
+  (context as any).__droppedPending = true;
+  await logDedupDecision({ phone, childName: plan.child, tool: "pending_action", newItem: JSON.stringify(plan.op).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
+  return null;
 }
 
 // ── Moving a weekly reminder to another day (decided in code, same row updated) ──
@@ -2358,7 +2518,8 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const dryRun = b.dry_run !== false; // defaults true; this path never calls Twilio either way
   await auditTestEntry({ entry_point: "whatsapp-webhook", phone_number: phone, scenario, allowed: true, reason: dryRun ? "dry_run" : "dry_run(forced)" });
   const now = typeof b.now === "string" && !isNaN(Date.parse(b.now)) ? new Date(b.now) : new Date();
-  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true };
+  const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true,
+    chatSource: b.chat_source === "new" || b.chat_source === "legacy" ? b.chat_source : null, familyUpdates: [] };
   return await testStore.run(store, async () => {
     const message0 = String(b.message || "");
     const alertSends: string[] = [];
@@ -2378,7 +2539,7 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     if (typeof b.inject_reply === "string") reply = `${reply} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
     reply = await applyContactGuard(reply, phone, message, context);
     await saveMessage(conversationId, "outbound", reply);
-    return j({ reply, tool_calls: store.toolCalls, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
+    return j({ reply, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
 }
 

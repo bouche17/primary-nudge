@@ -56,6 +56,7 @@ export interface FamilyData {
   holidays: { school_id: string | null; start_date: string; end_date: string }[];
   notes: { id: string; summary: string | null; child_name: string | null; extracted_dates: unknown }[];
   exclusions: { child_id: string; keyword: string }[];
+  skips?: { reminder_id: string; skip_date: string }[]; // one date of a weekly reminder cancelled ("just this week")
   allOptedOut?: boolean;        // every family number has sent STOP
 }
 
@@ -103,6 +104,7 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
         if (((weeks % interval) + interval) % interval !== 0) continue;
       }
       if (isHoliday(f.holidays, kid.school_id, date)) continue; // skipped, never moved
+      if (f.skips?.some((x) => x.reminder_id === r.id && x.skip_date === date)) continue; // parent cancelled just this date
       const slot = r.reminder_time === "morning" || r.reminder_time === "evening" ? r.reminder_time : "both";
       items.push({ date, childId: kid.id, childName: kid.first_name, title: r.title, emoji: r.emoji || "✅", kind: interval > 1 ? "fortnightly" : "weekly", slot, source: { table: "child_reminders", id: r.id } });
     }
@@ -213,7 +215,7 @@ export async function loadFamilyDataForUsers(db: SupabaseClient, ids: string[], 
   const none = ["00000000-0000-0000-0000-000000000000"];
   const schoolOr = schoolIds.length ? `school_id.in.(${schoolIds.join(",")}),school_id.is.null` : "school_id.is.null";
   const fromTs = new Date(noon(fromDate) - 2 * DAY_MS).toISOString(), toTs = new Date(noon(toDate) + 2 * DAY_MS).toISOString();
-  const [cr, lp, sr, se, hol, notes, exc, opted] = await Promise.all([
+  const [cr, lp, sr, se, hol, notes, exc, opted, skips] = await Promise.all([
     db.from("child_reminders").select("id, child_id, title, emoji, day_of_week, reminder_time, active, recurrence_interval, anchor_date").in("child_id", kidIds.length ? kidIds : none).eq("active", true),
     db.from("weekly_lunch_plans").select("id, child_id, week_start, packed_lunch_days").in("child_id", kidIds.length ? kidIds : none).gte("week_start", mondayOf(fromDate)).lte("week_start", toDate),
     db.from("school_reminders").select("id, school_id, title, emoji, day_of_week, due_date, active").eq("active", true).or(schoolOr),
@@ -222,13 +224,15 @@ export async function loadFamilyDataForUsers(db: SupabaseClient, ids: string[], 
     phones.length ? db.from("parent_notes").select("id, summary, child_name, extracted_dates").in("phone_number", phones) : Promise.resolve({ data: [] }),
     db.from("event_exclusions").select("child_id, keyword").in("child_id", kidIds.length ? kidIds : none),
     phones.length ? db.from("opted_out_numbers").select("phone_number").in("phone_number", phones) : Promise.resolve({ data: [] }),
+    kidIds.length ? db.from("child_reminder_skips").select("reminder_id, skip_date, child_reminders!inner(child_id)").in("child_reminders.child_id", kidIds).gte("skip_date", fromDate).lte("skip_date", toDate) : Promise.resolve({ data: [] }),
   ]);
-  for (const r of [cr, lp, sr, se, hol, notes, exc] as { error?: { message: string } | null }[]) {
+  for (const r of [cr, lp, sr, se, hol, notes, exc, skips] as { error?: { message: string } | null }[]) {
     if (r.error) throw new Error(`what's on: read failed: ${r.error.message}`); // never build a partial list silently
   }
   return {
     familyId, children: kids, childReminders: (cr.data ?? []) as any, lunchPlans: (lp.data ?? []) as any, schoolReminders: (sr.data ?? []) as any,
     schoolEvents: (se.data ?? []) as any, holidays: (hol.data ?? []) as any, notes: (notes.data ?? []) as any, exclusions: (exc.data ?? []) as any,
+    skips: ((skips.data ?? []) as any[]).map((x) => ({ reminder_id: x.reminder_id, skip_date: x.skip_date })),
     allOptedOut: phones.length > 0 && (opted.data ?? []).length === phones.length,
   };
 }

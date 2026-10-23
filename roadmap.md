@@ -74,3 +74,10 @@
 - [x] Load Mossley CofE (URN 141152) 2026–27 holidays; dry-run Oscar's family week of 26 Oct + Sunday 25 Oct skip
 - [x] Free tests (83/83), then quick suite once (104/104)
 - [ ] Reply guard turns conditional offers ("tell me and I'll set up a reminder") into "haven't saved anything yet" — waits on Matt's OK (chat change, needs a quick run)
+
+## Rebuild Stage 3 — dashboard + chat on getWhatsOn, "Ask Monty" (23 Oct)
+- [x] A: dashboard_source setting; dashboard upcoming from whats-on (14 days, UK dates, reminder wording, opt-in tagged "optional"); free tests (partner, fortnightly, holiday, 23:30 UK date); switch to 'new'
+- [x] B: chat_source setting; chat context + duplicate check from getWhatsOn (family, partner notes, due-dated school reminders, opt-in flagged); chat shadow diffs (source 'chat'); quick suite
+- [x] C: lookup_whats_on / update_item / delete_item tools (per-date skip, deactivate, school items → offer hide, confirm pending action, family ownership check, partner update, honesty); quick suite
+- [ ] Full suite with chat_source new + legacy; switch chat_source only if both pass and diffs explained
+- [ ] Ask Matt: weekly reminders are skipped on every day inside a holiday range (incl. weekends, non-school clubs) — existing rule in old + new reminders; keep?
