@@ -60,3 +60,8 @@
 - [x] Parent item + school event on the same topic → one school line with the parent's extra detail
 - [x] Always-include words beat club/activity words
 - [x] Free tests; dry-run Sun 1 Nov 18:00 and Mon 2 Nov 07:00
+
+## Sunday check-in holiday skip (live before Sun 25 Oct 18:00)
+- [x] Skip a family when the whole Mon–Fri is a holiday for all its schools (no send, no log row); partial weeks unchanged
+- [x] Free tests (whole-week holiday, week after, one INSET day, two schools) + read-only previews for 25 Oct and 1 Nov
+- [ ] Remove send-reminders' hard-coded summer pause (TODO left in code; separate job)
