@@ -2518,6 +2518,157 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
   return null;
 }
 
+// ── Replies to messages Monty sent on its own (school emails, reminders, Sunday check-in) ──
+interface SchoolEmailItem { title: string; date: string; eligible: string[]; log_id: string | null }
+interface SentMsg { content: string; created_at: string; source: string | null; school_email_id: string | null; metadata: any }
+const ukTodayIso = () => nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+
+/** Monty's outbound messages from the last 48 hours, newest first (chat replies have source null). */
+async function recentOutbound(conversationId: string, hours = 48): Promise<SentMsg[]> {
+  const since = new Date(nowD().getTime() - hours * 3600_000).toISOString();
+  const { data } = await supabase.from("messages").select("content, created_at, source, school_email_id, metadata")
+    .eq("conversation_id", conversationId).eq("direction", "outbound").gte("created_at", since).lte("created_at", nowD().toISOString())
+    .order("created_at", { ascending: false }).limit(8);
+  return (data ?? []) as SentMsg[];
+}
+
+/** "girls' football tournament" — lower-case first letter unless it's an acronym/year label ("Y3/4 …", "PE"). */
+const tidyEventTitle = (t: string) => {
+  const x = t.trim().replace(/[.!]+$/, "");
+  return /^([A-Z]{2}|Y\d|Year\s)/.test(x) ? x : x.charAt(0).toLowerCase() + x.slice(1);
+};
+/** "Wednesday" within the next 6 days, otherwise "Wednesday 21st". */
+function dayPhrase(iso: string): string {
+  const days = Math.round((Date.parse(`${iso}T12:00:00Z`) - Date.parse(`${ukTodayIso()}T12:00:00Z`)) / 86_400_000);
+  return days >= 0 && days <= 6 ? fmtShortDay(iso) : fmtDayOrdinal(iso);
+}
+const joinAnd = (n: string[]) => n.length <= 1 ? n.join("") : `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
+
+/** The dated event behind a school-email message, and which of this family's children it's for. */
+async function schoolEmailItem(m: SentMsg, context: MontyContext): Promise<SchoolEmailItem | null> {
+  if (!m.school_email_id) return null;
+  const { data: log } = await supabase.from("school_email_log").select("id, event_title, event_date, year_groups, extracted").eq("id", m.school_email_id).maybeSingle();
+  if (!log) return null;
+  const title = String(log.event_title || (log.extracted as any)?.what || "").trim();
+  if (!title || !log.event_date) return { title: title || "that", date: "", eligible: [], log_id: log.id };
+  const years: string[] = log.year_groups ?? [];
+  const whole = !years.length || years.some((y) => /^all$/i.test(y));
+  let eligible = context.children.filter((c) => whole || years.some((y) => yearGroupMatches(y, c.year_group, title))).map((c) => c.first_name);
+  if (!eligible.length) eligible = context.children.map((c) => c.first_name);
+  return { title, date: String(log.event_date), eligible, log_id: log.id };
+}
+
+/** Save the school-email event for these children (once each) and confirm in one line. */
+async function saveSchoolEmailItem(phone: string, item: SchoolEmailItem, kids: string[], context: MontyContext): Promise<string> {
+  const names = context.children.map((c) => c.first_name);
+  const results: ToolResult[] = [];
+  const saved: string[] = [], already: string[] = [];
+  for (const kid of kids) {
+    const { data: notes } = await supabase.from("parent_notes").select("summary, extracted_dates").eq("phone_number", phone).ilike("child_name", kid);
+    const dup = (notes ?? []).some((n: any) => (n.extracted_dates ?? []).some((d: any) => d?.date === item.date) && matchItem(n.summary ?? "", item.title, names) !== "none");
+    if (dup) { already.push(kid); continue; }
+    const r = await runSave("save_parent_note", { summary: item.title, date: item.date, child_name: kid, __skip_dedup: true }, context, phone);
+    results.push(r);
+    if (r.ok) saved.push(kid);
+  }
+  await logDedupDecision({ phone, childName: kids.join(","), tool: "school_email_reply", date: item.date, newItem: item.title, decision: saved.length ? "school_email_yes_saved" : already.length ? "school_email_yes_already" : "school_email_yes_failed", match: { table: "school_email_log", id: item.log_id ?? "no match", text: item.title } });
+  if (results.some((r) => r.failed)) return nameNotPronoun(buildHonestReply(results), names);
+  const what = `the ${tidyEventTitle(item.title).replace(/^the\s+/i, "")}`;
+  if (saved.length) return `Great, I've added ${what} to ${joinAnd(saved)}'s reminders for ${dayPhrase(item.date)} ✅`;
+  return `That's already on ${joinAnd(already)}'s list for ${dayPhrase(item.date)} 👍`;
+}
+
+/** "yes" to a school email: past → say so; one child → save; several → one question (stored). */
+async function answerSchoolEmailYes(phone: string, m: SentMsg, message: string, context: MontyContext): Promise<string | null> {
+  const item = await schoolEmailItem(m, context);
+  if (!item) return null;
+  const names = context.children.map((c) => c.first_name);
+  if (!item.date) {
+    const kids = joinAnd(item.eligible.length ? item.eligible : names);
+    return `Which day is ${item.title === "that" ? "it" : `the ${tidyEventTitle(item.title)}`}? Tell me and I'll add it for ${kids} 😊`;
+  }
+  if (item.date < ukTodayIso()) return `That one's already been (it was on ${fmtDayOrdinal(item.date)}), so there's nothing to add 😊`;
+  const named = names.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+  const kids = named.length ? named : PLURAL_CHILDREN.test(message) || /\bboth\b/i.test(message) ? item.eligible : item.eligible.length === 1 ? item.eligible : [];
+  if (kids.length) return await saveSchoolEmailItem(phone, item, kids, context);
+  const question = whichChildQuestion(item.eligible, null, "");
+  await setPendingAction(phone, { kind: "school_email", email: item, items: [], proposed: null, question, created_at: nowD().toISOString(), source_text: message });
+  return question;
+}
+
+async function resolveSchoolEmailPending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const item = p.email!;
+  const names = context.children.map((c) => c.first_name);
+  const named = names.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+  const short = message.trim().split(/\s+/).length <= 7;
+  const kind = shortReplyKind(message, names);
+  let kids: string[] | null = null;
+  if (short && named.length) kids = named;
+  else if (short && (PLURAL_CHILDREN.test(message) || /\bboth\b/i.test(message))) kids = item.eligible;
+  else if (kind === "yes" && p.proposed?.length) kids = p.proposed;
+  await setPendingAction(phone, null);
+  if (kind === "no") return "No problem, I'll leave that one 👍";
+  if (!kids) return null; // something else: carry on normally
+  return await saveSchoolEmailItem(phone, item, kids, context);
+}
+
+/** "yes" after the Sunday check-in: confirm the saved lunch plan, or ask only for what's missing. */
+async function answerSundayYes(m: SentMsg, context: MontyContext): Promise<string> {
+  let week = typeof m.metadata?.week_start === "string" ? m.metadata.week_start : null;
+  if (!week) { // the Monday after the check-in was sent
+    const d = new Date(`${new Date(m.created_at).toLocaleDateString("en-CA", { timeZone: "Europe/London" })}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + ((8 - d.getUTCDay()) % 7 || 7)); week = d.toISOString().slice(0, 10);
+  }
+  const ids = context.children.map((c) => c.id);
+  const { data: plans } = ids.length ? await supabase.from("weekly_lunch_plans").select("child_id, packed_lunch_days").in("child_id", ids).eq("week_start", week) : { data: [] as any[] };
+  const SHORT: Record<string, string> = { Monday: "Mon", Tuesday: "Tue", Wednesday: "Wed", Thursday: "Thu", Friday: "Fri" };
+  const parts: string[] = [], missing: string[] = [];
+  for (const c of context.children) {
+    const pl = (plans ?? []).find((x: any) => x.child_id === c.id);
+    if (!pl) { missing.push(c.first_name); continue; }
+    const days = Object.keys(SHORT).filter((d) => (pl.packed_lunch_days ?? []).includes(d)).map((d) => SHORT[d]);
+    parts.push(days.length ? `${c.first_name} packed lunch ${days.join(", ")}` : `${c.first_name} school dinners all week`);
+  }
+  if (!parts.length) return `Which days ${missing.length === 1 ? "does" : "do"} ${joinAnd(missing)} need a packed lunch this week? 🥪`;
+  const done = `Great, that's this week's lunches confirmed: ${parts.join("; ")} ✅`;
+  return missing.length ? `${done} Which days ${missing.length === 1 ? "does" : "do"} ${joinAnd(missing)} need one? 🥪` : done;
+}
+
+/** Short replies ("yes", "seen", "thanks", "👍", "no") handled in code against what Monty last sent. null = let the AI reply. */
+async function tryShortReply(phone: string, message: string, context: MontyContext, conversationId: string): Promise<string | null> {
+  const names = context.children.map((c) => c.first_name);
+  const kind = shortReplyKind(message, names);
+  if (!kind) return null;
+  const recent = await recentOutbound(conversationId);
+  const last = recent[0] ?? null;
+  const lastAsked = !!last && !last.source && /\?/.test(last.content);
+  if (kind === "thanks") return "You're welcome 😊";
+  if (kind === "ack") return "Great 😊";
+  if (kind === "no") return lastAsked ? null : "No problem 👍";
+  // "yes" / "save it" / "add it"
+  if (last?.source === "school_email") return await answerSchoolEmailYes(phone, last, message, context);
+  if (last?.source === "sunday_checkin") return await answerSundayYes(last, context);
+  if (last?.source) return "Great 😊";
+  if (lastAsked) return null; // answering Monty's own question — the AI has that context
+  return await specificQuestion(phone, conversationId, context);
+}
+
+/** One specific, friendly question naming the most likely thing (stored so "yes" saves it). Never "no open question". */
+async function specificQuestion(phone: string, conversationId: string, context: MontyContext): Promise<string> {
+  const names = context.children.map((c) => c.first_name);
+  const email = (await recentOutbound(conversationId)).find((m) => m.source === "school_email");
+  const item = email ? await schoolEmailItem(email, context) : null;
+  if (item?.date && item.date >= ukTodayIso()) {
+    const kids = item.eligible.length === 1 ? item.eligible : [];
+    const question = kids.length
+      ? `Do you mean add the ${tidyEventTitle(item.title)} on ${dayPhrase(item.date)} for ${kids[0]}? 😊`
+      : `Do you mean add the ${tidyEventTitle(item.title)} on ${dayPhrase(item.date)}? Is that for ${item.eligible.length <= 2 ? item.eligible.join(" or ") : `${item.eligible.slice(0, -1).join(", ")} or ${item.eligible[item.eligible.length - 1]}`}? 😊`;
+    await setPendingAction(phone, { kind: "school_email", email: item, items: [], proposed: kids.length ? kids : null, question, created_at: nowD().toISOString() });
+    return question;
+  }
+  return `What would you like me to add for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
+}
+
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
   const names = context.children.map((c) => c.first_name);
