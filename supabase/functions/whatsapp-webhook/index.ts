@@ -5,7 +5,8 @@ import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_sha
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
-import { dropPlainPromises, hasPlainPromise } from "../_shared/replyGuard.ts";
+import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
+import { recordOutbound, SOURCE_LABEL } from "../_shared/outbound.ts";
 import { computeWhatsOn, eventYearGroups, loadFamilyData, ukDate, yearGroupMatches, type WhatsOnItem } from "../_shared/whatsOn.ts";
 import { loadChatWhatsOn, loadLegacyChatContext, whatsOnPromptSection, type Child, type MontyContext } from "../_shared/chatContext.ts";
 import { whatsOnDays } from "../_shared/reminderFormat.ts";
@@ -118,7 +119,8 @@ async function outageReply(phone: string, kind: "text" | "photo", content: strin
 interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
-  at?: string; // ISO timestamp the message was sent
+  at?: string;     // ISO timestamp the message was sent
+  source?: string | null; // outbound only: null = chat reply; otherwise what Monty sent on its own (school_email, …)
 }
 
 // ── Context loader ────────────────────────────────────────────────────────────
@@ -298,6 +300,7 @@ const staticPrompt = (modeRules: string) => `You are Monty 🎒 — a friendly, 
 ## Only act on the parent's NEWEST message (critical)
 - The chat history is CONTEXT ONLY. Every earlier request in it has ALREADY been handled. Never save, re-save, re-announce or reply about an earlier request again.
 - Each earlier message is labelled with when it was sent, e.g. "[earlier message — sent Tue 30 Sep, 08:12]". A "tomorrow" in an old message means the day after THAT date, not after today. Never copy these labels into your reply.
+- Messages labelled "[Monty sent — school email, …]", "[Monty sent — evening reminder, …]", "[Monty sent — Sunday check-in, …]" or "[Monty sent — family update, …]" are messages Monty sent on its own. The parent's new message may be a reply to one of them: read it in that light (e.g. "yes" after a school email about a dated event means save it for the matching child; "seen", "ok", "thanks" or "👍" just need a short warm acknowledgement).
 - The parent's new message is the final one, marked "=== NEW MESSAGE ===". Only save things that message asks for (or that it answers, if you had just asked the parent a question).
 - Your reply must only talk about what the new message asked. Don't mention other children or older items from history.
 - If the new message asks for several things, call a save tool for EACH of them before replying. You can call tools over several steps — never write "let me save…" or "I'll now save…": do the save, then say what was saved.
@@ -323,6 +326,13 @@ Pass the item to the save tool as the parent described it; the system decides on
 - Share one parent's information with another  
 - Pretend to be human if sincerely asked
 - Discuss topics unrelated to school life
+
+## Short replies (never robotic)
+- Never say you don't have an open question, never say you're not sure what they're saying yes to, and never describe how Monty works.
+- If a short reply is genuinely unclear, ask ONE specific question naming the most likely thing, e.g. "Do you mean add the girls' football on Wednesday for Ava?"
+
+## Other adults
+- When a parent mentions another adult (a teacher, "Mrs Smith", a coach, a TA, the head), the news is about that adult, not a child. Never assume a child is ill or away, and never say "I hope <child> is back soon" unless the parent said the child is unwell.
 
 ## General information with no date
 When a parent passes on general information that has no date or action (e.g. 'the bus stop moved to Elm Road', 'Mrs Smith is off sick', 'the school has a new head'), just acknowledge it warmly and naturally, and offer a reminder if a date comes up. For example: 'Thanks, good to know about Elm Road! If it starts on a particular day, tell me and I'll remind you.' Never talk about what you can or can't save, never say 'I haven't saved this', and don't explain how Monty works.
@@ -1202,15 +1212,22 @@ async function executeTool(
 }
 
 // ── History framing: old messages are dated context, the new one is marked ──
-function historyLabel(at?: string): string {
-  if (!at) return "[earlier message]";
+function historyLabel(at?: string, source?: string | null): string {
+  if (!at) return source ? `[Monty sent — ${SOURCE_LABEL[source] ?? source}]` : "[earlier message]";
   const d = new Date(at);
   const day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", timeZone: "Europe/London" });
   const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/London" });
+  if (source) return `[Monty sent — ${SOURCE_LABEL[source] ?? source}, ${day} ${time}]`;
   return `[earlier message — sent ${day}, ${time}]`;
 }
 function buildClaudeMessages(history: ConversationMessage[], incoming: string): any[] {
-  const msgs: any[] = history.map((m) => ({ role: m.role, content: `${historyLabel(m.at)} ${m.content}` }));
+  const msgs: any[] = [];
+  for (const m of history) {
+    const content = `${historyLabel(m.at, m.role === "assistant" ? m.source : null)} ${m.content}`;
+    const prev = msgs[msgs.length - 1];
+    if (prev && prev.role === m.role) prev.content += `\n\n${content}`; // several Monty-sent messages in a row → one turn
+    else msgs.push({ role: m.role, content });
+  }
   const nowLabel = historyLabel(nowD().toISOString()).replace("earlier message — sent", "sent now");
   const current = `=== NEW MESSAGE === ${nowLabel}\nEverything above is earlier history that has already been handled. Act ONLY on this message:\n\n${incoming}`;
   // Claude requires alternating roles; merge if the last history item is also from the user.
@@ -1469,7 +1486,8 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface SchoolOpt { id: string; name: string; address: string | null; town: string | null; postcode: string; urn: string }
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit" | "school_email";
+  email?: SchoolEmailItem;             // "yes" to a school email: the dated event waiting for a child
   edit?: EditPlan;                     // Ask Monty: the change waiting for "yes"
   dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
@@ -1501,6 +1519,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
   if (p.kind === "edit") return await resolveEditPending(phone, p, message, context);
+  if (p.kind === "school_email") return await resolveSchoolEmailPending(phone, p, message, context);
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -2501,6 +2520,16 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
 
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
+  const names = context.children.map((c) => c.first_name);
+  let reply = await handleTextMessageInner(from, incomingMessage, context, conversationId);
+  if (isRoboticReply(reply)) {
+    await logDedupDecision({ phone: from, childName: null, tool: "reply_guard_text", newItem: incomingMessage.slice(0, 300), decision: "robotic_reply_replaced", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
+    reply = await specificQuestion(from, conversationId, context);
+  }
+  return dropMisplacedWellWishes(reply, incomingMessage, names);
+}
+
+async function handleTextMessageInner(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
   // 1) Image notes awaiting "which child?"
   const clarification = await tryResolvePendingClarification(from, incomingMessage, context);
   if (clarification) return clarification;
@@ -2510,6 +2539,9 @@ async function handleTextMessage(from: string, incomingMessage: string, context:
   // 3) Text items awaiting "which child?" / "do you mean…?" / "which school?"
   const resolved = await tryResolvePendingAction(from, incomingMessage, context);
   if (resolved) return resolved;
+  // 3b) Short replies ("yes", "seen", "thanks") to what Monty last sent — decided in code
+  const short = await tryShortReply(from, incomingMessage, context, conversationId);
+  if (short) return nameNotPronoun(short, context.children.map((c) => c.first_name));
   // 4) "X has moved to Wednesday" → move the existing weekly reminder in code
   const moved = await tryMoveReminder(from, incomingMessage, context);
   if (moved) return nameNotPronoun(moved, context.children.map((c) => c.first_name));
@@ -2681,8 +2713,9 @@ async function getOrCreateConversation(phone: string): Promise<string> {
 async function getRecentHistory(conversationId: string, limit = 10): Promise<ConversationMessage[]> {
   const { data: messages } = await supabase
     .from("messages")
-    .select("direction, content, created_at")
+    .select("direction, content, created_at, source")
     .eq("conversation_id", conversationId)
+    .lte("created_at", nowD().toISOString())
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -2692,6 +2725,7 @@ async function getRecentHistory(conversationId: string, limit = 10): Promise<Con
       role: m.direction === "inbound" ? "user" : "assistant",
       content: m.content,
       at: m.created_at,
+      source: m.direction === "outbound" ? m.source ?? null : null,
     }));
 }
 
@@ -2742,7 +2776,7 @@ async function sendWhatsAppTemplate(
   contentSid: string,
   variables: Record<string, string>
 ): Promise<boolean> {
-  if (await blockIfTestPhone(to, "whatsapp-webhook-template")) return true;
+  if (await blockIfTestPhone(to, "whatsapp-webhook-template")) return false;
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
@@ -2766,6 +2800,7 @@ async function sendWhatsAppTemplate(
   );
 
   if (!res.ok) console.error("Twilio template send error:", await res.text());
+  else await recordOutbound({ phone: to, source: "family_update", contentSid, variables }); // partner's own copy
   return res.ok;
 }
 
