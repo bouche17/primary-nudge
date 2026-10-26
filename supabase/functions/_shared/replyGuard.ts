@@ -74,7 +74,7 @@ export function dropMisplacedWellWishes(reply: string, message: string, childNam
   if (!OTHER_ADULT.test(message) || !ILL_OR_AWAY.test(message)) return reply;
   const named = (txt: string) => childNames.some((n) => new RegExp(`\\b${n}\\b`, "i").test(txt));
   if (named(message)) return reply;
-  const adult = message.match(/\b(?:mrs|mr|miss|ms|mx|dr)\.?\s+[A-Za-z][A-Za-z'-]+/i)?.[0]?.replace(/^\w/, (c) => c.toUpperCase());
+  const adult = message.match(/\b(?:mrs|mr|miss|ms|mx|dr)\.?\s+[A-Za-z][A-Za-z'-]+/i)?.[0]?.replace(/\b\w/g, (c) => c.toUpperCase());
   const sentences = splitSentences(reply);
   const out: string[] = [];
   let changed = false;
