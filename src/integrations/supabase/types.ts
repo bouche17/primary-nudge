@@ -16,6 +16,8 @@ export type Database = {
     Tables: {
       ai_costs: {
         Row: {
+          cache_creation_input_tokens: number
+          cache_read_input_tokens: number
           cost_usd: number
           created_at: string
           family_id: string | null
@@ -29,6 +31,8 @@ export type Database = {
           school_id: string | null
         }
         Insert: {
+          cache_creation_input_tokens?: number
+          cache_read_input_tokens?: number
           cost_usd?: number
           created_at?: string
           family_id?: string | null
@@ -42,6 +46,8 @@ export type Database = {
           school_id?: string | null
         }
         Update: {
+          cache_creation_input_tokens?: number
+          cache_read_input_tokens?: number
           cost_usd?: number
           created_at?: string
           family_id?: string | null

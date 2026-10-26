@@ -43,6 +43,13 @@
       "when": 1792742555830,
       "tag": "0005_chat_shadow_source_and_reminder_skips",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793013253042,
+      "tag": "0006_ai_costs_cache_tokens",
+      "breakpoints": true
     }
   ]
 }
