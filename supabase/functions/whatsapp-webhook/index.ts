@@ -2659,11 +2659,9 @@ async function specificQuestion(phone: string, conversationId: string, context: 
   const email = (await recentOutbound(conversationId)).find((m) => m.source === "school_email");
   const item = email ? await schoolEmailItem(email, context) : null;
   if (item?.date && item.date >= ukTodayIso()) {
-    const kids = item.eligible.length === 1 ? item.eligible : [];
-    const question = kids.length
-      ? `Do you mean add the ${tidyEventTitle(item.title)} on ${dayPhrase(item.date)} for ${kids[0]}? 😊`
-      : `Do you mean add the ${tidyEventTitle(item.title)} on ${dayPhrase(item.date)}? Is that for ${item.eligible.length <= 2 ? item.eligible.join(" or ") : `${item.eligible.slice(0, -1).join(", ")} or ${item.eligible[item.eligible.length - 1]}`}? 😊`;
-    await setPendingAction(phone, { kind: "school_email", email: item, items: [], proposed: kids.length ? kids : null, question, created_at: nowD().toISOString() });
+    const kids = item.eligible;
+    const question = `Do you mean add the ${tidyEventTitle(item.title)} on ${dayPhrase(item.date)} for ${joinAnd(kids)}? 😊`;
+    await setPendingAction(phone, { kind: "school_email", email: item, items: [], proposed: kids, question, created_at: nowD().toISOString() });
     return question;
   }
   return `What would you like me to add for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
