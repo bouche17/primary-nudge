@@ -2585,6 +2585,34 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true,
     chatSource: b.chat_source === "new" || b.chat_source === "legacy" ? b.chat_source : null, familyUpdates: [] };
   return await testStore.run(store, async () => {
+    if (b.action === "prompt_sizes") {
+      // Token count of each prompt-cache block (count_tokens is free; no reply, nothing saved).
+      const context = await loadParentContext(phone);
+      if (!context) return j({ error: "no test family for this phone" }, 400);
+      const p = buildPromptBlocks(context);
+      const tl = toolsFor(context);
+      const model = montyClaudeModel();
+      const count = async (extra: Record<string, unknown>) => {
+        const r = await fetch("https://api.anthropic.com/v1/messages/count_tokens", { method: "POST",
+          headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], ...extra }) });
+        const d = await r.json(); return r.ok ? Number(d.input_tokens) : -1;
+      };
+      const t = (x: string) => ({ type: "text", text: x });
+      const base = await count({});
+      const withTools = await count({ tools: tl });
+      const withStatic = await count({ tools: tl, system: [t(p.staticText)] });
+      const withFamily = await count({ tools: tl, system: [t(p.staticText), t(p.family)] });
+      const withNow = await count({ tools: tl, system: [t(p.staticText), t(p.family), t(p.now)] });
+      const staticAlone = await count({ system: [t(p.staticText)] });
+      const visionStatic = await count({ system: [t(VISION_STATIC_PROMPT)] });
+      const visionWithTools = await count({ tools: TOOLS_LEGACY, system: [t(VISION_STATIC_PROMPT)] });
+      const sizes = { model, chat_source: context.chatSource, tools: withTools - base, static: withStatic - withTools, static_alone: staticAlone - base,
+        family: withFamily - withStatic, now: withNow - withFamily, cached_prefix_tools_static_family: withFamily - base,
+        vision_static_alone: visionStatic - base, vision_tools_plus_static: visionWithTools - base };
+      console.log("[prompt-cache] block token counts:", JSON.stringify(sizes));
+      return j({ sizes, dry_run: true, twilio_called: false });
+    }
     const message0 = String(b.message || "");
     const alertSends: string[] = [];
     const optReply = await handleOptIntent(phone, message0, async (t) => { alertSends.push(t); return { ok: true, channel: "stub" }; }, true);
