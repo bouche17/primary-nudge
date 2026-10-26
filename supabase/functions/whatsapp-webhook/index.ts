@@ -1721,7 +1721,8 @@ async function generateReply(
   phone: string
 ): Promise<string> {
   const t0Reply = Date.now();
-  const systemPrompt = buildSystemPrompt(context);
+  const prompt = buildPromptBlocks(context);
+  const system = systemBlocks(prompt);
   const model = montyClaudeModel();
   const messages = buildClaudeMessages(history, incomingMessage);
 
@@ -1734,7 +1735,7 @@ async function generateReply(
   (context as any).__grounding = grounding;
 
   const tools = toolsFor(context);
-  const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools }, phone);
+  const res = await callClaude({ model, max_tokens: 2000, system, messages, tools }, phone);
   const rawText1 = await res.text();
   console.log("[Claude] Raw response text (round 1):", rawText1);
   if (!res.ok) {
@@ -1753,7 +1754,7 @@ async function generateReply(
       });
       const retry = await callClaude({
         model, max_tokens: 2000, messages, tools, tool_choice: { type: "any" },
-        system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
+        system: systemBlocks(prompt, "SYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates."),
       }, phone);
       if (!retry.ok) {
         const rt = await retry.text();
@@ -1866,7 +1867,7 @@ async function generateReply(
     round++;
     const failNext = (testStore.getStore() as any)?.failFollowup === true;
     const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
-      await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages: convo, tools }, phone);
+      await callClaude({ model, max_tokens: 2000, system, messages: cacheLastMessage(convo), tools }, phone);
     const raw = await next.text();
     console.log(`[Claude] Raw response text (round ${round}):`, raw);
     if (!next.ok) {
@@ -2011,7 +2012,32 @@ const ASK_TOOLS = [
   },
 ];
 const ASK_TOOL_NAMES = new Set(ASK_TOOLS.map((t) => t.name));
-const toolsFor = (context: MontyContext) => (context.whatsOn ? [...tools, ...ASK_TOOLS] : tools);
+// ── Prompt caching (Anthropic) ── at most 4 breakpoints per request: last tool, static block, family block, last message.
+const EPHEMERAL = { type: "ephemeral" } as const;
+const withCachedLastTool = (list: any[]) => list.map((t, i) => (i === list.length - 1 ? { ...t, cache_control: EPHEMERAL } : t));
+/** Fixed tool lists per mode: same order and wording every call, cache breakpoint on the last tool. */
+const TOOLS_LEGACY = withCachedLastTool(tools);
+const TOOLS_NEW = withCachedLastTool([...tools, ...ASK_TOOLS]);
+const toolsFor = (context: MontyContext) => (context.whatsOn ? TOOLS_NEW : TOOLS_LEGACY);
+/** system array: STATIC (cached) → FAMILY (cached) → NOW (uncached, last), plus an optional uncached extra block. */
+function systemBlocks(p: PromptBlocks, extra?: string): any[] {
+  const blocks: any[] = [
+    { type: "text", text: p.staticText, cache_control: EPHEMERAL },
+    { type: "text", text: p.family, cache_control: EPHEMERAL },
+    { type: "text", text: p.now },
+  ];
+  if (extra) blocks.push({ type: "text", text: extra });
+  return blocks;
+}
+/** Copy of the conversation with one cache breakpoint on the last content block of the last message (earlier ones untouched). */
+function cacheLastMessage(msgs: any[]): any[] {
+  if (!msgs.length) return msgs;
+  const last = msgs[msgs.length - 1];
+  const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+  if (!content.length) return msgs;
+  content[content.length - 1] = { ...content[content.length - 1], cache_control: EPHEMERAL };
+  return [...msgs.slice(0, -1), { ...last, content }];
+}
 
 type AskRef = { table: string; id: string; date: string; childId: string | null; child: string | null; title: string; kind: string };
 interface AskState { refs: Map<string, AskRef>; lookups: import("../_shared/askMonty.ts").LookupView[]; reply?: string; pending?: PendingAction; handled?: boolean }
