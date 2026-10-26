@@ -17,6 +17,7 @@
 // MONTY_TEST_SECRET (constant-time) and is audited in test_entry_audit.
 
 import { auditTestEntry, blockIfTestPhone, isTestPhone, validTestSecret } from "../_shared/testGuard.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -74,18 +75,18 @@ function makeHolidayChecker() {
   };
 }
 
-async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string): Promise<{ ok: boolean; status_code: number; body: string }> {
+function checkinVariables(names: string, weekDates: string, summary: string): Record<string, string> {
+  return { "1": sanitiseForTwilio(names), "2": sanitiseForTwilio(weekDates), "3": sanitiseForTwilio(summary) };
+}
+
+async function sendWhatsApp(to: string, names: string, weekDates: string, summary: string, weekStart: string): Promise<{ ok: boolean; status_code: number; body: string }> {
   if (await blockIfTestPhone(to, "sunday-lunch-checkin")) return { ok: true, status_code: 0, body: "blocked: test number" };
   if (!TWILIO_SUNDAY_TEMPLATE_SID) {
     console.error("No TWILIO_SUNDAY_TEMPLATE_SID configured — refusing to send freeform.");
     return { ok: false, status_code: 0, body: "No TWILIO_SUNDAY_TEMPLATE_SID configured" };
   }
 
-  const contentVariables = JSON.stringify({
-    "1": sanitiseForTwilio(names),
-    "2": sanitiseForTwilio(weekDates),
-    "3": sanitiseForTwilio(summary),
-  });
+  const contentVariables = JSON.stringify(checkinVariables(names, weekDates, summary));
 
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
@@ -122,6 +123,8 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
     } catch (logError) {
       console.error("Failed to log message send failure:", logError);
     }
+  } else {
+    await recordOutbound({ phone: to, source: "sunday_checkin", contentSid: TWILIO_SUNDAY_TEMPLATE_SID, variables: checkinVariables(names, weekDates, summary), meta: { week_start: weekStart } });
   }
   return { ok: res.ok, status_code: res.status, body: responseBody };
 }
@@ -449,12 +452,13 @@ async function deliverSundayMessages(planned: PlannedFamily[], weekStart: string
     for (const phone_number of fam.phones) {
       if (mode === "stub") {
         if (!(await isTestPhone(phone_number))) continue;
+        await recordOutbound({ phone: phone_number, source: "sunday_checkin", contentSid: TWILIO_SUNDAY_TEMPLATE_SID, variables: checkinVariables(fam.names, weekDates, fam.summary), meta: { week_start: weekStart, stub: true } });
         anySent = true;
         sentCount++;
         delivered.push({ phone: phone_number, names: fam.names, summary: fam.summary });
         continue;
       }
-      const result = await sendWhatsApp(phone_number, fam.names, weekDates, fam.summary);
+      const result = await sendWhatsApp(phone_number, fam.names, weekDates, fam.summary, weekStart);
       if (result.ok) {
         anySent = true;
         sentCount++;
