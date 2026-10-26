@@ -144,7 +144,10 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
 
 // ── System prompt builder ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(context: MontyContext): string {
+interface PromptBlocks { staticText: string; family: string; now: string }
+
+/** System prompt in three blocks: STATIC (same for everyone, cached), FAMILY (this parent's data, cached per message), NOW (dates, uncached, last). */
+function buildPromptBlocks(context: MontyContext): PromptBlocks {
   const childrenSummary = context.children
     .map((c) => `${c.first_name} (${c.year_group} at ${c.school_name})`)
     .join(", ");
@@ -241,26 +244,46 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
   }
   const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
 
-  const legacyUpcomingBlock = `## Upcoming school events (next 14 days)
+  // Family data only (the matching rule text lives in the static block, so it stays cache-identical).
+  const upcoming = context.whatsOn ? `## What's on for this family — today + next 13 days (UK dates; the same list the reminders use, partner's items included)
+${whatsOnPromptSection(context.whatsOn)}` : `## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
 
-IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.
-
 ## Things this parent has told you about (upcoming)
-${upcomingNotesSummary}
-`;
-  const upcomingBlock = context.whatsOn ? `## What's on for this family — today + next 13 days (UK dates; the same list the reminders use, partner's items included)
-${whatsOnPromptSection(context.whatsOn)}
+${upcomingNotesSummary}`;
 
-This list is the source of truth for what's on. Items marked [optional …] are clubs/activities from the school calendar that are NOT sent as reminders; if the parent asks to be reminded about one, call save_parent_note for that child and date. Items marked [from school] come from the school.
+  return {
+    staticText: context.whatsOn ? STATIC_PROMPT_NEW : STATIC_PROMPT_LEGACY,
+    family: `## This parent's children
+${childrenSummary || "No children set up yet"}
 
-## Looking things up, changing and cancelling (Ask Monty)
-- To answer ANY question about what's on (today, tomorrow, this week, "is there football this week?", "when's the next Forest School?", "anything for Jude?"), call lookup_whats_on with the dates (and child_name / item if asked). The reply to the parent is built from its result automatically — never answer from memory or guess.
-- "This week" = today to Sunday. "Next week" = next Monday to Sunday. "Next <thing>" = today to 8 weeks ahead with item set.
-- To change or cancel something: call lookup_whats_on first in the same turn, then update_item or delete_item with a REF from that result. Never use an item from earlier messages. "Cancel X this week / just Tuesday" = delete_item scope this_date_only; "X has stopped / we don't do X any more" = delete_item scope all_future.
-- Never say you've changed, cancelled, moved or deleted anything yourself — the system asks the parent to confirm and confirms the change.` : legacyUpcomingBlock;
+## Personal reminders set up for their children
+${childRemindersSummary}
 
-  return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
+## School-wide recurring reminders
+${schoolRemindersSummary}
+
+${upcoming}
+
+## Packed lunches already saved
+${lunchPlansSummary}
+
+Only say a packed lunch is "already saved" if it appears in this section for that exact date. If a parent tells you a child needs a packed lunch on a day, always call save_weekly_lunch_plan with mode 'add' (it's safe even if already saved) and confirm the specific day and date back.
+
+${onboardingInstructions}`.trimEnd(),
+    now: `## Right now (authoritative — trust this over anything in the chat history)
+- Current UK time: ${ukTime}
+- Today: ${ukLong(nowDate)} (${todayIsoUK})
+- Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
+- Next 7 days:
+${next7}
+Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.`,
+  };
+}
+
+// STATIC prompt blocks: identical for every parent and every call (one per chat_source mode) — cached by Anthropic.
+// No dates, names, counts or per-parent values may go in here.
+const staticPrompt = (modeRules: string) => `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
 
 ## Contact details (never invent any)
 - Monty's ONLY contact details: email hello@heymonty.co.uk, website heymonty.co.uk. Never give any other email, website, domain or phone number for Monty.
@@ -269,14 +292,6 @@ This list is the source of truth for what's on. Items marked [optional …] are 
 
 ## Stopping messages (never say you can't)
 - Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". Questions about their data: hello@heymonty.co.uk. If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
-
-## Right now (authoritative — trust this over anything in the chat history)
-- Current UK time: ${ukTime}
-- Today: ${ukLong(nowDate)} (${todayIsoUK})
-- Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
-- Next 7 days:
-${next7}
-Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.
 
 ## Only act on the parent's NEWEST message (critical)
 - The chat history is CONTEXT ONLY. Every earlier request in it has ALREADY been handled. Never save, re-save, re-announce or reply about an earlier request again.
@@ -307,15 +322,6 @@ Pass the item to the save tool as the parent described it; the system decides on
 - Pretend to be human if sincerely asked
 - Discuss topics unrelated to school life
 
-## This parent's children
-${childrenSummary || "No children set up yet"}
-
-## Personal reminders set up for their children
-${childRemindersSummary}
-
-## School-wide recurring reminders
-${schoolRemindersSummary}
-
 ## HARD RULE — never claim something is "already saved" yourself
 - You must NEVER decide from the lists above that something is already saved, covered, down, or set. Duplicate checks are done by the save tools against the database.
 - Whenever a parent tells you about something for a child on a date (an activity, kit, event, packed lunch), ALWAYS call the matching save tool (save_parent_note, save_weekly_lunch_plan or save_child_reminder). Only say "already saved" if the tool result starts with "ALREADY_SAVED:".
@@ -333,7 +339,7 @@ Tool results contain internal markers (NOT SAVED, POSSIBLE_DUPLICATE, ALREADY_SA
 - Vague references ("same again next week", "the usual", "she needs her bag") → use the existing reminders, notes and recent conversation to work out the most likely meaning, then call ask_parent_to_confirm with the exact item(s) you'd save and a natural question like "Do you mean Rosa's swimming kit on Tuesday again?". Never save until the parent says yes.
 - If a save result says the item isn't in the latest message: if it was an old request from history, drop it silently and just reply to what the parent actually said; if the latest message is just vague, use ask_parent_to_confirm instead. Never tell the parent something was refused.
 
-${upcomingBlock}
+${modeRules}
 
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
@@ -341,11 +347,6 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
 Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly (or say nothing about timing if it tells you not to) and don't work it out yourself. Only ever mention upcoming reminders, positively. Never add lines about reminders that won't go out or have already gone ("tonight's reminder won't go out", "it's after 6pm so…").
-
-## Packed lunches already saved
-${lunchPlansSummary}
-
-Only say a packed lunch is "already saved" if it appears in this section for that exact date. If a parent tells you a child needs a packed lunch on a day, always call save_weekly_lunch_plan with mode 'add' (it's safe even if already saved) and confirm the specific day and date back.
 
 ## HARD RULE — fortnightly / every-other reminders
 - If a parent describes a reminder as "fortnightly", "every other [day]", "alternate weeks" or similar, you MUST call save_child_reminder with recurrence_interval=2 AND a real anchor_date (YYYY-MM-DD) that the parent has actually given or clearly stated (e.g. "the next one is 2nd October").
@@ -379,10 +380,15 @@ This is one of the most useful things you can do. The parent may say "just got t
 - If there's nothing actionable, let them know warmly
 Example: Parent forwards "Year 1 and Year 2 — Earth Day litter pick Wednesday 22nd April, leaving at 1:15pm."
 → Harry is in Year 2 → save note with child_name="Harry"
-→ Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm."
+→ Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm."`;
+const STATIC_PROMPT_LEGACY = staticPrompt(`IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.`);
+const STATIC_PROMPT_NEW = staticPrompt(`This list is the source of truth for what's on. Items marked [optional …] are clubs/activities from the school calendar that are NOT sent as reminders; if the parent asks to be reminded about one, call save_parent_note for that child and date. Items marked [from school] come from the school.
 
-${onboardingInstructions}`;
-}
+## Looking things up, changing and cancelling (Ask Monty)
+- To answer ANY question about what's on (today, tomorrow, this week, "is there football this week?", "when's the next Forest School?", "anything for Jude?"), call lookup_whats_on with the dates (and child_name / item if asked). The reply to the parent is built from its result automatically — never answer from memory or guess.
+- "This week" = today to Sunday. "Next week" = next Monday to Sunday. "Next <thing>" = today to 8 weeks ahead with item set.
+- To change or cancel something: call lookup_whats_on first in the same turn, then update_item or delete_item with a REF from that result. Never use an item from earlier messages. "Cancel X this week / just Tuesday" = delete_item scope this_date_only; "X has stopped / we don't do X any more" = delete_item scope all_future.
+- Never say you've changed, cancelled, moved or deleted anything yourself — the system asks the parent to confirm and confirms the change.`);
 
 // ── AI tools (actions Monty can take) ────────────────────────────────────────
 // Claude API uses a different tool format to OpenAI/Gemini
