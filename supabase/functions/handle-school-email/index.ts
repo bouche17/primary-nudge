@@ -19,25 +19,10 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-async function extractEmailInfo(subject: string, body: string): Promise<{
-  message: string | null;
-  tldr: string;
-  what: string;
-  who: string;
-  when: string;
-  cost: string | null;
-  action: string | null;
-  links: string[];
-  yearGroups: string[];
-}> {
-  const prompt = `You are processing a school email from Dean Valley Community Primary School sent via Arbor.
+// Fixed extraction instructions: identical for every email, sent as a cached system block.
+const EXTRACTION_INSTRUCTIONS = `You are processing a school email from Dean Valley Community Primary School sent via Arbor.
 
 Extract the key information from this email and return ONLY a JSON object with no preamble or markdown.
-
-Email subject: ${subject}
-
-Email body:
-${body}
 
 Return this exact JSON structure:
 {
@@ -80,7 +65,25 @@ links: Extract ONLY the URLs a parent actually needs to click to take an action 
 
 yearGroups: For distribution logic only — use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
 
-Many school emails combine a universal requirement (applies to every child, no exceptions — phrases like "all children", "all pupils", "whether they...", or a deadline/action that doesn't exclude any year group) with year-specific extras (like optional clubs only open to certain years). When this happens, yearGroups should be set to ["all"] — since the universal requirement means every family needs to see the message, even if some content like a specific club doesn't apply to them. Only use specific year groups (not "all") when the ENTIRE email is restricted to those years with no whole-school component at all.
+Many school emails combine a universal requirement (applies to every child, no exceptions — phrases like "all children", "all pupils", "whether they...", or a deadline/action that doesn't exclude any year group) with year-specific extras (like optional clubs only open to certain years). When this happens, yearGroups should be set to ["all"] — since the universal requirement means every family needs to see the message, even if some content like a specific club doesn't apply to them. Only use specific year groups (not "all") when the ENTIRE email is restricted to those years with no whole-school component at all.`;
+
+async function extractEmailInfo(subject: string, body: string): Promise<{
+  message: string | null;
+  tldr: string;
+  what: string;
+  who: string;
+  when: string;
+  cost: string | null;
+  action: string | null;
+  links: string[];
+  yearGroups: string[];
+}> {
+  // Per-email part (uncached): the subject, body and today's date.
+  const userText = `Email subject: ${subject}
+
+Email body:
+${body}
+
 Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -93,7 +96,8 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
     body: JSON.stringify({
       model: montyClaudeModel(),
       max_tokens: 1000,
-      messages: [{ role: "user", content: prompt }],
+      system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
+      messages: [{ role: "user", content: userText }],
     }),
   });
 
