@@ -50,6 +50,13 @@
       "when": 1793013253042,
       "tag": "0006_ai_costs_cache_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793040658855,
+      "tag": "0007_school_email_log_and_outbound_sources",
+      "breakpoints": true
     }
   ]
 }
