@@ -1,7 +1,9 @@
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
-import { blockIfTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
-import { buildSchoolMessage, buildOldSchoolMessage } from "../_shared/schoolEmailMessage.ts";
+import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
+import { buildSchoolMessage, buildOldSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
+import { isOptInEmail } from "../_shared/schoolEventRules.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -13,6 +15,8 @@ const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
 const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX63040a55daeb8ef0673b8a1a156ad9a9";
 
 const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
+// These emails come from Dean Valley's Arbor account, so only Dean Valley families receive them.
+const DEAN_VALLEY_SCHOOL_ID = Deno.env.get("SCHOOL_EMAIL_SCHOOL_ID") || "f656deff-dedf-4d00-a6aa-8a779f83a3b5";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,7 +38,10 @@ Return this exact JSON structure:
   "cost": "any cost mentioned, in readable form, e.g. '£25/team (~£2.50-£3.50/child)' — null if no cost is mentioned anywhere in the email",
   "action": "the specific thing a parent needs to do, or null if nothing actionable",
   "links": ["every URL mentioned in the email body, preserved exactly as written"],
-  "yearGroups": ["Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school]
+  "yearGroups": ["Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school],
+  "eventTitle": "short name of the event a parent might want a reminder for, e.g. 'Y3/4 girls' football tournament' — null if there is no single dated event",
+  "eventDate": "that event's date as YYYY-MM-DD — null if there is no single date",
+  "optInGroup": "only for optional/selected activities (teams, squads, clubs, tournaments, trials): who takes part, written to follow 'If Ava's in …', e.g. 'the Y3/4 girls' football team' — null otherwise"
 }
 
 Guidelines for each field:
@@ -63,21 +70,16 @@ action: Distinguish two email types:
 
 links: Extract ONLY the URLs a parent actually needs to click to take an action or view specific content — e.g. a form to complete, a booking or payment portal, a specific document, or a specific event page. EXCLUDE: mailto: links, tel: links, the school's general homepage or website root (e.g. a bare https://www.deanvalley.cheshire.sch.uk with no specific path), social media links, and anything from email signatures or footers. If no qualifying links exist, return an empty array. Preserve each qualifying link exactly as written, never summarised, shortened, or omitted.
 
+eventTitle / eventDate: the one dated event in the email (the day it happens, not a booking deadline). Use null for both when the email has no single event date. Never guess a date.
+
+optInGroup: a short phrase naming the group of children taking part, never a gender assumption about a particular child. Null for anything every child in the year group does.
+
 yearGroups: For distribution logic only — use these exact values: "Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school.
 
 Many school emails combine a universal requirement (applies to every child, no exceptions — phrases like "all children", "all pupils", "whether they...", or a deadline/action that doesn't exclude any year group) with year-specific extras (like optional clubs only open to certain years). When this happens, yearGroups should be set to ["all"] — since the universal requirement means every family needs to see the message, even if some content like a specific club doesn't apply to them. Only use specific year groups (not "all") when the ENTIRE email is restricted to those years with no whole-school component at all.`;
 
-async function extractEmailInfo(subject: string, body: string): Promise<{
-  message: string | null;
-  tldr: string;
-  what: string;
-  who: string;
-  when: string;
-  cost: string | null;
-  action: string | null;
-  links: string[];
-  yearGroups: string[];
-}> {
+type Extracted = SchoolEmailInfo & { yearGroups: string[] };
+async function extractEmailInfo(subject: string, body: string): Promise<Extracted> {
   // Per-email part (uncached): the subject, body and today's date.
   const userText = `Email subject: ${subject}
 
@@ -108,7 +110,9 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const parsed = JSON.parse(clean);
   // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
-  for (const key of ["cost", "action", "when", "message"] as const) {
+  if (typeof parsed.eventDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.eventDate)) parsed.eventDate = null;
+  if (!Array.isArray(parsed.yearGroups)) parsed.yearGroups = ["all"];
+  for (const key of ["cost", "action", "when", "message", "eventTitle", "optInGroup"] as const) {
     if (parsed[key] !== null && (typeof parsed[key] !== "string" || parsed[key].trim() === "")) {
       parsed[key] = null;
     }
@@ -116,13 +120,15 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
   return parsed;
 }
 
-async function sendWhatsApp(to: string, text: string): Promise<boolean> {
-  if (await blockIfTestPhone(to, "handle-school-email")) return true;
-  const sanitisedText = text
-    .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1024);
+const sanitise = (text: string) => text
+  .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim()
+  .slice(0, 1024);
+
+async function sendWhatsApp(to: string, text: string, logId: string | null): Promise<boolean> {
+  if (await blockIfTestPhone(to, "handle-school-email")) return false;
+  const sanitisedText = sanitise(text);
 
   const contentVariables = JSON.stringify({ "1": sanitisedText });
 
@@ -160,8 +166,95 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
     } catch (logError) {
       console.error("Failed to log message send failure:", logError);
     }
+  } else {
+    await recordOutbound({ phone: to, source: "school_email", contentSid: TWILIO_SCHOOL_NOTIFICATION_SID, variables: { "1": sanitisedText }, schoolEmailId: logId });
   }
   return res.ok;
+}
+
+const jsonRes = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+/** Targets the school's families, logs the email in school_email_log, sends one message per family phone and records it
+ *  in each recipient's conversation. stubPhones: test send — only those (test) numbers, never Twilio. */
+async function processEmail(o: { subject: string; extracted: Extracted; schoolId: string; testMode?: boolean; catchUpPhone?: string | null; stubPhones?: Set<string> }) {
+  const { extracted } = o;
+  const yearGroups = Array.isArray(extracted.yearGroups) && extracted.yearGroups.length ? extracted.yearGroups : ["all"];
+  const optIn = isOptInEmail(o.subject, extracted.what, extracted.eventTitle);
+  const { data: children } = await supabase.from("children").select("parent_id, year_group, first_name").eq("school_id", o.schoolId);
+
+  const isWholeSchool = yearGroups.some((y) => /^all$/i.test(y));
+  const relevantChildren = (children ?? []).filter((c: any) => isWholeSchool || yearGroups.some((yg) => yg.toLowerCase() === (c.year_group || "").toLowerCase()));
+
+  const { data: allProfiles } = await supabase.from("profiles").select("user_id, phone_number").not("phone_number", "is", null);
+  const { data: linkedAccounts } = await supabase.from("linked_accounts").select("primary_user_id, linked_user_id").eq("status", "accepted");
+
+  // ── Union-find family grouping (same approach as send-reminders) ──
+  const familyOf = new Map<string, string>();
+  const find = (u: string): string => {
+    const p = familyOf.get(u);
+    if (!p || p === u) return u;
+    const root = find(p);
+    familyOf.set(u, root);
+    return root;
+  };
+  const union = (a: string, b: string) => { const ra = find(a), rb = find(b); if (ra !== rb) familyOf.set(rb, ra); };
+  for (const c of children ?? []) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
+  for (const p of allProfiles || []) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
+  for (const link of linkedAccounts || []) {
+    if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
+    if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
+    union(link.primary_user_id, link.linked_user_id);
+  }
+  const phonesByFamily = new Map<string, Set<string>>();
+  for (const p of allProfiles || []) {
+    if (!p.phone_number) continue;
+    const fam = find(p.user_id);
+    if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
+    phonesByFamily.get(fam)!.add(p.phone_number as string);
+  }
+
+  // One message per family: "For Caspian: …" for targeted emails, "If Caspian's in …:" for opt-in ones.
+  const kidsByFamily = new Map<string, string[]>();
+  for (const c of relevantChildren as any[]) {
+    const fam = find(c.parent_id);
+    if (!kidsByFamily.has(fam)) kidsByFamily.set(fam, []);
+    kidsByFamily.get(fam)!.push(c.first_name);
+  }
+  const sends: { phone: string; message: string; family: string }[] = [];
+  const seenPhones = new Set<string>();
+  for (const [fam, kids] of kidsByFamily) {
+    const message = buildSchoolMessage(extracted, [...new Set(kids)].sort((a, b) => a.localeCompare(b)), optIn);
+    for (const phone of phonesByFamily.get(fam) || []) {
+      if (seenPhones.has(phone)) continue;
+      if (o.stubPhones && !o.stubPhones.has(phone)) continue;
+      if (!o.stubPhones && (await isTestPhone(phone))) continue; // test families never get real school emails
+      if (o.testMode && phone !== TEST_PHONE_NUMBER) continue;
+      if (o.catchUpPhone && phone !== o.catchUpPhone) continue;
+      seenPhones.add(phone);
+      sends.push({ phone, message, family: fam });
+    }
+  }
+
+  const { data: log, error: logErr } = await supabase.from("school_email_log").insert({
+    school_id: o.schoolId, subject: o.subject.slice(0, 500), extracted, message: buildSchoolMessage(extracted, [], false),
+    year_groups: yearGroups, opt_in: optIn, event_title: extracted.eventTitle ?? null, event_date: extracted.eventDate ?? null,
+    is_test: !!o.stubPhones || !!o.testMode || !!o.catchUpPhone,
+  }).select("id").single();
+  if (logErr) console.error("school_email_log insert failed:", logErr.message);
+  const logId = log?.id ?? null;
+
+  const sentFamilies = new Set<string>();
+  let sentCount = 0;
+  for (const { phone, message, family } of sends) {
+    let ok: boolean;
+    if (o.stubPhones) {
+      ok = !!(await recordOutbound({ phone, source: "school_email", contentSid: TWILIO_SCHOOL_NOTIFICATION_SID, variables: { "1": sanitise(message) }, schoolEmailId: logId, meta: { stub: true } }));
+    } else ok = await sendWhatsApp(phone, message, logId);
+    if (ok) { sentCount++; sentFamilies.add(family); }
+  }
+  if (logId) await supabase.from("school_email_log").update({ families_count: sentFamilies.size, phones_count: sentCount }).eq("id", logId);
+  console.log(`Sent to ${sentCount} parents for year groups: ${yearGroups.join(", ")} (opt-in: ${optIn})`);
+  return { success: true, sent: sentCount, families: sentFamilies.size, log_id: logId, opt_in: optIn, messages: o.stubPhones ? sends.map((x) => ({ phone: x.phone, message: x.message })) : undefined };
 }
 
 Deno.serve(async (req: Request) => {
@@ -180,127 +273,27 @@ Deno.serve(async (req: Request) => {
       const ex = await extractEmailInfo(subject, rawEmail);
       const sample: { first_name: string; year_group: string }[] = Array.isArray(reqBody.sample_children) ? reqBody.sample_children : [];
       const names = sample.filter((c) => (ex.yearGroups || []).some((y) => y.toLowerCase() === (c.year_group || "").toLowerCase())).map((c) => c.first_name);
-      return new Response(JSON.stringify({ dry_run: true, extracted: ex, old: buildOldSchoolMessage(ex), new: buildSchoolMessage(ex, names) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ dry_run: true, extracted: ex, old: buildOldSchoolMessage(ex), new: buildSchoolMessage(ex, names, isOptInEmail(subject, ex.what, ex.eventTitle)) }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    // Test send: secret-gated, AI-free (extraction passed in), test numbers only, never Twilio.
+    if (reqBody.test_send === true) {
+      const ok = await validTestSecret(req.headers.get("x-monty-test-secret"));
+      const phones: string[] = Array.isArray(reqBody.only_phones) ? reqBody.only_phones.map(String) : [];
+      const allTest = phones.length > 0 && (await Promise.all(phones.map((p) => isTestPhone(p)))).every(Boolean);
+      await auditTestEntry({ entry_point: "handle-school-email:test_send", phone_number: phones.join(",") || null, scenario: String(subject ?? "").slice(0, 120), allowed: ok && allTest, reason: !ok ? "bad_secret" : allTest ? "stub_send" : "not_test_numbers" });
+      if (!ok || !allTest || typeof reqBody.school_id !== "string" || !reqBody.extracted) return jsonRes({ error: "forbidden" }, 403);
+      return jsonRes(await processEmail({ subject: String(subject ?? ""), extracted: reqBody.extracted, schoolId: reqBody.school_id, stubPhones: new Set(phones) }));
     }
     const testMode = test === true;
     const catchUpPhone = typeof only_phone === "string" ? only_phone.trim() : null;
-
-    if (testMode) {
-      console.log(`[handle-school-email] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
-    }
-    if (catchUpPhone) {
-      console.log(`[handle-school-email] CATCH-UP MODE active — only ${catchUpPhone} will receive messages`);
-    }
-
+    if (testMode) console.log(`[handle-school-email] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
+    if (catchUpPhone) console.log(`[handle-school-email] CATCH-UP MODE active — only ${catchUpPhone} will receive messages`);
     console.log(`Received email from ${from}, subject: ${subject}`);
 
-    // Extract info using Claude
     const extracted = await extractEmailInfo(subject, rawEmail);
     console.log("Extracted:", JSON.stringify(extracted));
-
-    // Find relevant parents based on year groups
-    let query = supabase
-      .from("children")
-      .select("parent_id, year_group, first_name");
-
-    const { data: children } = await query;
-
-    if (!children || children.length === 0) {
-      return new Response(JSON.stringify({ message: "No children found" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Filter children by year group
-    const isWholeSchool = extracted.yearGroups.includes("all");
-    const relevantChildren = isWholeSchool
-      ? children
-      : children.filter((c: any) =>
-          extracted.yearGroups.some(
-            (yg) => yg.toLowerCase() === (c.year_group || "").toLowerCase()
-          )
-        );
-
-    // Get unique parent IDs of relevant children
-    const parentIds = [...new Set(relevantChildren.map((c: any) => c.parent_id))];
-
-    // Fetch all phone-bearing profiles and accepted links for family resolution
-    const { data: allProfiles } = await supabase
-      .from("profiles")
-      .select("user_id, phone_number")
-      .not("phone_number", "is", null);
-
-    const { data: linkedAccounts } = await supabase
-      .from("linked_accounts")
-      .select("primary_user_id, linked_user_id")
-      .eq("status", "accepted");
-
-    // ── Union-find family grouping (same approach as send-reminders) ──────────
-    const familyOf = new Map<string, string>();
-    const find = (u: string): string => {
-      const p = familyOf.get(u);
-      if (!p || p === u) return u;
-      const root = find(p);
-      familyOf.set(u, root);
-      return root;
-    };
-    const union = (a: string, b: string) => {
-      const ra = find(a);
-      const rb = find(b);
-      if (ra !== rb) familyOf.set(rb, ra);
-    };
-    for (const c of children) if (!familyOf.has(c.parent_id)) familyOf.set(c.parent_id, c.parent_id);
-    for (const p of allProfiles || []) if (!familyOf.has(p.user_id)) familyOf.set(p.user_id, p.user_id);
-    for (const link of linkedAccounts || []) {
-      if (!familyOf.has(link.primary_user_id)) familyOf.set(link.primary_user_id, link.primary_user_id);
-      if (!familyOf.has(link.linked_user_id)) familyOf.set(link.linked_user_id, link.linked_user_id);
-      union(link.primary_user_id, link.linked_user_id);
-    }
-
-    const phonesByFamily = new Map<string, Set<string>>();
-    for (const p of allProfiles || []) {
-      if (!p.phone_number) continue;
-      const fam = find(p.user_id);
-      if (!phonesByFamily.has(fam)) phonesByFamily.set(fam, new Set());
-      phonesByFamily.get(fam)!.add(p.phone_number as string);
-    }
-
-    // One message per family: targeted emails start with that family's matching children ("For Caspian: …").
-    const kidsByFamily = new Map<string, string[]>();
-    for (const c of relevantChildren as any[]) {
-      const fam = find(c.parent_id);
-      if (!kidsByFamily.has(fam)) kidsByFamily.set(fam, []);
-      kidsByFamily.get(fam)!.push(c.first_name);
-    }
-    const sends: { phone: string; message: string }[] = [];
-    const seenPhones = new Set<string>();
-    for (const [fam, kids] of kidsByFamily) {
-      const message = buildSchoolMessage(extracted, kids.sort((a, b) => a.localeCompare(b)));
-      for (const phone of phonesByFamily.get(fam) || []) {
-        if (seenPhones.has(phone)) continue;
-        if (testMode && phone !== TEST_PHONE_NUMBER) continue;
-        if (catchUpPhone && phone !== catchUpPhone) continue;
-        seenPhones.add(phone);
-        sends.push({ phone, message });
-      }
-    }
-
-    if (sends.length === 0) {
-      return new Response(JSON.stringify({ message: "No parent phone numbers found" }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    let sentCount = 0;
-    for (const { phone, message } of sends) {
-      if (await sendWhatsApp(phone, message)) sentCount++;
-    }
-
-    console.log(`Sent to ${sentCount} parents for year groups: ${extracted.yearGroups.join(", ")}`);
-
-    return new Response(JSON.stringify({ success: true, sent: sentCount, extracted, test_mode: testMode }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const out = await processEmail({ subject: String(subject ?? ""), extracted, schoolId: DEAN_VALLEY_SCHOOL_ID, testMode, catchUpPhone });
+    return jsonRes({ ...out, extracted, test_mode: testMode });
 
   } catch (error) {
     console.error("handle-school-email error:", error);
