@@ -86,3 +86,9 @@
 - [x] School-email instructions in a cached block
 - [x] ai_costs cache columns, correct pricing, hit rate on /admin/costs
 - [x] Block sizes logged; free tests + quick suite
+
+## Chat switch-over (26 Oct)
+- [x] Reply check ignores conditional offers/questions + free tests
+- [x] Full suite with chat_source='new' (184/185) — not switched
+- [ ] Switch chat_source='new' — blocked: Matt to decide on the 'bus stop' plain-update test (model said "I haven't saved this one" in its own words)
+- [x] St Joseph's (URN 149875) 2026–27 holidays loaded

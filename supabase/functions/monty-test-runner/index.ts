@@ -5,6 +5,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
+import { dropPlainPromises, hasPlainPromise } from "../_shared/replyGuard.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
@@ -862,6 +863,38 @@ function runFormatTests(): Result[] {
   });
 }
 
+// ── Reply safety check (no AI): conditional offers and questions are kept, plain promises with no save are still caught ──
+function runReplyGuardTests(): Result[] {
+  const kept: [string, string][] = [
+    ["'Jude has cooking club every other Friday' → asks for the next date", "Cooking club every other Friday sounds fun! When's Jude's next one? Once I have the date, I'll set up the reminders."],
+    ["'once …, I'll set up'", "Once I have the date, I'll set up the reminders 😊"],
+    ["'tell me … and I'll'", "Just tell me the date and I'll set up a reminder."],
+    ["'let me know … and I'll'", "Let me know which Friday it starts and I'll add it for Jude."],
+    ["'if …, I'll'", "If you'd like, I'll add a reminder for Harry's trip."],
+    ["'when you …, I'll'", "When you have the letter, I'll note the date for Jude."],
+    ["'as soon as …, I'll'", "As soon as you tell me the day, I'll set it up."],
+    ["question ending with '?'", "Shall I add Harry's swimming for Tuesday?"],
+  ];
+  const blocked: [string, string][] = [
+    ["'I'll save that now'", "Lovely, I'll save that now."],
+    ["'I'll set that up'", "No problem — I'll set that up for Jude."],
+    ["'Let me add it'", "Let me add it to Harry's reminders."],
+    ["conditional sentence + a separate plain promise", "When's the next one? I'll save Jude's cooking club now."],
+  ];
+  const out: Result[] = [];
+  for (const [n, t] of kept) {
+    const r = hasPlainPromise(t) ? "treated as a plain promise (reply would be replaced)" : null;
+    out.push({ scenario: `Reply check keeps a conditional offer/question: ${n}`, category: "reply-guard", status: r ? "fail" : "pass", reply: t, reason: r });
+  }
+  for (const [n, t] of blocked) {
+    const r = !hasPlainPromise(t) ? "plain promise not caught" : null;
+    out.push({ scenario: `Reply check still blocks a plain promise with no save: ${n}`, category: "reply-guard", status: r ? "fail" : "pass", reply: t, reason: r });
+  }
+  const d = dropPlainPromises("When's the next one? I'll save Jude's cooking club now.");
+  out.push({ scenario: "Reply check: dropping promises keeps the question", category: "reply-guard", status: d === "When's the next one?" ? "pass" : "fail", reply: d, reason: d === "When's the next one?" ? null : `got "${d}"` });
+  return out;
+}
+
 // ── Prompt caching layout (no AI): static block identical for everyone, breakpoints within Anthropic's limit of 4 ──
 async function runPromptCacheTests(): Promise<Result[]> {
   const out: Result[] = [];
@@ -900,6 +933,7 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   results.push(...(await runDashboardTests()));
   results.push(...runFormatTests());
   results.push(...(await runPromptCacheTests()));
+  results.push(...runReplyGuardTests());
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
@@ -1227,7 +1261,8 @@ const HANDLER_CASES: HandlerCase[] = [
         x[0] && x[0].anchor !== "2026-10-08" && `anchor ${x[0]?.anchor}`, x[0] && /fortnight|every other/i.test(x[0].title) && "frequency in title");
     } },
   { name: "'Every other Friday' with no date → asks for the next date, saves nothing", family: "A", now: MON, steps: [{ message: "Jude has cooking club every other Friday" }],
-    check: ([r], [reply]) => firstFail(r.reminders.length > 0 && `saved without anchor: ${JSON.stringify(r.reminders)}`, !asks(reply) && "didn't ask a question", !/when|date|next/i.test(reply) && "didn't ask for the next date") },
+    check: ([r], [reply]) => firstFail(r.reminders.length > 0 && `saved without anchor: ${JSON.stringify(r.reminders)}`, !asks(reply) && "didn't ask a question", !/when|date|next/i.test(reply) && "didn't ask for the next date",
+      /haven'?t saved anything yet/i.test(reply) && "reply replaced by the 'haven't saved' fallback") },
   { name: "Exact duplicate weekly reminder → no second row", family: "A", now: MON,
     seed: { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] }, steps: [{ message: "Harry needs his PE kit every Tuesday" }],
     check: ([r]) => remFor(r, "Harry", "Tuesday", /pe/i).length !== 1 ? `PE rows: ${JSON.stringify(r.reminders)}` : null },

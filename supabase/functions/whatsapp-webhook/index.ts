@@ -5,6 +5,7 @@ import { detectOptIntent, isOptedOut, optOut, optIn, OPT_REPLIES } from "../_sha
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { buildAllowlist, guardContacts } from "../_shared/contactGuard.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
+import { dropPlainPromises, hasPlainPromise } from "../_shared/replyGuard.ts";
 import { computeWhatsOn, eventYearGroups, loadFamilyData, ukDate, yearGroupMatches, type WhatsOnItem } from "../_shared/whatsOn.ts";
 import { loadChatWhatsOn, loadLegacyChatContext, whatsOnPromptSection, type Child, type MontyContext } from "../_shared/chatContext.ts";
 import { whatsOnDays } from "../_shared/reminderFormat.ts";
@@ -1247,18 +1248,18 @@ function checkGrounding(toolName: string, args: any, grounding: string, childNam
   return hit ? null : `none of "${keys.join(", ")}" appear in the parent's latest message`;
 }
 
-const FUTURE_ACTION = /\b(let me|i'?ll|i will|i'?m going to|going to|now)\s+(just\s+)?(save|add|set|note|pop|put|log|update|sort|get (that|it|this))\b|\b(now|currently)\s+saving\b|\bsaving (that|it|this|now)\b/i;
+// FUTURE_ACTION + the conditional-offer/question exemption live in _shared/replyGuard.ts (free-tested).
 
 // Does the parent's latest message actually ask Monty to save/remember something?
 const SAVE_REQUEST = /\b(remind|reminder|don'?t forget|remember|add|save|note|put|book|needs?|bring|take|wear|kit|bag|packed lunch|lunch|dinner|trip|club|every (mon|tue|wed|thu|fri|sat|sun)|on (mon|tue|wed|thu|fri|sat|sun)|tomorrow|next week|this (mon|tue|wed|thu|fri|week))/i;
 
 async function enforceTurnHonesty(reply: string, results: ToolResult[], phone: string, path: string, message?: string): Promise<string> {
-  if (reply && FUTURE_ACTION.test(reply)) {
+  if (reply && hasPlainPromise(reply)) {
     if (results.length === 0) {
       await logDedupDecision({ phone, childName: null, tool: `reply_guard_${path}`, newItem: "(no tool calls)", decision: "future_action_claim_blocked", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
       // Only say "haven't saved" when the parent asked to save something; plain updates/chat get a normal short reply.
       if (message === undefined || SAVE_REQUEST.test(message)) return "Sorry — I haven't saved anything yet. Could you send that to me again? 🙏";
-      const kept = reply.split(/(?<=[.!?])\s+|\n+/).filter((x) => x.trim() && !FUTURE_ACTION.test(x)).join(" ").trim();
+      const kept = dropPlainPromises(reply);
       return kept || "Thanks for letting me know 👍";
     }
     return await replaceReply(reply, results, phone, path, "future_action_claim_blocked");
@@ -1892,7 +1893,7 @@ async function generateReply(
     if (ask.lookups.length && !structuredResults.some((r) => r.ok || r.failed)) {
       const total = ask.lookups.reduce((n, v) => n + v.days.reduce((m, d) => m + d.lines.length, 0), 0);
       if (EDIT_INTENT.test(incomingMessage)) {
-        const modelAsks = text.includes("?") && !EDIT_CLAIM.test(text) && !SUCCESS_CLAIM.test(text) && !SYSTEM_WORDS.test(text) && !FUTURE_ACTION.test(text);
+        const modelAsks = text.includes("?") && !EDIT_CLAIM.test(text) && !SUCCESS_CLAIM.test(text) && !SYSTEM_WORDS.test(text) && !hasPlainPromise(text);
         return total && modelAsks ? nameNotPronoun(text, childNames) : lookupReply(ask.lookups[ask.lookups.length - 1], true);
       }
       return ask.lookups.map((v) => lookupReply(v)).join("\n\n");
@@ -1919,7 +1920,7 @@ async function generateReply(
       p.question = reply; await setPendingAction(phone, p);
       return reply;
     }
-    if (!reply || !reply.includes("?") || SYSTEM_WORDS.test(reply) || FUTURE_ACTION.test(reply) ||
+    if (!reply || !reply.includes("?") || SYSTEM_WORDS.test(reply) || hasPlainPromise(reply) ||
         (!structuredResults.some((r) => r.ok) && SUCCESS_CLAIM.test(reply))) {
       reply = await replaceReply(text, structuredResults, phone, "text", "pending_question_rebuilt", p.question || whichChildQuestion(childNames, p.proposed, ""));
     }
@@ -1927,7 +1928,7 @@ async function generateReply(
   }
   let reply: string;
   if (structuredResults.length === 0 && round === 1) {
-    reply = text && FUTURE_ACTION.test(text) ? await enforceTurnHonesty(text, [], phone, "text", incomingMessage)
+    reply = text && hasPlainPromise(text) ? await enforceTurnHonesty(text, [], phone, "text", incomingMessage)
       : text || await outageReply(phone, "text", incomingMessage, "empty AI reply", { status: 200, body: JSON.stringify(data).slice(0, 4000), step: `empty_reply_round_${round}`, elapsedMs: Date.now() - t0Reply });
   } else {
     reply = await enforceTurnHonesty(text, structuredResults, phone, "text");
