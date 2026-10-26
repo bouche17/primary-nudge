@@ -322,7 +322,7 @@ async function runOptOutTests(quick = false): Promise<Result[]> {
     const bus = await say("the bus stop moved to Elm Road", "opt-out: bus stop (no AI expected? goes to AI)");
     const r5 = firstFail(await isOptedOut(ph) && "bus stop message opted the parent out", bus.data.opt === true && "handled as opt-out");
     out.push({ scenario: "'the bus stop moved' through Monty does NOT opt out", category: "opt-out", status: r5 ? "fail" : "pass", reply: bus.data.reply ?? null, reason: r5, details: { usage: bus.data.usage } });
-    if (bus.data.usage) { usageTotals.input += bus.data.usage.input || 0; usageTotals.output += bus.data.usage.output || 0; usageTotals.calls += bus.data.usage.calls || 0; }
+    if (bus.data.usage) { usageTotals.input += bus.data.usage.input || 0; usageTotals.output += bus.data.usage.output || 0; usageTotals.cache_write += bus.data.usage.cache_write || 0; usageTotals.cache_read += bus.data.usage.cache_read || 0; usageTotals.calls += bus.data.usage.calls || 0; }
   } finally { await cleanup(); }
   return out;
 }
@@ -396,7 +396,7 @@ async function runContactTests(quick = false): Promise<Result[]> {
   const out: Result[] = [];
   const ph = FAMILY_A_PHONE;
   const say = (message: string, scenario: string, extra: Record<string, unknown> = {}) => callFn("whatsapp-webhook", { phone: ph, message, scenario, ...extra });
-  const track = (d: any) => { if (d?.usage) { usageTotals.input += d.usage.input || 0; usageTotals.output += d.usage.output || 0; usageTotals.calls += d.usage.calls || 0; } };
+  const track = (d: any) => { if (d?.usage) { usageTotals.input += d.usage.input || 0; usageTotals.output += d.usage.output || 0; usageTotals.cache_write += d.usage.cache_write || 0; usageTotals.cache_read += d.usage.cache_read || 0; usageTotals.calls += d.usage.calls || 0; } };
   const emails = (t: string) => (t.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi) ?? []).map((e) => e.toLowerCase());
   try {
     if (!quick) {
@@ -1505,12 +1505,12 @@ function casesFor(suite: string): HandlerCase[] {
   return list;
 }
 
-type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; calls: number; ms: number; truncated: number; turns: number; model?: string } };
+type CaseOut = { reason: string | null; reply: string | null; details: unknown; usage: { input: number; output: number; cache_write: number; cache_read: number; calls: number; ms: number; truncated: number; turns: number; model?: string } };
 async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   await resetTestData();
   await seedFamily(c.family, c.seed);
   const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = []; const outs: StepOut[] = [];
-  const usage: CaseOut["usage"] = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0 };
+  const usage: CaseOut["usage"] = { input: 0, output: 0, cache_write: 0, cache_read: 0, calls: 0, ms: 0, truncated: 0, turns: 0 };
   const turnMs: number[] = [];
   for (const step of c.steps) {
     const { status, data } = await callFn("whatsapp-webhook", {
@@ -1520,7 +1520,7 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
     });
     if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
     if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
-    usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0;
+    usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0; usage.cache_write += data.usage?.cache_write ?? 0; usage.cache_read += data.usage?.cache_read ?? 0;
     usage.ms += data.usage?.ms ?? 0; usage.truncated += data.usage?.truncated ?? 0; if (data.usage?.calls) { usage.turns++; turnMs.push(data.usage.ms ?? 0); } if (data.usage?.model) usage.model = data.usage.model;
     replies.push(data.reply ?? ""); calls.push(data.tool_calls); outs.push({ familyUpdates: data.family_updates ?? [], toolCalls: data.tool_calls ?? [], chatSource: data.chat_source });
     after.push(await familyRows(c.family));
@@ -1537,13 +1537,13 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, chat_source: outs.map((o) => o.chatSource), family_updates: outs.map((o) => o.familyUpdates), confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
-const usageTotals = { input: 0, output: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
+const usageTotals = { input: 0, output: 0, cache_write: 0, cache_read: 0, calls: 0, ms: 0, truncated: 0, turns: 0, model: "" };
 async function runHandlerSlice(offset: number, limit: number, cases: HandlerCase[] = HANDLER_CASES): Promise<Result[]> {
   const out: Result[] = [];
   for (const c of cases.slice(offset, offset + limit)) {
     let r = await runHandlerCase(c);
     let status: Result["status"] = r.reason ? "fail" : "pass";
-    const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.calls += u.calls; usageTotals.ms += u.ms; usageTotals.truncated += u.truncated; usageTotals.turns += u.turns; if (u.model) usageTotals.model = u.model; };
+    const add = (u: CaseOut["usage"]) => { usageTotals.input += u.input; usageTotals.output += u.output; usageTotals.cache_write += u.cache_write; usageTotals.cache_read += u.cache_read; usageTotals.calls += u.calls; usageTotals.ms += u.ms; usageTotals.truncated += u.truncated; usageTotals.turns += u.turns; if (u.model) usageTotals.model = u.model; };
     add(r.usage);
     if (r.reason) { // retry once; a pass on retry is "flaky", never "pass"
       const r2 = await runHandlerCase(c); add(r2.usage);
@@ -1668,9 +1668,13 @@ Deno.serve(async (req) => {
   let prev: any = { input: 0, output: 0, calls: 0 };
   try { prev = JSON.parse(runRow?.notes ?? "{}").usage ?? prev; } catch { /* first chunk */ }
   const usage = { input: prev.input + usageTotals.input, output: prev.output + usageTotals.output, calls: prev.calls + usageTotals.calls,
+    cache_write: (prev.cache_write ?? 0) + usageTotals.cache_write, cache_read: (prev.cache_read ?? 0) + usageTotals.cache_read,
     ms: (prev.ms ?? 0) + usageTotals.ms, truncated: (prev.truncated ?? 0) + usageTotals.truncated, turns: (prev.turns ?? 0) + usageTotals.turns, model: usageTotals.model || prev.model || null };
   const avgTurnMs = usage.turns ? Math.round(usage.ms / usage.turns) : null;
-  const costUsd = Math.round(((usage.input * 3 + usage.output * 15) / 1e6) * 100) / 100; // $3/$15 per M tokens (Sonnet list price)
+  // Sonnet list price per M tokens: input $3, cache write $3.75 (1.25×), cache read $0.30 (0.1×), output $15.
+  const costUsd = Math.round(((usage.input * 3 + usage.cache_write * 3.75 + usage.cache_read * 0.3 + usage.output * 15) / 1e6) * 100) / 100;
+  const allInput = usage.input + usage.cache_write + usage.cache_read;
+  (usage as any).cache_hit_rate = allInput ? Math.round((usage.cache_read / allInput) * 1000) / 10 : null; // % of input tokens read from cache
   await admin.from("test_runs").update({
     finished_at: next ? null : new Date().toISOString(), total: (all ?? []).length, passed, failed, flaky,
     status: next ? "running" : failed ? "failed" : "passed",
