@@ -4,6 +4,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
+import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
@@ -861,12 +862,46 @@ function runFormatTests(): Result[] {
   });
 }
 
+// ── Prompt caching layout (no AI): static block identical for everyone, breakpoints within Anthropic's limit of 4 ──
+async function runPromptCacheTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  await resetTestData();
+  await seedFamily("A"); await seedFamily("B", { notes: [] } as any);
+  const blocks = (fam: "A" | "B", now: string, src: "legacy" | "new") =>
+    callFn("whatsapp-webhook", { action: "prompt_blocks", phone: FAMILIES[fam].phone, now, chat_source: src, scenario: "prompt-cache layout" }).then((r) => r.data);
+  for (const src of ["legacy", "new"] as const) {
+    const a1 = await blocks("A", "2026-10-06T07:03:00Z", src), a2 = await blocks("A", "2026-10-08T17:41:00Z", src), b1 = await blocks("B", "2026-10-06T07:03:00Z", src);
+    const names = [...FAMILIES.A.kids, ...FAMILIES.B.kids].map((k) => k.name).filter((n) => new RegExp(`\\b${n}\\b`).test(a1.static_text || ""));
+    const r = firstFail(!a1.static_sha && `no prompt blocks: ${JSON.stringify(a1).slice(0, 200)}`,
+      a1.chat_source !== src && `chat_source ${a1.chat_source}, wanted ${src}`,
+      (a1.static_sha !== a2.static_sha || a1.static_sha !== b1.static_sha) && "static block differs between parents or times",
+      a1.family_sha === b1.family_sha && "family block is the same for two different families",
+      a1.now_sha === a2.now_sha && "now block didn't change with the time",
+      /\b20\d\d-\d\d-\d\d\b|\d{1,2}:\d\d\b/.test(a1.static_text || "") && "static block contains a date or time",
+      names.length > 0 && `static block contains child names (${names.join(", ")})`,
+      !a1.now_last && "NOW block (and SYSTEM CHECK) not last/uncached",
+      (a1.tool_breakpoints !== 1 || !a1.last_tool_cached) && `tool breakpoints ${a1.tool_breakpoints}, last cached ${a1.last_tool_cached}`,
+      a1.system_breakpoints !== 2 && `system breakpoints ${a1.system_breakpoints}`,
+      a1.message_breakpoints !== 1 && `message breakpoints ${a1.message_breakpoints} after two rounds`,
+      a1.total_breakpoints > 4 && `total breakpoints ${a1.total_breakpoints} > 4`,
+      JSON.stringify(a1.tool_names) !== JSON.stringify(b1.tool_names) && "tool list differs between families");
+    out.push({ scenario: `Prompt caching (${src}): static block byte-identical across parents/times; ≤4 breakpoints; NOW last`, category: "prompt-cache", status: r ? "fail" : "pass", reply: null, reason: r,
+      details: { static_sha: a1.static_sha, tools: a1.tool_names, breakpoints: a1.total_breakpoints } });
+  }
+  const c = estimateCostUsd("claude-sonnet-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000);
+  const r2 = Math.abs(c - (3 + 15 + 3.75 + 0.3)) > 1e-9 ? `1M each of input/output/cache write/cache read = $${c}, want $22.05` : null;
+  out.push({ scenario: "AI cost: Sonnet cache write = 1.25× input, cache read = 0.1× input", category: "prompt-cache", status: r2 ? "fail" : "pass", reply: null, reason: r2 });
+  await resetTestData();
+  return out;
+}
+
 async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
   const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
   results.push(...(await runWhatsOnTests()));
   results.push(...(await runDashboardTests()));
   results.push(...runFormatTests());
+  results.push(...(await runPromptCacheTests()));
   await seedSenderFixtures();
   for (const c of SENDER_CASES) {
     const { status, data } = await callFn("send-reminders", {
