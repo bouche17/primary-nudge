@@ -74,9 +74,18 @@ export function dropMisplacedWellWishes(reply: string, message: string, childNam
   if (!OTHER_ADULT.test(message) || !ILL_OR_AWAY.test(message)) return reply;
   const named = (txt: string) => childNames.some((n) => new RegExp(`\\b${n}\\b`, "i").test(txt));
   if (named(message)) return reply;
+  const adult = message.match(/\b(?:mrs|mr|miss|ms|mx|dr)\.?\s+[A-Za-z][A-Za-z'-]+/i)?.[0]?.replace(/^\w/, (c) => c.toUpperCase());
   const sentences = splitSentences(reply);
-  const kept = sentences.filter((x) => !(WELL_WISH.test(x) && (named(x) || /\b(he|she|his|her|him)\b/i.test(x))));
-  if (kept.length === sentences.length) return reply;
-  const adult = message.match(/\b(?:mrs|mr|miss|ms|mx|dr)\.?\s+[A-Za-z][A-Za-z'-]+/i)?.[0];
-  return kept.join(" ").trim() || (adult ? `Thanks for letting me know about ${adult} 👍` : "Thanks for letting me know 👍");
+  const out: string[] = [];
+  let changed = false;
+  for (const x of sentences) {
+    if (!WELL_WISH.test(x)) { out.push(x); continue; }
+    if (named(x)) { changed = true; continue; } // "I hope Harry's back soon" — the news was about an adult
+    if (adult && /\b(he|she)\b/i.test(x)) { // "hope she's back soon" → about the adult, by name
+      out.push(x.replace(/\b(she|he)('s| is)\b/gi, `${adult} is`).replace(/\b(she|he)\b/gi, adult)); changed = true; continue;
+    }
+    out.push(x);
+  }
+  if (!changed) return reply;
+  return out.join(" ").trim() || (adult ? `Thanks for letting me know about ${adult} 👍` : "Thanks for letting me know 👍");
 }
