@@ -866,7 +866,7 @@ function runFormatTests(): Result[] {
 async function runPromptCacheTests(): Promise<Result[]> {
   const out: Result[] = [];
   await resetTestData();
-  await seedFamily("A"); await seedFamily("B", { notes: [] } as any);
+  await seedFamily("A"); await seedFamily("B");
   const blocks = (fam: "A" | "B", now: string, src: "legacy" | "new") =>
     callFn("whatsapp-webhook", { action: "prompt_blocks", phone: FAMILIES[fam].phone, now, chat_source: src, scenario: "prompt-cache layout" }).then((r) => r.data);
   for (const src of ["legacy", "new"] as const) {
