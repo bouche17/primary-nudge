@@ -1,3 +1,6 @@
 # handle-school-email rules
 - The parent text is built by `buildSchoolMessage` in `_shared/schoolEmailMessage.ts` from the AI's `message` field (field fallback if empty), one per family with "For <children>:" only for year-targeted emails, links appended once, one line — why: one testable builder, and template variables can't hold newlines.
 - `dry_run: true` needs `x-monty-test-secret`, reads no families (uses `sample_children`) and never sends — why: preview wording safely.
+- Only the school's own families receive its emails (`children.school_id`, Dean Valley by default); every email is logged in `school_email_log` (extraction, built message, year groups, opt-in, event title/date, family/phone counts) and each send links to that row — why: replies like "yes" need the event, and /admin/school-emails shows what went out.
+- Opt-in emails (`isOptInEmail` in `_shared/schoolEventRules.ts`: opt-in words, "selected", girls-/boys-only) still go to the whole year group but start "If <child>'s in <group>:"; never filter by gender, never write school_events — why: Monty doesn't know who's in a team.
+- `test_send: true` (secret, test numbers only, extraction passed in, no AI) runs the real pipeline with stub delivery — why: free tests of targeting, the log and history records.
