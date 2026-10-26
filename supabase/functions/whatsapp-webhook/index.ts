@@ -1709,7 +1709,7 @@ async function callClaude(body: Record<string, unknown>, phone?: string, purpose
   const st: any = testStore.getStore();
   if (r.ok) { try { const j = await r.clone().json(); await recordAiCost({ functionName: "whatsapp-webhook", purpose, model: String(body.model), usage: j.usage, phone, isTest: !!st }); } catch { /* ignore */ } }
   if (st && r.ok) {
-    try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
+    try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.cache_write = (st.usage.cache_write || 0) + (u?.cache_creation_input_tokens || 0); st.usage.cache_read = (st.usage.cache_read || 0) + (u?.cache_read_input_tokens || 0); st.usage.calls++; } catch { /* ignore */ }
   }
   return r;
 }
