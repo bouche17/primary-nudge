@@ -5,7 +5,9 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
-import { dropPlainPromises, hasPlainPromise } from "../_shared/replyGuard.ts";
+import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
+import { contentText, recordOutbound } from "../_shared/outbound.ts";
+import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
@@ -115,6 +117,7 @@ async function resetTestData() {
       await admin.from("conversations").delete().in("id", convoIds);
     }
   }
+  await admin.from("school_email_log").delete().eq("school_id", TEST_SCHOOL_ID).eq("is_test", true);
 }
 
 async function ensureTestUser(phone: string): Promise<string> {
@@ -1090,6 +1093,8 @@ interface Seed {
   events?: { title: string; start: string; year_group: string | null }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
+  // Messages Monty sent on its own (school email / reminder / Sunday check-in), stored like the real senders do.
+  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
 }
 interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
@@ -1162,12 +1167,23 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
     history = (real ?? []).map((m) => ({ role: m.direction === "inbound" ? "user" : "assistant", content: m.content, at: m.created_at }));
     if (!history.length) throw new Error("real history copy found no messages");
   }
-  if (history.length) {
+  if (history.length || seed.sent?.length) {
     const { data: convo, error: ce } = await admin.from("conversations").insert({ phone_number: f.phone, current_step: "active" }).select("id").single();
     if (ce) throw new Error(`seed conversation: ${ce.message}`);
-    await admin.from("messages").insert(history.map((m) => ({
+    if (history.length) await admin.from("messages").insert(history.map((m) => ({
       conversation_id: convo.id, direction: m.role === "user" ? "inbound" : "outbound", content: m.content, created_at: m.at,
     })));
+    for (const m of seed.sent ?? []) {
+      let logId: string | null = null;
+      if (m.email) {
+        const { data: log, error: le } = await admin.from("school_email_log").insert({ school_id: TEST_SCHOOL_ID, subject: m.email.subject, extracted: { what: m.email.title }, message: m.text,
+          year_groups: m.email.years, opt_in: m.email.optIn ?? false, event_title: m.email.title, event_date: m.email.date, is_test: true, received_at: m.at }).select("id").single();
+        if (le) throw new Error(`seed school email: ${le.message}`);
+        logId = log.id;
+      }
+      const { error: me } = await admin.from("messages").insert({ conversation_id: convo.id, direction: "outbound", content: m.text, message_type: "template", source: m.source, school_email_id: logId, metadata: m.meta ?? null, created_at: m.at });
+      if (me) throw new Error(`seed sent message: ${me.message}`);
+    }
   }
 }
 
