@@ -1099,7 +1099,6 @@ async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
     reason: refused.status === 403 ? null : `expected 403, got ${refused.status}`,
   });
   results.push(...(await runSundayCheckinTests()));
-  results.push(...(await runOutboundTests()));
   return results;
 }
 
@@ -1872,7 +1871,7 @@ Deno.serve(async (req) => {
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
-  const part: "sender" | "conversation" = body.part === "conversation" ? "conversation" : "sender";
+  const part: "sender" | "outbound" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : "sender";
   const offset = Number.isInteger(body.offset) ? body.offset : 0;
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
@@ -1893,6 +1892,7 @@ Deno.serve(async (req) => {
   try {
     await resetTestData();
     if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
+    else if (part === "outbound") results = await runOutboundTests();
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
@@ -1903,7 +1903,8 @@ Deno.serve(async (req) => {
   if (results.length) await admin.from("test_run_results").insert(results.map((r) => ({ run_id: runId, ...r, details: r.details ?? null })));
 
   let next: { part: string; offset: number } | null = null;
-  if (part === "sender" && suite !== "sender") next = { part: "conversation", offset: 0 };
+  if (part === "sender") next = { part: "outbound", offset: 0 }; // free tests continue in their own chunk (time limit)
+  if (part === "outbound" && suite !== "sender") next = { part: "conversation", offset: 0 };
   if (part === "conversation" && offset + limit < casesFor(suite).length) next = { part: "conversation", offset: offset + limit };
 
   // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.
