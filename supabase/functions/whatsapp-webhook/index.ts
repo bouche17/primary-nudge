@@ -2039,6 +2039,38 @@ function cacheLastMessage(msgs: any[]): any[] {
   return [...msgs.slice(0, -1), { ...last, content }];
 }
 
+// Photo path STATIC block: identical for every parent and call (no names or dates).
+const VISION_STATIC_PROMPT = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
+
+Your job is to:
+1. Read the image carefully
+2. Extract ANY dates, events, deadlines, or action items relevant to school life
+3. For each item found, call the save_parent_note tool to save it — include the child_name if you can identify which child it's for
+4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
+
+## Year group attribution — IMPORTANT
+If the event or message mentions a specific year group, automatically attribute it to the correct child:
+- Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
+- Match "Year 2", "Y2" etc. to the child in Year 2
+- If an event is for multiple year groups (e.g. "Year 1 and Year 2"), check ALL year groups against the parent's children — if ANY of the parent's children are in those year groups, attribute it to them
+- Never save a note without a child_name if you can identify which child it belongs to
+- Never ask the parent which child — figure it out from the year group information above
+- If no year group is mentioned, or the year group doesn't match any of the parent's children, save as a general note without child_name
+
+## Confirmation style
+- Confirm the event name, the child's name, the date, and any key details (time, what to bring, etc.)
+- Do NOT explain year group logic, why an event applies to a child, or which year groups are involved
+- Good: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm. They'll need outdoor clothing and walking footwear."
+- Bad: "Since Year 2 is mentioned, this applies to Harry. I've saved the Earth Day litter pick..."
+- Use ONE emoji at most, only if it naturally fits — never as punctuation at the end
+- Keep it to 2-3 sentences max
+- British English always
+- Use the child's first name, never pronouns like "they/their" if you know which child it is
+
+If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
+If you can't find any actionable dates or events, let the parent know warmly.
+If the image is unclear or unreadable, ask them to try again.`;
+
 type AskRef = { table: string; id: string; date: string; childId: string | null; child: string | null; title: string; kind: string };
 interface AskState { refs: Map<string, AskRef>; lookups: import("../_shared/askMonty.ts").LookupView[]; reply?: string; pending?: PendingAction; handled?: boolean }
 const askState = (context: MontyContext) => (((context as any).__ask ??= { refs: new Map(), lookups: [] }) as AskState);
@@ -2781,16 +2813,11 @@ async function handleImageMessage(
     const dateAnchors = upcomingDays.join("\n");
 
     // Build Claude vision request
-    const systemPrompt = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
-
-Your job is to:
-1. Read the image carefully
-2. Extract ANY dates, events, deadlines, or action items relevant to school life
-3. For each item found, call the save_parent_note tool to save it — include the child_name if you can identify which child it's for
-4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
-
-The parent's children and their year groups: ${childrenWithYearGroups}
-Today's date is: ${todayHuman} (${today})
+    // Vision system prompt: STATIC (VISION_STATIC_PROMPT, cached) → FAMILY (cached) → NOW (uncached, last).
+    const visionPrompt: PromptBlocks = {
+      staticText: VISION_STATIC_PROMPT,
+      family: `The parent's children and their year groups: ${childrenWithYearGroups}`,
+      now: `Today's date is: ${todayHuman} (${today})
 
 ## Resolving relative dates — CRITICAL
 When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
@@ -2799,30 +2826,9 @@ ${dateAnchors}
 - "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
 - "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
 - "tomorrow" → the date marked (tomorrow) above
-- Always output dates in YYYY-MM-DD format using the anchors above — never guess
-
-## Year group attribution — IMPORTANT
-If the event or message mentions a specific year group, automatically attribute it to the correct child:
-- Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
-- Match "Year 2", "Y2" etc. to the child in Year 2
-- If an event is for multiple year groups (e.g. "Year 1 and Year 2"), check ALL year groups against the parent's children — if ANY of the parent's children are in those year groups, attribute it to them
-- Never save a note without a child_name if you can identify which child it belongs to
-- Never ask the parent which child — figure it out from the year group information above
-- If no year group is mentioned, or the year group doesn't match any of the parent's children, save as a general note without child_name
-
-## Confirmation style
-- Confirm the event name, the child's name, the date, and any key details (time, what to bring, etc.)
-- Do NOT explain year group logic, why an event applies to a child, or which year groups are involved
-- Good: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm. They'll need outdoor clothing and walking footwear."
-- Bad: "Since Year 2 is mentioned, this applies to Harry. I've saved the Earth Day litter pick..."
-- Use ONE emoji at most, only if it naturally fits — never as punctuation at the end
-- Keep it to 2-3 sentences max
-- British English always
-- Use the child's first name, never pronouns like "they/their" if you know which child it is
-
-If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
-If you can't find any actionable dates or events, let the parent know warmly.
-If the image is unclear or unreadable, ask them to try again.`;
+- Always output dates in YYYY-MM-DD format using the anchors above — never guess`,
+    };
+    const systemPrompt = systemBlocks(visionPrompt);
 
     const userContent = [
       {
@@ -2866,7 +2872,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         max_tokens: 2000,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
-        tools,
+        tools: TOOLS_LEGACY,
       }),
     });
 
@@ -2995,7 +3001,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         body: JSON.stringify({
           model: visionFollowModel,
           max_tokens: 2000,
-          system: systemPrompt + childHint,
+          system: childHint ? systemBlocks(visionPrompt, childHint.trim()) : systemPrompt,
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: data.content },
