@@ -4,9 +4,28 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAdmin } from "@/hooks/use-admin";
 import { ArrowLeft } from "lucide-react";
 
-interface Row { created_at: string; function_name: string; purpose: string; family_id: string | null; model: string | null; input_tokens: number; output_tokens: number; cost_usd: number; is_test: boolean }
+interface Row { created_at: string; function_name: string; purpose: string; family_id: string | null; model: string | null; input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number; cost_usd: number; is_test: boolean }
 
 const usd = (n: number) => `$${n.toFixed(2)}`;
+const tok = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+/** Input tokens split into uncached / cache write / cache read, plus the share read from cache. */
+function cacheStats(rs: Row[]) {
+  const s = rs.reduce((a, r) => ({ uncached: a.uncached + (r.input_tokens || 0), write: a.write + (r.cache_creation_input_tokens || 0), read: a.read + (r.cache_read_input_tokens || 0) }), { uncached: 0, write: 0, read: 0 });
+  const all = s.uncached + s.write + s.read;
+  return { ...s, hitRate: all ? (s.read / all) * 100 : null };
+}
+
+function CacheCard({ title, rows }: { title: string; rows: Row[] }) {
+  const c = cacheStats(rows);
+  return (
+    <div className="bg-card border border-border rounded-2xl p-4 space-y-1">
+      <h2 className="font-semibold text-foreground">{title}</h2>
+      <p className="text-3xl font-heading font-bold text-foreground">{c.hitRate === null ? "—" : `${c.hitRate.toFixed(0)}%`}</p>
+      <p className="text-xs text-muted-foreground">of input read from cache</p>
+      <p className="text-sm text-muted-foreground">Uncached input {tok(c.uncached)} · Cache writes {tok(c.write)} · Cache reads {tok(c.read)}</p>
+    </div>
+  );
+}
 function group(rows: Row[], key: (r: Row) => string) {
   const m = new Map<string, { cost: number; calls: number }>();
   for (const r of rows) { const k = key(r); const g = m.get(k) ?? { cost: 0, calls: 0 }; g.cost += Number(r.cost_usd); g.calls++; m.set(k, g); }
@@ -40,7 +59,7 @@ const AdminCosts = () => {
   useEffect(() => {
     if (!isAdmin) return;
     const since = new Date(Date.now() - 30 * 86400_000).toISOString();
-    supabase.from("ai_costs").select("created_at, function_name, purpose, family_id, model, input_tokens, output_tokens, cost_usd, is_test")
+    supabase.from("ai_costs").select("created_at, function_name, purpose, family_id, model, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd, is_test")
       .gte("created_at", since).order("created_at", { ascending: false }).limit(10000)
       .then(({ data }) => setRows((data as Row[]) ?? []));
   }, [isAdmin]);
@@ -58,7 +77,11 @@ const AdminCosts = () => {
         <Link to="/admin/tests" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="w-4 h-4" /> Tests</Link>
         <div>
           <h1 className="text-2xl font-heading font-bold text-foreground">AI costs, last 30 days</h1>
-          <p className="text-sm text-muted-foreground">Estimated from tokens at list price. Parents: {usd(total(real))} · Tests: {usd(total(tests))}</p>
+          <p className="text-sm text-muted-foreground">Estimated from tokens at list price (cache writes 1.25×, cache reads 0.1× the input price). Parents: {usd(total(real))} · Tests: {usd(total(tests))}</p>
+        </div>
+        <div className="grid md:grid-cols-2 gap-6">
+          <CacheCard title="Parents — cache hit rate" rows={real} />
+          <CacheCard title="Tests — cache hit rate" rows={tests} />
         </div>
         <div className="grid md:grid-cols-2 gap-6">
           <Table title="Parents — per day" rows={group(real, day)} sortByKey />
