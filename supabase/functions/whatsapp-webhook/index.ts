@@ -97,6 +97,7 @@ async function logClaudeFailure(
   }
 }
 
+const DASHBOARD_URL = "https://heymonty.co.uk/dashboard";
 const OUTAGE_TEXT = "Sorry, I'm having trouble right now and haven't saved that. Could you send it again in a little while? 🙏";
 const OUTAGE_PHOTO = "Sorry, I'm having trouble reading photos right now and haven't saved anything from it. Could you send it again in a little while? 🙏";
 /** Honest outage reply; the item is recorded so it can be retried or reviewed later. */
@@ -2313,7 +2314,6 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
 // ── "You've got the wrong school" (decided in code, never "wrong number") ──
 // Ask which school → offer up to 3 matches (name, street, town, postcode) → parent picks → parent confirms → change.
 // The change goes through change_child_school (clears event exclusions, keeps the parent's notes/reminders, logs school_changed).
-const DASHBOARD_URL = "https://heymonty.co.uk/dashboard";
 const andNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
 const orNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} or ${ns[ns.length - 1]}`);
 const possessive = (ns: string[]) => `${andNames(ns)}'s`;
