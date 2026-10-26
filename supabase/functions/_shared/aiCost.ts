@@ -7,9 +7,14 @@ const svc = () => client ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.en
 
 // USD per million tokens (input, output). Sonnet list price is the default estimate.
 const PRICES: [RegExp, number, number][] = [[/opus/i, 15, 75], [/haiku/i, 1, 5], [/.*/, 3, 15]];
-export function estimateCostUsd(model: string, input: number, output: number): number {
+/** Prompt-cache pricing relative to the model's input price: writes 1.25×, reads 0.1×. */
+export const CACHE_WRITE_MULT = 1.25;
+export const CACHE_READ_MULT = 0.1;
+
+/** input = uncached input tokens only (Anthropic's input_tokens excludes cache writes and reads). */
+export function estimateCostUsd(model: string, input: number, output: number, cacheWrite = 0, cacheRead = 0): number {
   const [, i, o] = PRICES.find(([re]) => re.test(model))!;
-  return (input * i + output * o) / 1e6;
+  return (input * i + cacheWrite * i * CACHE_WRITE_MULT + cacheRead * i * CACHE_READ_MULT + output * o) / 1e6;
 }
 
 /** Family id = the primary account of a linked family, else the parent's own user id. */
@@ -21,17 +26,22 @@ async function familyIdForPhone(phone: string): Promise<string | null> {
   return link?.primary_user_id ?? prof.user_id;
 }
 
+export type AnthropicUsage = { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+
 export async function recordAiCost(e: {
-  functionName: string; purpose: string; model: string; usage?: { input_tokens?: number; output_tokens?: number } | null;
+  functionName: string; purpose: string; model: string; usage?: AnthropicUsage | null;
   phone?: string | null; familyId?: string | null; schoolId?: string | null; isTest?: boolean;
 }) {
   try {
     const input = e.usage?.input_tokens ?? 0, output = e.usage?.output_tokens ?? 0;
+    const cacheWrite = e.usage?.cache_creation_input_tokens ?? 0, cacheRead = e.usage?.cache_read_input_tokens ?? 0;
     const isTest = e.isTest === true || (e.phone ? await isTestPhone(e.phone) : false);
     const familyId = e.familyId ?? (e.phone ? await familyIdForPhone(e.phone) : null);
     await svc().from("ai_costs").insert({
       function_name: e.functionName, purpose: isTest ? "test" : e.purpose, family_id: familyId, school_id: e.schoolId ?? null,
-      model: e.model, input_tokens: input, output_tokens: output, cost_usd: estimateCostUsd(e.model, input, output), is_test: isTest,
+      model: e.model, input_tokens: input, output_tokens: output,
+      cache_creation_input_tokens: cacheWrite, cache_read_input_tokens: cacheRead,
+      cost_usd: estimateCostUsd(e.model, input, output, cacheWrite, cacheRead), is_test: isTest,
     });
   } catch (err) { console.error("[aiCost] record failed:", err); }
 }

@@ -97,6 +97,7 @@ async function logClaudeFailure(
   }
 }
 
+const DASHBOARD_URL = "https://heymonty.co.uk/dashboard";
 const OUTAGE_TEXT = "Sorry, I'm having trouble right now and haven't saved that. Could you send it again in a little while? 🙏";
 const OUTAGE_PHOTO = "Sorry, I'm having trouble reading photos right now and haven't saved anything from it. Could you send it again in a little while? 🙏";
 /** Honest outage reply; the item is recorded so it can be retried or reviewed later. */
@@ -144,7 +145,10 @@ async function loadParentContext(phone: string): Promise<MontyContext | null> {
 
 // ── System prompt builder ─────────────────────────────────────────────────────
 
-function buildSystemPrompt(context: MontyContext): string {
+interface PromptBlocks { staticText: string; family: string; now: string }
+
+/** System prompt in three blocks: STATIC (same for everyone, cached), FAMILY (this parent's data, cached per message), NOW (dates, uncached, last). */
+function buildPromptBlocks(context: MontyContext): PromptBlocks {
   const childrenSummary = context.children
     .map((c) => `${c.first_name} (${c.year_group} at ${c.school_name})`)
     .join(", ");
@@ -241,26 +245,46 @@ Children to collect for: ${context.children.map(c => c.first_name).join(", ")}
   }
   const lunchPlansSummary = lunchLines.length > 0 ? lunchLines.join("\n") : "No children registered.";
 
-  const legacyUpcomingBlock = `## Upcoming school events (next 14 days)
+  // Family data only (the matching rule text lives in the static block, so it stays cache-identical).
+  const upcoming = context.whatsOn ? `## What's on for this family — today + next 13 days (UK dates; the same list the reminders use, partner's items included)
+${whatsOnPromptSection(context.whatsOn)}` : `## Upcoming school events (next 14 days)
 ${upcomingEventsSummary}
 
-IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.
-
 ## Things this parent has told you about (upcoming)
-${upcomingNotesSummary}
-`;
-  const upcomingBlock = context.whatsOn ? `## What's on for this family — today + next 13 days (UK dates; the same list the reminders use, partner's items included)
-${whatsOnPromptSection(context.whatsOn)}
+${upcomingNotesSummary}`;
 
-This list is the source of truth for what's on. Items marked [optional …] are clubs/activities from the school calendar that are NOT sent as reminders; if the parent asks to be reminded about one, call save_parent_note for that child and date. Items marked [from school] come from the school.
+  return {
+    staticText: context.whatsOn ? STATIC_PROMPT_NEW : STATIC_PROMPT_LEGACY,
+    family: `## This parent's children
+${childrenSummary || "No children set up yet"}
 
-## Looking things up, changing and cancelling (Ask Monty)
-- To answer ANY question about what's on (today, tomorrow, this week, "is there football this week?", "when's the next Forest School?", "anything for Jude?"), call lookup_whats_on with the dates (and child_name / item if asked). The reply to the parent is built from its result automatically — never answer from memory or guess.
-- "This week" = today to Sunday. "Next week" = next Monday to Sunday. "Next <thing>" = today to 8 weeks ahead with item set.
-- To change or cancel something: call lookup_whats_on first in the same turn, then update_item or delete_item with a REF from that result. Never use an item from earlier messages. "Cancel X this week / just Tuesday" = delete_item scope this_date_only; "X has stopped / we don't do X any more" = delete_item scope all_future.
-- Never say you've changed, cancelled, moved or deleted anything yourself — the system asks the parent to confirm and confirms the change.` : legacyUpcomingBlock;
+## Personal reminders set up for their children
+${childRemindersSummary}
 
-  return `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
+## School-wide recurring reminders
+${schoolRemindersSummary}
+
+${upcoming}
+
+## Packed lunches already saved
+${lunchPlansSummary}
+
+Only say a packed lunch is "already saved" if it appears in this section for that exact date. If a parent tells you a child needs a packed lunch on a day, always call save_weekly_lunch_plan with mode 'add' (it's safe even if already saved) and confirm the specific day and date back.
+
+${onboardingInstructions}`.trimEnd(),
+    now: `## Right now (authoritative — trust this over anything in the chat history)
+- Current UK time: ${ukTime}
+- Today: ${ukLong(nowDate)} (${todayIsoUK})
+- Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
+- Next 7 days:
+${next7}
+Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.`,
+  };
+}
+
+// STATIC prompt blocks: identical for every parent and every call (one per chat_source mode) — cached by Anthropic.
+// No dates, names, counts or per-parent values may go in here.
+const staticPrompt = (modeRules: string) => `You are Monty 🎒 — a friendly, warm AI assistant who helps UK school parents stay on top of their children's school life via WhatsApp.
 
 ## Contact details (never invent any)
 - Monty's ONLY contact details: email hello@heymonty.co.uk, website heymonty.co.uk. Never give any other email, website, domain or phone number for Monty.
@@ -269,14 +293,6 @@ This list is the source of truth for what's on. Items marked [optional …] are 
 
 ## Stopping messages (never say you can't)
 - Parents can stop ALL Monty messages at any time by replying STOP, and turn them back on by replying START. To delete their account and data they can reply "delete my data". Questions about their data: hello@heymonty.co.uk. If anyone asks how to stop messages, unsubscribe or delete their data, tell them exactly this. Never say you can't stop messages.
-
-## Right now (authoritative — trust this over anything in the chat history)
-- Current UK time: ${ukTime}
-- Today: ${ukLong(nowDate)} (${todayIsoUK})
-- Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
-- Next 7 days:
-${next7}
-Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.
 
 ## Only act on the parent's NEWEST message (critical)
 - The chat history is CONTEXT ONLY. Every earlier request in it has ALREADY been handled. Never save, re-save, re-announce or reply about an earlier request again.
@@ -307,15 +323,6 @@ Pass the item to the save tool as the parent described it; the system decides on
 - Pretend to be human if sincerely asked
 - Discuss topics unrelated to school life
 
-## This parent's children
-${childrenSummary || "No children set up yet"}
-
-## Personal reminders set up for their children
-${childRemindersSummary}
-
-## School-wide recurring reminders
-${schoolRemindersSummary}
-
 ## HARD RULE — never claim something is "already saved" yourself
 - You must NEVER decide from the lists above that something is already saved, covered, down, or set. Duplicate checks are done by the save tools against the database.
 - Whenever a parent tells you about something for a child on a date (an activity, kit, event, packed lunch), ALWAYS call the matching save tool (save_parent_note, save_weekly_lunch_plan or save_child_reminder). Only say "already saved" if the tool result starts with "ALREADY_SAVED:".
@@ -333,7 +340,7 @@ Tool results contain internal markers (NOT SAVED, POSSIBLE_DUPLICATE, ALREADY_SA
 - Vague references ("same again next week", "the usual", "she needs her bag") → use the existing reminders, notes and recent conversation to work out the most likely meaning, then call ask_parent_to_confirm with the exact item(s) you'd save and a natural question like "Do you mean Rosa's swimming kit on Tuesday again?". Never save until the parent says yes.
 - If a save result says the item isn't in the latest message: if it was an old request from history, drop it silently and just reply to what the parent actually said; if the latest message is just vague, use ask_parent_to_confirm instead. Never tell the parent something was refused.
 
-${upcomingBlock}
+${modeRules}
 
 ## When a parent asks you to set up or change a reminder
 Use the save_child_reminder tool to save it. Always confirm back what you've saved in a friendly way.
@@ -341,11 +348,6 @@ Use the save_child_reminder tool to save it. Always confirm back what you've sav
 ## Reminder timing — always describe it accurately
 When confirming a saved reminder, packed lunch or note, describe the timing accurately: packed lunches and notes always get a reminder the evening before AND the morning of. For save_child_reminder, describe it based on the reminder_time you set ("both" = evening before and morning of). Never say "I'll remind you in the morning" unless the reminder is genuinely morning-only.
 Evening reminders go out at 6pm UK time the evening before; morning reminders at 7am UK time on the day. Save results include a TIMING line — repeat that timing exactly (or say nothing about timing if it tells you not to) and don't work it out yourself. Only ever mention upcoming reminders, positively. Never add lines about reminders that won't go out or have already gone ("tonight's reminder won't go out", "it's after 6pm so…").
-
-## Packed lunches already saved
-${lunchPlansSummary}
-
-Only say a packed lunch is "already saved" if it appears in this section for that exact date. If a parent tells you a child needs a packed lunch on a day, always call save_weekly_lunch_plan with mode 'add' (it's safe even if already saved) and confirm the specific day and date back.
 
 ## HARD RULE — fortnightly / every-other reminders
 - If a parent describes a reminder as "fortnightly", "every other [day]", "alternate weeks" or similar, you MUST call save_child_reminder with recurrence_interval=2 AND a real anchor_date (YYYY-MM-DD) that the parent has actually given or clearly stated (e.g. "the next one is 2nd October").
@@ -379,10 +381,15 @@ This is one of the most useful things you can do. The parent may say "just got t
 - If there's nothing actionable, let them know warmly
 Example: Parent forwards "Year 1 and Year 2 — Earth Day litter pick Wednesday 22nd April, leaving at 1:15pm."
 → Harry is in Year 2 → save note with child_name="Harry"
-→ Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm."
+→ Reply: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm."`;
+const STATIC_PROMPT_LEGACY = staticPrompt(`IMPORTANT: This events list is purely informational — it helps you answer questions like "what's coming up", but it does NOT mean a reminder will automatically be sent for any of these events. The real reminders are the "Personal reminders set up for their children", "School-wide recurring reminders", and "Things this parent has told you about" sections above. If a parent explicitly asks to be reminded about something that only appears in this events list (and isn't already covered by an existing personal reminder, school-wide reminder, or parent note with a matching date), you MUST call save_parent_note with the correct child_name and date to actually create a real reminder. Never tell a parent something is "already saved" or "already covered" just because it appears in this passive events list.`);
+const STATIC_PROMPT_NEW = staticPrompt(`This list is the source of truth for what's on. Items marked [optional …] are clubs/activities from the school calendar that are NOT sent as reminders; if the parent asks to be reminded about one, call save_parent_note for that child and date. Items marked [from school] come from the school.
 
-${onboardingInstructions}`;
-}
+## Looking things up, changing and cancelling (Ask Monty)
+- To answer ANY question about what's on (today, tomorrow, this week, "is there football this week?", "when's the next Forest School?", "anything for Jude?"), call lookup_whats_on with the dates (and child_name / item if asked). The reply to the parent is built from its result automatically — never answer from memory or guess.
+- "This week" = today to Sunday. "Next week" = next Monday to Sunday. "Next <thing>" = today to 8 weeks ahead with item set.
+- To change or cancel something: call lookup_whats_on first in the same turn, then update_item or delete_item with a REF from that result. Never use an item from earlier messages. "Cancel X this week / just Tuesday" = delete_item scope this_date_only; "X has stopped / we don't do X any more" = delete_item scope all_future.
+- Never say you've changed, cancelled, moved or deleted anything yourself — the system asks the parent to confirm and confirms the change.`);
 
 // ── AI tools (actions Monty can take) ────────────────────────────────────────
 // Claude API uses a different tool format to OpenAI/Gemini
@@ -1702,7 +1709,7 @@ async function callClaude(body: Record<string, unknown>, phone?: string, purpose
   const st: any = testStore.getStore();
   if (r.ok) { try { const j = await r.clone().json(); await recordAiCost({ functionName: "whatsapp-webhook", purpose, model: String(body.model), usage: j.usage, phone, isTest: !!st }); } catch { /* ignore */ } }
   if (st && r.ok) {
-    try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.calls++; } catch { /* ignore */ }
+    try { const j = await r.clone().json(); const u = j.usage; st.usage = st.usage || { input: 0, output: 0, calls: 0, ms: 0 }; st.usage.ms = (st.usage.ms || 0) + ms; st.usage.model = body.model; if (j.stop_reason === "max_tokens") st.usage.truncated = (st.usage.truncated || 0) + 1; st.usage.input += u?.input_tokens || 0; st.usage.output += u?.output_tokens || 0; st.usage.cache_write = (st.usage.cache_write || 0) + (u?.cache_creation_input_tokens || 0); st.usage.cache_read = (st.usage.cache_read || 0) + (u?.cache_read_input_tokens || 0); st.usage.calls++; } catch { /* ignore */ }
   }
   return r;
 }
@@ -1714,7 +1721,8 @@ async function generateReply(
   phone: string
 ): Promise<string> {
   const t0Reply = Date.now();
-  const systemPrompt = buildSystemPrompt(context);
+  const prompt = buildPromptBlocks(context);
+  const system = systemBlocks(prompt);
   const model = montyClaudeModel();
   const messages = buildClaudeMessages(history, incomingMessage);
 
@@ -1727,7 +1735,7 @@ async function generateReply(
   (context as any).__grounding = grounding;
 
   const tools = toolsFor(context);
-  const res = await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages, tools }, phone);
+  const res = await callClaude({ model, max_tokens: 2000, system, messages, tools }, phone);
   const rawText1 = await res.text();
   console.log("[Claude] Raw response text (round 1):", rawText1);
   if (!res.ok) {
@@ -1746,7 +1754,7 @@ async function generateReply(
       });
       const retry = await callClaude({
         model, max_tokens: 2000, messages, tools, tool_choice: { type: "any" },
-        system: systemPrompt + "\n\nSYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates.",
+        system: systemBlocks(prompt, "SYSTEM CHECK: You must not claim anything is already saved without calling a save tool. Call the correct save tool now for what the parent just asked in the NEW MESSAGE; the tool checks the database for duplicates."),
       }, phone);
       if (!retry.ok) {
         const rt = await retry.text();
@@ -1859,7 +1867,7 @@ async function generateReply(
     round++;
     const failNext = (testStore.getStore() as any)?.failFollowup === true;
     const next = failNext ? new Response("forced follow-up failure (test)", { status: 500 }) :
-      await callClaude({ model, max_tokens: 2000, system: systemPrompt, messages: convo, tools }, phone);
+      await callClaude({ model, max_tokens: 2000, system, messages: cacheLastMessage(convo), tools }, phone);
     const raw = await next.text();
     console.log(`[Claude] Raw response text (round ${round}):`, raw);
     if (!next.ok) {
@@ -2004,7 +2012,64 @@ const ASK_TOOLS = [
   },
 ];
 const ASK_TOOL_NAMES = new Set(ASK_TOOLS.map((t) => t.name));
-const toolsFor = (context: MontyContext) => (context.whatsOn ? [...tools, ...ASK_TOOLS] : tools);
+// ── Prompt caching (Anthropic) ── at most 4 breakpoints per request: last tool, static block, family block, last message.
+const EPHEMERAL = { type: "ephemeral" } as const;
+const withCachedLastTool = (list: any[]) => list.map((t, i) => (i === list.length - 1 ? { ...t, cache_control: EPHEMERAL } : t));
+/** Fixed tool lists per mode: same order and wording every call, cache breakpoint on the last tool. */
+const TOOLS_LEGACY = withCachedLastTool(tools);
+const TOOLS_NEW = withCachedLastTool([...tools, ...ASK_TOOLS]);
+const toolsFor = (context: MontyContext) => (context.whatsOn ? TOOLS_NEW : TOOLS_LEGACY);
+/** system array: STATIC (cached) → FAMILY (cached) → NOW (uncached, last), plus an optional uncached extra block. */
+function systemBlocks(p: PromptBlocks, extra?: string): any[] {
+  const blocks: any[] = [
+    { type: "text", text: p.staticText, cache_control: EPHEMERAL },
+    { type: "text", text: p.family, cache_control: EPHEMERAL },
+    { type: "text", text: p.now },
+  ];
+  if (extra) blocks.push({ type: "text", text: extra });
+  return blocks;
+}
+/** Copy of the conversation with one cache breakpoint on the last content block of the last message (earlier ones untouched). */
+function cacheLastMessage(msgs: any[]): any[] {
+  if (!msgs.length) return msgs;
+  const last = msgs[msgs.length - 1];
+  const content = typeof last.content === "string" ? [{ type: "text", text: last.content }] : [...last.content];
+  if (!content.length) return msgs;
+  content[content.length - 1] = { ...content[content.length - 1], cache_control: EPHEMERAL };
+  return [...msgs.slice(0, -1), { ...last, content }];
+}
+
+// Photo path STATIC block: identical for every parent and call (no names or dates).
+const VISION_STATIC_PROMPT = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
+
+Your job is to:
+1. Read the image carefully
+2. Extract ANY dates, events, deadlines, or action items relevant to school life
+3. For each item found, call the save_parent_note tool to save it — include the child_name if you can identify which child it's for
+4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
+
+## Year group attribution — IMPORTANT
+If the event or message mentions a specific year group, automatically attribute it to the correct child:
+- Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
+- Match "Year 2", "Y2" etc. to the child in Year 2
+- If an event is for multiple year groups (e.g. "Year 1 and Year 2"), check ALL year groups against the parent's children — if ANY of the parent's children are in those year groups, attribute it to them
+- Never save a note without a child_name if you can identify which child it belongs to
+- Never ask the parent which child — figure it out from the year group information above
+- If no year group is mentioned, or the year group doesn't match any of the parent's children, save as a general note without child_name
+
+## Confirmation style
+- Confirm the event name, the child's name, the date, and any key details (time, what to bring, etc.)
+- Do NOT explain year group logic, why an event applies to a child, or which year groups are involved
+- Good: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm. They'll need outdoor clothing and walking footwear."
+- Bad: "Since Year 2 is mentioned, this applies to Harry. I've saved the Earth Day litter pick..."
+- Use ONE emoji at most, only if it naturally fits — never as punctuation at the end
+- Keep it to 2-3 sentences max
+- British English always
+- Use the child's first name, never pronouns like "they/their" if you know which child it is
+
+If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
+If you can't find any actionable dates or events, let the parent know warmly.
+If the image is unclear or unreadable, ask them to try again.`;
 
 type AskRef = { table: string; id: string; date: string; childId: string | null; child: string | null; title: string; kind: string };
 interface AskState { refs: Map<string, AskRef>; lookups: import("../_shared/askMonty.ts").LookupView[]; reply?: string; pending?: PendingAction; handled?: boolean }
@@ -2307,7 +2372,6 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
 // ── "You've got the wrong school" (decided in code, never "wrong number") ──
 // Ask which school → offer up to 3 matches (name, street, town, postcode) → parent picks → parent confirms → change.
 // The change goes through change_child_school (clears event exclusions, keeps the parent's notes/reminders, logs school_changed).
-const DASHBOARD_URL = "https://heymonty.co.uk/dashboard";
 const andNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
 const orNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} or ${ns[ns.length - 1]}`);
 const possessive = (ns: string[]) => `${andNames(ns)}'s`;
@@ -2521,6 +2585,53 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true,
     chatSource: b.chat_source === "new" || b.chat_source === "legacy" ? b.chat_source : null, familyUpdates: [] };
   return await testStore.run(store, async () => {
+    if (b.action === "prompt_blocks") {
+      // Free check of the prompt-cache layout (no AI call): hashes of each block and breakpoint counts.
+      const context = await loadParentContext(phone);
+      if (!context) return j({ error: "no test family for this phone" }, 400);
+      const p = buildPromptBlocks(context);
+      const sha = async (x: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(x)))).map((n) => n.toString(16).padStart(2, "0")).join("");
+      const tl = toolsFor(context);
+      const sys = systemBlocks(p, "SYSTEM CHECK: test");
+      const convo = cacheLastMessage(cacheLastMessage([{ role: "user", content: "hi" }, { role: "assistant", content: [{ type: "text", text: "a" }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }] }]));
+      const bp = (xs: any[]) => xs.filter((x) => x?.cache_control).length;
+      const msgBp = convo.reduce((n: number, m: any) => n + (Array.isArray(m.content) ? bp(m.content) : 0), 0);
+      return j({
+        chat_source: context.chatSource, static_sha: await sha(p.staticText), family_sha: await sha(p.family), now_sha: await sha(p.now),
+        static_text: p.staticText, now_last: sys[2].text === p.now && sys[3].text.startsWith("SYSTEM CHECK") && !sys[2].cache_control && !sys[3].cache_control,
+        tool_names: tl.map((x: any) => x.name), tool_breakpoints: bp(tl), last_tool_cached: !!tl[tl.length - 1].cache_control,
+        system_breakpoints: bp(sys), message_breakpoints: msgBp, total_breakpoints: bp(tl) + bp(sys) + msgBp,
+        dry_run: true, twilio_called: false,
+      });
+    }
+    if (b.action === "prompt_sizes") {
+      // Token count of each prompt-cache block (count_tokens is free; no reply, nothing saved).
+      const context = await loadParentContext(phone);
+      if (!context) return j({ error: "no test family for this phone" }, 400);
+      const p = buildPromptBlocks(context);
+      const tl = toolsFor(context);
+      const model = montyClaudeModel();
+      const count = async (extra: Record<string, unknown>) => {
+        const r = await fetch("https://api.anthropic.com/v1/messages/count_tokens", { method: "POST",
+          headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+          body: JSON.stringify({ model, messages: [{ role: "user", content: "hi" }], ...extra }) });
+        const d = await r.json(); return r.ok ? Number(d.input_tokens) : -1;
+      };
+      const t = (x: string) => ({ type: "text", text: x });
+      const base = await count({});
+      const withTools = await count({ tools: tl });
+      const withStatic = await count({ tools: tl, system: [t(p.staticText)] });
+      const withFamily = await count({ tools: tl, system: [t(p.staticText), t(p.family)] });
+      const withNow = await count({ tools: tl, system: [t(p.staticText), t(p.family), t(p.now)] });
+      const staticAlone = await count({ system: [t(p.staticText)] });
+      const visionStatic = await count({ system: [t(VISION_STATIC_PROMPT)] });
+      const visionWithTools = await count({ tools: TOOLS_LEGACY, system: [t(VISION_STATIC_PROMPT)] });
+      const sizes = { model, chat_source: context.chatSource, tools: withTools - base, static: withStatic - withTools, static_alone: staticAlone - base,
+        family: withFamily - withStatic, now: withNow - withFamily, cached_prefix_tools_static_family: withFamily - base,
+        vision_static_alone: visionStatic - base, vision_tools_plus_static: visionWithTools - base };
+      console.log("[prompt-cache] block token counts:", JSON.stringify(sizes));
+      return j({ sizes, dry_run: true, twilio_called: false });
+    }
     const message0 = String(b.message || "");
     const alertSends: string[] = [];
     const optReply = await handleOptIntent(phone, message0, async (t) => { alertSends.push(t); return { ok: true, channel: "stub" }; }, true);
@@ -2749,16 +2860,11 @@ async function handleImageMessage(
     const dateAnchors = upcomingDays.join("\n");
 
     // Build Claude vision request
-    const systemPrompt = `You are Monty, a friendly school reminder assistant. A parent has forwarded you an image — likely a screenshot from a school WhatsApp group, a photo of a school letter, or a school email screenshot.
-
-Your job is to:
-1. Read the image carefully
-2. Extract ANY dates, events, deadlines, or action items relevant to school life
-3. For each item found, call the save_parent_note tool to save it — include the child_name if you can identify which child it's for
-4. Reply confirming EXACTLY what you found and saved — be specific (event name, date, time if visible, which child)
-
-The parent's children and their year groups: ${childrenWithYearGroups}
-Today's date is: ${todayHuman} (${today})
+    // Vision system prompt: STATIC (VISION_STATIC_PROMPT, cached) → FAMILY (cached) → NOW (uncached, last).
+    const visionPrompt: PromptBlocks = {
+      staticText: VISION_STATIC_PROMPT,
+      family: `The parent's children and their year groups: ${childrenWithYearGroups}`,
+      now: `Today's date is: ${todayHuman} (${today})
 
 ## Resolving relative dates — CRITICAL
 When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
@@ -2767,30 +2873,9 @@ ${dateAnchors}
 - "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
 - "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
 - "tomorrow" → the date marked (tomorrow) above
-- Always output dates in YYYY-MM-DD format using the anchors above — never guess
-
-## Year group attribution — IMPORTANT
-If the event or message mentions a specific year group, automatically attribute it to the correct child:
-- Match "Year 1", "Y1", "Yr1" etc. to the child in that year group
-- Match "Year 2", "Y2" etc. to the child in Year 2
-- If an event is for multiple year groups (e.g. "Year 1 and Year 2"), check ALL year groups against the parent's children — if ANY of the parent's children are in those year groups, attribute it to them
-- Never save a note without a child_name if you can identify which child it belongs to
-- Never ask the parent which child — figure it out from the year group information above
-- If no year group is mentioned, or the year group doesn't match any of the parent's children, save as a general note without child_name
-
-## Confirmation style
-- Confirm the event name, the child's name, the date, and any key details (time, what to bring, etc.)
-- Do NOT explain year group logic, why an event applies to a child, or which year groups are involved
-- Good: "Got it! I've saved the Earth Day litter pick for Harry on Wednesday 22nd April — leaving at 1:15pm. They'll need outdoor clothing and walking footwear."
-- Bad: "Since Year 2 is mentioned, this applies to Harry. I've saved the Earth Day litter pick..."
-- Use ONE emoji at most, only if it naturally fits — never as punctuation at the end
-- Keep it to 2-3 sentences max
-- British English always
-- Use the child's first name, never pronouns like "they/their" if you know which child it is
-
-If the tool result starts with "ALREADY_SAVED:", that event was already saved previously — confirm warmly that you've already got it, e.g. "I've already got that saved for Harry on 22nd April 👍". Do NOT save it again.
-If you can't find any actionable dates or events, let the parent know warmly.
-If the image is unclear or unreadable, ask them to try again.`;
+- Always output dates in YYYY-MM-DD format using the anchors above — never guess`,
+    };
+    const systemPrompt = systemBlocks(visionPrompt);
 
     const userContent = [
       {
@@ -2834,7 +2919,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         max_tokens: 2000,
         system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
-        tools,
+        tools: TOOLS_LEGACY,
       }),
     });
 
@@ -2963,7 +3048,7 @@ If the image is unclear or unreadable, ask them to try again.`;
         body: JSON.stringify({
           model: visionFollowModel,
           max_tokens: 2000,
-          system: systemPrompt + childHint,
+          system: childHint ? systemBlocks(visionPrompt, childHint.trim()) : systemPrompt,
           messages: [
             { role: "user", content: userContent },
             { role: "assistant", content: data.content },
