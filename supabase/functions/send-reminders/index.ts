@@ -2,6 +2,7 @@ import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "
 import { filterOptedOut } from "../_shared/optOut.ts";
 import { fmtFromWhatsOn, formatTemplateVar, formatFreeform } from "../_shared/reminderFormat.ts";
 import { computeWhatsOn, loadFamilyDataForUsers } from "../_shared/whatsOn.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -130,6 +131,8 @@ async function sendWhatsApp(to: string, text: string, period: "morning" | "eveni
     } catch (logError) {
       console.error("Failed to log message send failure:", logError);
     }
+  } else {
+    await recordOutbound({ phone: to, source: period === "morning" ? "morning_reminder" : "evening_reminder", contentSid: templateSid, variables: { "1": sanitisedText }, meta: { channel: "template" } });
   }
 
   return res.ok;
@@ -207,6 +210,8 @@ async function sendFreeform(to: string, body: string, period: "morning" | "eveni
   if (!res.ok) {
     console.error(`[${period}] free-form send failed, falling back to template:`, res.status, txt.slice(0, 300));
     try { await supabase.from("message_send_failures").insert({ function_name: "send-reminders", phone_number: to, period, status_code: res.status, error_body: txt, context: "free-form (24h window) — fell back to template" }); } catch { /* ignore */ }
+  } else {
+    await recordOutbound({ phone: to, source: period === "morning" ? "morning_reminder" : "evening_reminder", text: body.slice(0, 1500), meta: { channel: "freeform" } });
   }
   return res.ok;
 }
@@ -580,6 +585,13 @@ async function deliverReminderMessages(
     if (mode === "real") {
       ok = channel === "freeform" ? await sendFreeform(p.phone, p.freeform, period) : false;
       if (!ok) { channel = "template"; ok = await sendWhatsApp(p.phone, p.message, period); } // window closed or free-form failed
+    }
+    if (ok && mode === "stub" && (await isTestPhone(p.phone))) {
+      // Stub: never Twilio, but the parent's conversation gets the same record a real send writes.
+      const source = period === "morning" ? "morning_reminder" : "evening_reminder";
+      if (channel === "freeform") await recordOutbound({ phone: p.phone, source, text: p.freeform.slice(0, 1500), meta: { channel, stub: true } });
+      else await recordOutbound({ phone: p.phone, source, contentSid: period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID,
+        variables: { "1": p.message.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().slice(0, 1024) }, meta: { channel, stub: true } });
     }
     if (ok) {
       for (const { refId, title, type } of p.refIdsToLog) {
