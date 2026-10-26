@@ -431,6 +431,14 @@ async function runContactTests(quick = false): Promise<Result[]> {
     const re = e.data.reply || "";
     const r5 = firstFail(/haven'?t saved|send (that|it) (to me )?again/i.test(re) && "got the 'haven't saved' fallback", !re.trim() && "empty reply");
     out.push({ scenario: "Plain update with nothing to save → normal short reply, not 'haven't saved'", category: "contacts", status: r5 ? "fail" : "pass", reply: re, reason: r5 });
+
+    const sinceSick = new Date().toISOString();
+    const f = await say("Mrs Smith is off sick this week", "fallback: plain update (teacher off sick)"); track(f.data);
+    const rf = f.data.reply || "";
+    const { count: sickSaves } = await admin.from("parent_notes").select("id", { count: "exact", head: true }).eq("phone_number", ph).gte("created_at", sinceSick);
+    const r6 = firstFail(/haven'?t saved|(can|could) only save|can'?t save|send (that|it) (to me )?again/i.test(rf) && "talked about saving / got the 'haven't saved' fallback",
+      !rf.trim() && "empty reply", (sickSaves ?? 0) > 0 && `saved ${sickSaves} note(s) for a plain update`);
+    out.push({ scenario: "Plain update 'Mrs Smith is off sick this week' → warm reply, nothing saved, no 'haven't saved'/'can only save'", category: "contacts", status: r6 ? "fail" : "pass", reply: rf, reason: r6, details: { saves: sickSaves ?? 0 } });
   } catch (err) {
     out.push({ scenario: "Contact tests", category: "contacts", status: "fail", reply: null, reason: (err as Error).message });
   } finally { await optIn(ph); }
