@@ -4,6 +4,7 @@
 // Sent to Matt's WhatsApp (no email setup exists): free-form inside the 24h window, approved template otherwise.
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { isTestPhone, blockIfTestPhone } from "./testGuard.ts";
+import { recordOutbound } from "./outbound.ts";
 
 let client: SupabaseClient | null = null;
 const svc = () => client ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
