@@ -2585,6 +2585,25 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
   const store: any = { now, toolCalls: [], failFollowup: b.fail_followup === true, failDb: b.fail_db === true, failClaude: b.fail_claude === true,
     chatSource: b.chat_source === "new" || b.chat_source === "legacy" ? b.chat_source : null, familyUpdates: [] };
   return await testStore.run(store, async () => {
+    if (b.action === "prompt_blocks") {
+      // Free check of the prompt-cache layout (no AI call): hashes of each block and breakpoint counts.
+      const context = await loadParentContext(phone);
+      if (!context) return j({ error: "no test family for this phone" }, 400);
+      const p = buildPromptBlocks(context);
+      const sha = async (x: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(x)))).map((n) => n.toString(16).padStart(2, "0")).join("");
+      const tl = toolsFor(context);
+      const sys = systemBlocks(p, "SYSTEM CHECK: test");
+      const convo = cacheLastMessage(cacheLastMessage([{ role: "user", content: "hi" }, { role: "assistant", content: [{ type: "text", text: "a" }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }] }]));
+      const bp = (xs: any[]) => xs.filter((x) => x?.cache_control).length;
+      const msgBp = convo.reduce((n: number, m: any) => n + (Array.isArray(m.content) ? bp(m.content) : 0), 0);
+      return j({
+        chat_source: context.chatSource, static_sha: await sha(p.staticText), family_sha: await sha(p.family), now_sha: await sha(p.now),
+        static_text: p.staticText, now_last: sys[2].text === p.now && sys[3].text.startsWith("SYSTEM CHECK") && !sys[2].cache_control && !sys[3].cache_control,
+        tool_names: tl.map((x: any) => x.name), tool_breakpoints: bp(tl), last_tool_cached: !!tl[tl.length - 1].cache_control,
+        system_breakpoints: bp(sys), message_breakpoints: msgBp, total_breakpoints: bp(tl) + bp(sys) + msgBp,
+        dry_run: true, twilio_called: false,
+      });
+    }
     if (b.action === "prompt_sizes") {
       // Token count of each prompt-cache block (count_tokens is free; no reply, nothing saved).
       const context = await loadParentContext(phone);
