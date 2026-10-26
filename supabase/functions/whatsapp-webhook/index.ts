@@ -2521,7 +2521,6 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
 // ── Replies to messages Monty sent on its own (school emails, reminders, Sunday check-in) ──
 interface SchoolEmailItem { title: string; date: string; eligible: string[]; log_id: string | null }
 interface SentMsg { content: string; created_at: string; source: string | null; school_email_id: string | null; metadata: any }
-const ukTodayIso = () => nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 
 /** Monty's outbound messages from the last 48 hours, newest first (chat replies have source null). */
 async function recentOutbound(conversationId: string, hours = 48): Promise<SentMsg[]> {
