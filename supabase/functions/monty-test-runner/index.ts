@@ -1652,6 +1652,22 @@ Deno.serve(async (req) => {
     return json({ runs, outages: fails });
   }
 
+  // Post-switch check: send messages for test family A using the LIVE chat_source setting (nothing forced), dry run, then reset.
+  if (action === "chat_try") {
+    const seed: Seed = { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-06" }], lunches: [{ child: "Jude", days: ["Tuesday"], week: WK }],
+      events: [{ title: "Halloween Disco", start: "2026-10-06T17:00:00Z", year_group: "all" }] };
+    const msgs: string[] = Array.isArray(body.messages) ? body.messages.slice(0, 3).map(String) : [];
+    const out: unknown[] = [];
+    try {
+      for (const m of msgs) {
+        await resetTestData(); await seedFamily("A", seed);
+        const { status, data } = await callFn("whatsapp-webhook", { scenario: "chat_try", phone: FAMILIES.A.phone, message: m, now: MON, dry_run: true });
+        out.push({ message: m, status, reply: data.reply ?? null, chat_source: data.chat_source, twilio_called: data.twilio_called, tools: (data.tool_calls ?? []).map((t: any) => t.name ?? t.tool), rows_after: await familyRows("A") });
+      }
+    } finally { await resetTestData(); }
+    return json({ results: out });
+  }
+
   // Read-only preview of a real reminder run (send-reminders real_readonly: builds only, never sends, phones masked).
   // Read-only preview of a real Sunday check-in (build only, never sends, phones masked).
   if (action === "sunday_preview") {
