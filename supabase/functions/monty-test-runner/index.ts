@@ -431,6 +431,14 @@ async function runContactTests(quick = false): Promise<Result[]> {
     const re = e.data.reply || "";
     const r5 = firstFail(/haven'?t saved|send (that|it) (to me )?again/i.test(re) && "got the 'haven't saved' fallback", !re.trim() && "empty reply");
     out.push({ scenario: "Plain update with nothing to save → normal short reply, not 'haven't saved'", category: "contacts", status: r5 ? "fail" : "pass", reply: re, reason: r5 });
+
+    const sinceSick = new Date().toISOString();
+    const f = await say("Mrs Smith is off sick this week", "fallback: plain update (teacher off sick)"); track(f.data);
+    const rf = f.data.reply || "";
+    const { count: sickSaves } = await admin.from("parent_notes").select("id", { count: "exact", head: true }).eq("phone_number", ph).gte("created_at", sinceSick);
+    const r6 = firstFail(/haven'?t saved|(can|could) only save|can'?t save|send (that|it) (to me )?again/i.test(rf) && "talked about saving / got the 'haven't saved' fallback",
+      !rf.trim() && "empty reply", (sickSaves ?? 0) > 0 && `saved ${sickSaves} note(s) for a plain update`);
+    out.push({ scenario: "Plain update 'Mrs Smith is off sick this week' → warm reply, nothing saved, no 'haven't saved'/'can only save'", category: "contacts", status: r6 ? "fail" : "pass", reply: rf, reason: r6, details: { saves: sickSaves ?? 0 } });
   } catch (err) {
     out.push({ scenario: "Contact tests", category: "contacts", status: "fail", reply: null, reason: (err as Error).message });
   } finally { await optIn(ph); }
@@ -1642,6 +1650,22 @@ Deno.serve(async (req) => {
     await resetTestData();
     const { data: fails } = await admin.from("failed_inbound").select("created_at, step, status_code, elapsed_ms, error, error_body").eq("phone_number", FAMILIES[c.family].phone).gte("created_at", start);
     return json({ runs, outages: fails });
+  }
+
+  // Post-switch check: send messages for test family A using the LIVE chat_source setting (nothing forced), dry run, then reset.
+  if (action === "chat_try") {
+    const seed: Seed = { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }], notes: [{ child: "Jude", summary: "Jude recorder", date: "2026-10-06" }], lunches: [{ child: "Jude", days: ["Tuesday"], week: WK }],
+      events: [{ title: "Halloween Disco", start: "2026-10-06T17:00:00Z", year_group: "all" }] };
+    const msgs: string[] = Array.isArray(body.messages) ? body.messages.slice(0, 3).map(String) : [];
+    const out: unknown[] = [];
+    try {
+      for (const m of msgs) {
+        await resetTestData(); await seedFamily("A", seed);
+        const { status, data } = await callFn("whatsapp-webhook", { scenario: "chat_try", phone: FAMILIES.A.phone, message: m, now: MON, dry_run: true });
+        out.push({ message: m, status, reply: data.reply ?? null, chat_source: data.chat_source, twilio_called: data.twilio_called, tools: (data.tool_calls ?? []).map((t: any) => t.name ?? t.tool), rows_after: await familyRows("A") });
+      }
+    } finally { await resetTestData(); }
+    return json({ results: out });
   }
 
   // Read-only preview of a real reminder run (send-reminders real_readonly: builds only, never sends, phones masked).
