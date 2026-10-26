@@ -80,3 +80,9 @@
 - [x] B: chat_source setting; chat context + duplicate check from getWhatsOn (family, partner notes, due-dated school reminders, opt-in flagged); chat shadow diffs (source 'chat'); quick suite
 - [x] C: lookup_whats_on / update_item / delete_item tools (per-date skip, deactivate, school items → offer hide, confirm pending action, family ownership check, partner update, honesty); quick suite
 - [ ] Switch chat_source to 'new' — blocked: full suite on 'new' had 1 failure (reply guard turns "Once I have the date, I'll set it up" into "haven't saved anything yet"); legacy 169/169. Waits on Matt's OK to fix the guard, then full suite again
+
+## Prompt caching (26 Oct)
+- [x] Chat + photo prompts split into cached static / cached family / uncached now blocks; fixed tool lists; follow-up rounds cached
+- [x] School-email instructions in a cached block
+- [x] ai_costs cache columns, correct pricing, hit rate on /admin/costs
+- [x] Block sizes logged; free tests + quick suite
