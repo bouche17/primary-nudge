@@ -4,3 +4,4 @@
 - Seeded school events must carry a real `year_group` (real rows use "Year 3,Year 4" / "all") — why: an empty year group hides year-matching bugs.
 - Test runs are chunked (`part`: sender, then conversation slices) and started manually (admin page, or `queue_suite_chunk` which mints a single-use runner token per chunk); the runner refuses a new run while another (incl. chained chunks) is running; test runs never send WhatsApp alerts — why: overlapping runs wipe each other's fixtures; results live on /admin/tests.
 - `monty-test-runner` runs the suite (admin JWT or single-use `test_runner_tokens` row) and writes `test_runs`/`test_run_results` — why: one auditable place for regression results.
+- `chat_try` action sends up to 3 messages for test family A through whatsapp-webhook (dry run, live `chat_source`, nothing forced) and resets the fixtures — why: checks the live chat setting after a switch without touching real families.

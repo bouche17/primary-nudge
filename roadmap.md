@@ -73,13 +73,13 @@
 - [ ] Email alerts to hello@heymonty.co.uk (sign-ups + email_pending outage alerts) — blocked: heymonty.co.uk email domain not set up yet
 - [x] Load Mossley CofE (URN 141152) 2026–27 holidays; dry-run Oscar's family week of 26 Oct + Sunday 25 Oct skip
 - [x] Free tests (83/83), then quick suite once (104/104)
-- [ ] Reply guard turns conditional offers ("tell me and I'll set up a reminder") into "haven't saved anything yet" — waits on Matt's OK (chat change, needs a quick run)
+- [x] Reply guard turns conditional offers ("tell me and I'll set up a reminder") into "haven't saved anything yet" — waits on Matt's OK (chat change, needs a quick run)
 
 ## Rebuild Stage 3 — dashboard + chat on getWhatsOn, "Ask Monty" (23 Oct)
 - [x] A: dashboard_source setting; dashboard upcoming from whats-on (14 days, UK dates, reminder wording, opt-in tagged "optional"); free tests (partner, fortnightly, holiday, 23:30 UK date); switch to 'new'
 - [x] B: chat_source setting; chat context + duplicate check from getWhatsOn (family, partner notes, due-dated school reminders, opt-in flagged); chat shadow diffs (source 'chat'); quick suite
 - [x] C: lookup_whats_on / update_item / delete_item tools (per-date skip, deactivate, school items → offer hide, confirm pending action, family ownership check, partner update, honesty); quick suite
-- [ ] Switch chat_source to 'new' — blocked: full suite on 'new' had 1 failure (reply guard turns "Once I have the date, I'll set it up" into "haven't saved anything yet"); legacy 169/169. Waits on Matt's OK to fix the guard, then full suite again
+- [x] Switch chat_source to 'new' (done 26 Oct) — was blocked: full suite on 'new' had 1 failure (reply guard turns "Once I have the date, I'll set it up" into "haven't saved anything yet"); legacy 169/169. Waits on Matt's OK to fix the guard, then full suite again
 
 ## Prompt caching (26 Oct)
 - [x] Chat + photo prompts split into cached static / cached family / uncached now blocks; fixed tool lists; follow-up rounds cached
@@ -90,5 +90,6 @@
 ## Chat switch-over (26 Oct)
 - [x] Reply check ignores conditional offers/questions + free tests
 - [x] Full suite with chat_source='new' (184/185) — not switched
-- [ ] Switch chat_source='new' — blocked: Matt to decide on the 'bus stop' plain-update test (model said "I haven't saved this one" in its own words)
+- [x] 'General information with no date' rule in the static prompt + 'Mrs Smith is off sick' test
+- [x] Free 108/108, full suite on 'new' 186/186 → chat_source='new' live (26 Oct); post-switch dry runs checked
 - [x] St Joseph's (URN 149875) 2026–27 holidays loaded
