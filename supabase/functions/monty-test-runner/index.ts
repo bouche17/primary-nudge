@@ -1682,6 +1682,39 @@ const ASK_CASES: HandlerCase[] = [
 ];
 HANDLER_CASES.push(...ASK_CASES);
 
+// ── Replies to messages Monty sent on its own (school emails, reminders, Sunday check-in) ──
+const ROBOTIC = /open question|not sure what you'?re saying yes to|how monty works/i;
+const GIRLS_EMAIL = { source: "school_email", at: "2026-10-18T13:42:00Z",
+  text: "📢 School update: If Harry's in the Y3/4 girls' football team: ⚽ The Y3/4 girls' football tournament is at Macc FC on Wednesday 21st October after school.",
+  email: { subject: "Y3/4 Girls Football Tournament", title: "Y3/4 girls' football tournament", date: "2026-10-21", years: ["Year 3", "Year 4"], optIn: true } };
+const MON19 = "2026-10-19T08:00:00Z"; // Mon 19 Oct 09:00 BST
+const SENT_CASES: HandlerCase[] = [
+  { name: "School email (Y3/4 girls' football, Wed 21 Oct) → 'Yes' → saved for Harry, short confirmation, no robotic wording", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL] }, steps: [{ message: "Yes" }],
+    check: ([r], [a]) => firstFail(noteFor(r, "Harry", "2026-10-21", /football/i).length !== 1 && `expected one football note for Harry on 21 Oct: ${JSON.stringify(r.notes)}`,
+      r.notes.length !== 1 && `extra rows: ${JSON.stringify(r.notes)}`, !/Harry/.test(a) && `reply doesn't name Harry: "${a}"`, !/✅/.test(a) && `no confirmation: "${a}"`,
+      a.includes("?") && `asked a question: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`, a.length > 120 && "confirmation too long") },
+  { name: "School email → 'Seen' → short warm reply, nothing saved", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL] }, steps: [{ message: "Seen" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && `saved something: ${JSON.stringify(r.notes)}`, a.length > 60 && `not short: "${a}"`, a.includes("?") && `asked: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Evening reminder → 'thanks' → short warm reply, nothing saved", family: "A", now: "2026-10-05T18:30:00Z",
+    seed: { sent: [{ source: "evening_reminder", at: "2026-10-05T17:00:00Z", text: "Good evening! 🌙 Here's what's on tomorrow:\n👟 Harry: PE kit\nSleep well!" }] }, steps: [{ message: "thanks" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", a.length > 60 && `not short: "${a}"`, a.includes("?") && `asked: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Sunday check-in → 'yes' → this week's lunch plan confirmed, nothing changed", family: "A", now: MON_AM,
+    seed: { lunches: [{ child: "Jude", days: ["Monday", "Wednesday"], week: WK }, { child: "Harry", days: [], week: WK }],
+      sent: [{ source: "sunday_checkin", at: "2026-10-04T16:00:00Z", meta: { week_start: WK }, text: "Hi! Here's the week ahead for Jude and Harry (5 Oct-9 Oct). ✅ Already saved: Jude - packed lunch Mon, Wed; Harry - school dinners all week. Only reply if anything's changed." }] },
+    steps: [{ message: "yes" }],
+    check: ([r], [a]) => firstFail(!/confirmed/i.test(a) && `not confirmed: "${a}"`, !/Jude/.test(a) && `doesn't name Jude: "${a}"`, !eq(lunchDays(r, "Jude", WK), ["Monday", "Wednesday"]) && `Jude's plan changed: ${lunchDays(r, "Jude", WK)}`,
+      r.notes.length + r.reminders.length > 0 && "saved something else", ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "'Yes' with nothing recent → one specific friendly question, never 'I don't have an open question'", family: "A", now: MON,
+    steps: [{ message: "Yes" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", (a.match(/\?/g) ?? []).length !== 1 && `expected one question: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`, /not sure/i.test(a) && `"not sure": "${a}"`) },
+  { name: "'Mrs Smith is off sick' → no 'hope <child> is back soon', nothing saved", family: "A", now: MON,
+    steps: [{ message: "Mrs Smith is off sick" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", /\b(Jude|Harry)\b[^.!?]*(back soon|better|well soon|recover)|(hope|wish)[^.!?]*\b(Jude|Harry)\b/i.test(a) && `well-wish aimed at a child: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+];
+HANDLER_CASES.push(...SENT_CASES);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -1704,6 +1737,7 @@ const QUICK_NAMES = [
   "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)",
   "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged",
   ...ASK_CASES.map((c) => c.name),
+  ...SENT_CASES.map((c) => c.name),
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;
