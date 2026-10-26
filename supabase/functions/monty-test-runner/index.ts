@@ -5,7 +5,9 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
-import { dropPlainPromises, hasPlainPromise } from "../_shared/replyGuard.ts";
+import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
+import { contentText, recordOutbound } from "../_shared/outbound.ts";
+import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
 import { buildSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
@@ -115,6 +117,7 @@ async function resetTestData() {
       await admin.from("conversations").delete().in("id", convoIds);
     }
   }
+  await admin.from("school_email_log").delete().eq("school_id", TEST_SCHOOL_ID).eq("is_test", true);
 }
 
 async function ensureTestUser(phone: string): Promise<string> {
@@ -934,6 +937,120 @@ async function runPromptCacheTests(): Promise<Result[]> {
   return out;
 }
 
+// ── Outbound history: everything Monty sends is in the parent's conversation (no AI, stub sends, never Twilio) ──
+async function sentRows(phone: string, source: string) {
+  const { data: c } = await admin.from("conversations").select("id").eq("phone_number", phone).maybeSingle();
+  if (!c) return [] as any[];
+  const { data } = await admin.from("messages").select("content, source, school_email_id, metadata, message_type").eq("conversation_id", c.id).eq("direction", "outbound").eq("source", source);
+  return data ?? [];
+}
+async function runOutboundTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const push = (scenario: string, reason: string | null | false, reply: string | null = null, details?: unknown) =>
+    out.push({ scenario, category: "outbound", status: reason ? "fail" : "pass", reply, reason: reason || null, details } as Result);
+  const pure = (scenario: string, f: () => string | null | false) => { try { push(scenario, f()); } catch (e) { push(scenario, (e as Error).message); } };
+  pure("Short replies classified in code: yes / seen / thanks / 👍 / no; real content left to the AI", () => {
+    const cases: [string, string | null][] = [["Yes", "yes"], ["yes please", "yes"], ["save it", "yes"], ["Add it for Ava", "yes"], ["Seen", "ack"], ["ok", "ack"], ["👍", "ack"],
+      ["thanks!", "thanks"], ["Cheers", "thanks"], ["no thanks", "no"], ["the bus stop moved", null], ["Thanks Monty, that's brilliant", null], ["Ava", null], ["Mrs Smith is off sick", null]];
+    const bad = cases.filter(([m, k]) => shortReplyKind(m, ["Ava", "Jude"]) !== k);
+    return bad.length ? `wrong: ${bad.map(([m, k]) => `"${m}" → ${shortReplyKind(m, ["Ava", "Jude"])} (want ${k})`).join("; ")}` : null;
+  });
+  pure("Reply guard catches robotic wording ('no open question', 'not sure what you're saying yes to', how Monty works)", () => {
+    const bad = ["Thanks! I'm not sure what you're saying yes to, though, because I don't have an open question for you.", "I don't have an open question right now.", "That's just how Monty works."].filter((x) => !isRoboticReply(x));
+    return bad.length ? `missed: ${bad.join(" | ")}` : isRoboticReply("Great 😊") ? "flagged a normal reply" : null;
+  });
+  pure("'Mrs Smith is off sick' → a well-wish naming a child is dropped; 'she' becomes Mrs Smith", () => {
+    const a = dropMisplacedWellWishes("Thanks for letting me know. I hope Harry's back soon!", "Mrs Smith is off sick", ["Harry"]);
+    const b = dropMisplacedWellWishes("Thanks for letting me know, hope she's back soon!", "mrs smith is off sick", ["Harry"]);
+    const c = dropMisplacedWellWishes("Oh no, I hope Harry feels better soon!", "Harry is off sick today", ["Harry"]);
+    return firstFail(/Harry/.test(a) && `kept: "${a}"`, !/Mrs Smith is back soon/.test(b) && `got: "${b}"`, c !== "Oh no, I hope Harry feels better soon!" && `changed a real child illness: "${c}"`);
+  });
+  pure("Opt-in email rule: tournament / girls-only / 'selected' are opt-in; photos and trips aren't", () => {
+    const want: [string, boolean][] = [["Y3/4 Girls Football Tournament", true], ["Year 6 boys netball", true], ["Children selected for cross country", true], ["Year 3 class photos", false], ["Y4 trip to Chester Zoo", false], ["Boys and girls football festival", false]];
+    const bad = want.filter(([t, w]) => isOptInEmail(t) !== w);
+    return bad.length ? `wrong: ${bad.map(([t]) => t).join(", ")}` : null;
+  });
+  pure("Template text is rendered with its fixed wording (body, variables, buttons)", () => {
+    const t = contentText({ types: { "twilio/quick-reply": { body: "📢 From school: {{1}}", actions: [{ title: "Thanks" }] } } }, { "1": "Photos on Tuesday." });
+    return t !== "📢 From school: Photos on Tuesday.\n[Thanks]" ? `got: ${JSON.stringify(t)}` : null;
+  });
+
+  // School email → test family A (Jude Y6, Harry Y3) + linked partner C, through the real handle-school-email pipeline.
+  try {
+    await resetTestData();
+    await seedFamily("A", { partner: "C" });
+    const send = (subject: string, extracted: Record<string, unknown>) => callFn("handle-school-email", { test_send: true, school_id: TEST_SCHOOL_ID, only_phones: [FAMILIES.A.phone, FAMILIES.C.phone], subject, extracted });
+    const ex = { message: "⚽ The Y3/4 girls' football tournament is at Macc FC on Wednesday 21st October after school.", what: "Y3/4 girls' football tournament", yearGroups: ["Year 3", "Year 4"],
+      eventTitle: "Y3/4 girls' football tournament", eventDate: "2026-10-21", optInGroup: "the Y3/4 girls' football team", links: [] };
+    const r = await send("Y3/4 Girls Football Tournament", ex);
+    const { data: log } = await admin.from("school_email_log").select("*").eq("id", r.data?.log_id ?? "00000000-0000-0000-0000-000000000000").maybeSingle();
+    const a = await sentRows(FAMILIES.A.phone, "school_email"), c = await sentRows(FAMILIES.C.phone, "school_email");
+    push("School email logged in school_email_log (subject, built message, year groups, opt-in, event, 1 family / 2 phones)",
+      r.status !== 200 ? `HTTP ${r.status}: ${JSON.stringify(r.data).slice(0, 200)}` : !log ? "no log row"
+        : firstFail(!log.opt_in && "opt_in false", log.families_count !== 1 && `families ${log.families_count}`, log.phones_count !== 2 && `phones ${log.phones_count}`,
+          log.event_date !== "2026-10-21" && `event_date ${log.event_date}`, JSON.stringify(log.year_groups) !== JSON.stringify(["Year 3", "Year 4"]) && `years ${JSON.stringify(log.year_groups)}`, !log.is_test && "not marked as a test"),
+      log?.message ?? null, log);
+    push("School email written to each recipient's conversation (source school_email, linked to the log; partner gets their own copy)",
+      firstFail(a.length !== 1 && `parent rows ${a.length}`, c.length !== 1 && `partner rows ${c.length}`,
+        a[0] && a[0].school_email_id !== log?.id && "parent row not linked to the log", c[0] && c[0].school_email_id !== log?.id && "partner row not linked to the log",
+        a[0] && !a[0].metadata?.rendered && "template wording couldn't be read (stored the variable only)"),
+      a[0]?.content ?? null, { parent: a, partner: c });
+    const v1 = a[0]?.metadata?.variables?.["1"] ?? "";
+    push("Opt-in email starts with the conditional line naming the child: \"If Harry's in the Y3/4 girls' football team: …\"",
+      firstFail(!v1.startsWith("If Harry's in the Y3/4 girls' football team: ⚽") && `got: "${v1}"`, /[\r\n]/.test(v1) && "newline in the template variable", /Jude/.test(v1) && "named the Year 6 child"), v1);
+    push("Girls-only title: Harry still gets it (no gender filtering), worded conditionally", firstFail(a.length !== 1 && "not sent to Harry's family", !/^If Harry's in/.test(v1) && "no conditional line"), v1);
+    await resetTestData();
+    await seedFamily("A");
+    const r2 = await send("Year 3 class photos", { message: "📸 Year 3 class photos are on Tuesday 3rd November.", what: "Year 3 class photos", yearGroups: ["Year 3"], eventTitle: "Year 3 class photos", eventDate: "2026-11-03", links: [] });
+    const a2 = await sentRows(FAMILIES.A.phone, "school_email");
+    const v2 = a2[0]?.metadata?.variables?.["1"] ?? "";
+    push("Ordinary year-targeted email: \"For Harry: …\", not conditional, opt_in false",
+      firstFail(r2.status !== 200 && `HTTP ${r2.status}`, r2.data?.opt_in !== false && "marked opt-in", !v2.startsWith("For Harry: 📸") && `got: "${v2}"`), v2);
+    const refused = await callFn("handle-school-email", { test_send: true, school_id: TEST_SCHOOL_ID, only_phones: ["+447700900123"], subject: "x", extracted: ex });
+    push("School email test send refuses a non-test phone number", refused.status !== 403 && `expected 403, got ${refused.status}`);
+  } catch (e) { push("School email outbound tests: setup", (e as Error).message); }
+
+  // Reminders (stub delivery) → morning/evening source in the conversation.
+  try {
+    await resetTestData();
+    await seedSenderFixtures();
+    const ev = await callFn("send-reminders", { scenario: "outbound: evening stub", period: "evening", now: "2026-10-06T17:00:00Z", scope: "test", only_phones: [FAMILY_A_PHONE], stub_send: true });
+    const mo = await callFn("send-reminders", { scenario: "outbound: morning stub", period: "morning", now: "2026-10-06T06:00:00Z", scope: "test", only_phones: [FAMILY_A_PHONE], stub_send: true });
+    const e = await sentRows(FAMILY_A_PHONE, "evening_reminder"), m = await sentRows(FAMILY_A_PHONE, "morning_reminder");
+    push("Evening and morning reminders written to the conversation with their source (exact text sent)",
+      firstFail(ev.status !== 200 && `evening HTTP ${ev.status}`, mo.status !== 200 && `morning HTTP ${mo.status}`, e.length !== 1 && `evening rows ${e.length}`, m.length !== 1 && `morning rows ${m.length}`,
+        e[0] && !/gymnastics/i.test(e[0].content) && `evening text: ${e[0].content}`, m[0] && !/PE kit/i.test(m[0].content) && `morning text: ${m[0].content}`,
+        e[0] && !e[0].metadata?.rendered && "reminder template wording couldn't be read"),
+      `${e[0]?.content ?? ""}\n---\n${m[0]?.content ?? ""}`);
+  } catch (e) { push("Reminder outbound tests: setup", (e as Error).message); }
+
+  // Sunday check-in (stub) → sunday_checkin source with the week it covers.
+  try {
+    await resetTestData();
+    const parentId = await ensureTestUser(SUNDAY_PHONE);
+    const { data: kid } = await admin.from("children").insert({ parent_id: parentId, school_id: TEST_SCHOOL_ID, first_name: "Mila", year_group: "Year 5" }).select("id").single();
+    await admin.from("child_reminders").insert({ child_id: kid!.id, parent_id: parentId, title: "PE kit", emoji: "👟", day_of_week: "Monday", reminder_time: "both", active: true, recurrence_interval: 1 });
+    const s1 = await callFn("sunday-lunch-checkin", { scenario: "outbound: sunday stub", now: "2026-11-01T17:00:00Z", scope: "test", only_phones: [SUNDAY_PHONE], stub_send: true });
+    const rows = await sentRows(SUNDAY_PHONE, "sunday_checkin");
+    push("Sunday check-in written to the conversation (source sunday_checkin, week_start kept for 'yes')",
+      firstFail(s1.status !== 200 && `HTTP ${s1.status}`, rows.length !== 1 && `rows ${rows.length}`, rows[0] && rows[0].metadata?.week_start !== "2026-11-02" && `week ${rows[0].metadata?.week_start}`,
+        rows[0] && !/Mila/.test(rows[0].content) && `text: ${rows[0].content}`), rows[0]?.content ?? null);
+  } catch (e) { push("Sunday outbound tests: setup", (e as Error).message); }
+
+  // Family updates and alerts use the same helper (their real senders call it after Twilio accepts the message).
+  try {
+    await resetTestData();
+    const id1 = await recordOutbound({ phone: FAMILIES.B.phone, source: "family_update", contentSid: Deno.env.get("TWILIO_FAMILY_UPDATE_TEMPLATE_SID") || "HX2b134e5257d687bab6f38904e73043b9", variables: { "1": "Rosa's swimming moved to Thursday (changed by Sam)" } });
+    const id2 = await recordOutbound({ phone: FAMILIES.B.phone, source: "alert", text: "Monty system alert (not from a school): test" });
+    const fu = await sentRows(FAMILIES.B.phone, "family_update"), al = await sentRows(FAMILIES.B.phone, "alert");
+    push("Family update and alert records: right source, rendered text", firstFail(!id1 && "family update not recorded", !id2 && "alert not recorded",
+      fu[0] && !/Rosa's swimming moved to Thursday/.test(fu[0].content) && `family update text: ${fu[0].content}`, fu[0] && !fu[0].metadata?.rendered && "family-update template wording couldn't be read",
+      al.length !== 1 && `alert rows ${al.length}`), fu[0]?.content ?? null);
+  } catch (e) { push("Family update outbound tests: setup", (e as Error).message); }
+  await resetTestData();
+  return out;
+}
+
 async function runSenderSuite(quick = false, free = false): Promise<Result[]> {
   // free = no AI at all (the "free tests"): skips the contact checks, which need the AI.
   const results: Result[] = [...(await runAlertTests()), ...(await runOptOutTests(quick || free)), ...(free ? [] : await runContactTests(quick)), ...(await runDeleteParentTests())];
@@ -1090,6 +1207,8 @@ interface Seed {
   events?: { title: string; start: string; year_group: string | null }[];
   history?: Msg[];
   realHistory?: { from: string; to: string };
+  // Messages Monty sent on its own (school email / reminder / Sunday check-in), stored like the real senders do.
+  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
 }
 interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
@@ -1162,12 +1281,23 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
     history = (real ?? []).map((m) => ({ role: m.direction === "inbound" ? "user" : "assistant", content: m.content, at: m.created_at }));
     if (!history.length) throw new Error("real history copy found no messages");
   }
-  if (history.length) {
+  if (history.length || seed.sent?.length) {
     const { data: convo, error: ce } = await admin.from("conversations").insert({ phone_number: f.phone, current_step: "active" }).select("id").single();
     if (ce) throw new Error(`seed conversation: ${ce.message}`);
-    await admin.from("messages").insert(history.map((m) => ({
+    if (history.length) await admin.from("messages").insert(history.map((m) => ({
       conversation_id: convo.id, direction: m.role === "user" ? "inbound" : "outbound", content: m.content, created_at: m.at,
     })));
+    for (const m of seed.sent ?? []) {
+      let logId: string | null = null;
+      if (m.email) {
+        const { data: log, error: le } = await admin.from("school_email_log").insert({ school_id: TEST_SCHOOL_ID, subject: m.email.subject, extracted: { what: m.email.title }, message: m.text,
+          year_groups: m.email.years, opt_in: m.email.optIn ?? false, event_title: m.email.title, event_date: m.email.date, is_test: true, received_at: m.at }).select("id").single();
+        if (le) throw new Error(`seed school email: ${le.message}`);
+        logId = log.id;
+      }
+      const { error: me } = await admin.from("messages").insert({ conversation_id: convo.id, direction: "outbound", content: m.text, message_type: "template", source: m.source, school_email_id: logId, metadata: m.meta ?? null, created_at: m.at });
+      if (me) throw new Error(`seed sent message: ${me.message}`);
+    }
   }
 }
 
@@ -1551,6 +1681,39 @@ const ASK_CASES: HandlerCase[] = [
 ];
 HANDLER_CASES.push(...ASK_CASES);
 
+// ── Replies to messages Monty sent on its own (school emails, reminders, Sunday check-in) ──
+const ROBOTIC = /open question|not sure what you'?re saying yes to|how monty works/i;
+const GIRLS_EMAIL = { source: "school_email", at: "2026-10-18T13:42:00Z",
+  text: "📢 School update: If Harry's in the Y3/4 girls' football team: ⚽ The Y3/4 girls' football tournament is at Macc FC on Wednesday 21st October after school.",
+  email: { subject: "Y3/4 Girls Football Tournament", title: "Y3/4 girls' football tournament", date: "2026-10-21", years: ["Year 3", "Year 4"], optIn: true } };
+const MON19 = "2026-10-19T08:00:00Z"; // Mon 19 Oct 09:00 BST
+const SENT_CASES: HandlerCase[] = [
+  { name: "School email (Y3/4 girls' football, Wed 21 Oct) → 'Yes' → saved for Harry, short confirmation, no robotic wording", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL] }, steps: [{ message: "Yes" }],
+    check: ([r], [a]) => firstFail(noteFor(r, "Harry", "2026-10-21", /football/i).length !== 1 && `expected one football note for Harry on 21 Oct: ${JSON.stringify(r.notes)}`,
+      r.notes.length !== 1 && `extra rows: ${JSON.stringify(r.notes)}`, !/Harry/.test(a) && `reply doesn't name Harry: "${a}"`, !/✅/.test(a) && `no confirmation: "${a}"`,
+      a.includes("?") && `asked a question: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`, a.length > 120 && "confirmation too long") },
+  { name: "School email → 'Seen' → short warm reply, nothing saved", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL] }, steps: [{ message: "Seen" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && `saved something: ${JSON.stringify(r.notes)}`, a.length > 60 && `not short: "${a}"`, a.includes("?") && `asked: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Evening reminder → 'thanks' → short warm reply, nothing saved", family: "A", now: "2026-10-05T18:30:00Z",
+    seed: { sent: [{ source: "evening_reminder", at: "2026-10-05T17:00:00Z", text: "Good evening! 🌙 Here's what's on tomorrow:\n👟 Harry: PE kit\nSleep well!" }] }, steps: [{ message: "thanks" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", a.length > 60 && `not short: "${a}"`, a.includes("?") && `asked: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Sunday check-in → 'yes' → this week's lunch plan confirmed, nothing changed", family: "A", now: MON_AM,
+    seed: { lunches: [{ child: "Jude", days: ["Monday", "Wednesday"], week: WK }, { child: "Harry", days: [], week: WK }],
+      sent: [{ source: "sunday_checkin", at: "2026-10-04T16:00:00Z", meta: { week_start: WK }, text: "Hi! Here's the week ahead for Jude and Harry (5 Oct-9 Oct). ✅ Already saved: Jude - packed lunch Mon, Wed; Harry - school dinners all week. Only reply if anything's changed." }] },
+    steps: [{ message: "yes" }],
+    check: ([r], [a]) => firstFail(!/confirmed/i.test(a) && `not confirmed: "${a}"`, !/Jude/.test(a) && `doesn't name Jude: "${a}"`, !eq(lunchDays(r, "Jude", WK), ["Monday", "Wednesday"]) && `Jude's plan changed: ${lunchDays(r, "Jude", WK)}`,
+      r.notes.length + r.reminders.length > 0 && "saved something else", ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "'Yes' with nothing recent → one specific friendly question, never 'I don't have an open question'", family: "A", now: MON,
+    steps: [{ message: "Yes" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", (a.match(/\?/g) ?? []).length !== 1 && `expected one question: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`, /not sure/i.test(a) && `"not sure": "${a}"`) },
+  { name: "'Mrs Smith is off sick' → no 'hope <child> is back soon', nothing saved", family: "A", now: MON,
+    steps: [{ message: "Mrs Smith is off sick" }],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", /\b(Jude|Harry)\b[^.!?]*(back soon|better|well soon|recover)|(hope|wish)[^.!?]*\b(Jude|Harry)\b/i.test(a) && `well-wish aimed at a child: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+];
+HANDLER_CASES.push(...SENT_CASES);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -1573,6 +1736,7 @@ const QUICK_NAMES = [
   "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)",
   "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged",
   ...ASK_CASES.map((c) => c.name),
+  ...SENT_CASES.map((c) => c.name),
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;
@@ -1707,7 +1871,7 @@ Deno.serve(async (req) => {
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
-  const part: "sender" | "conversation" = body.part === "conversation" ? "conversation" : "sender";
+  const part: "sender" | "outbound" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : "sender";
   const offset = Number.isInteger(body.offset) ? body.offset : 0;
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
@@ -1728,6 +1892,7 @@ Deno.serve(async (req) => {
   try {
     await resetTestData();
     if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
+    else if (part === "outbound") results = await runOutboundTests();
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
@@ -1738,7 +1903,8 @@ Deno.serve(async (req) => {
   if (results.length) await admin.from("test_run_results").insert(results.map((r) => ({ run_id: runId, ...r, details: r.details ?? null })));
 
   let next: { part: string; offset: number } | null = null;
-  if (part === "sender" && suite !== "sender") next = { part: "conversation", offset: 0 };
+  if (part === "sender") next = { part: "outbound", offset: 0 }; // free tests continue in their own chunk (time limit)
+  if (part === "outbound" && suite !== "sender") next = { part: "conversation", offset: 0 };
   if (part === "conversation" && offset + limit < casesFor(suite).length) next = { part: "conversation", offset: offset + limit };
 
   // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.

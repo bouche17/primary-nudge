@@ -5,6 +5,7 @@
 // pg_cron: 0 8 * * 1
 
 import { blockIfTestPhone } from "../_shared/testGuard.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(
@@ -46,6 +47,7 @@ async function sendWhatsApp(to: string, text: string): Promise<boolean> {
   );
 
   if (!res.ok) console.error("Twilio error:", await res.text());
+  else await recordOutbound({ phone: to, source: "newsletter", text });
   return res.ok;
 }
 

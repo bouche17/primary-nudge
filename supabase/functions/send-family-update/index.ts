@@ -1,6 +1,7 @@
 // Sends the monty_family_update template to every OTHER adult in a family
 // when someone changes the family's plans from the dashboard.
 import { blockIfTestPhone, isTestPhone } from "../_shared/testGuard.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -84,6 +85,8 @@ async function sendTemplate(to: string, summary: string) {
     } catch (e) {
       console.error("Failed to log message send failure:", e);
     }
+  } else {
+    await recordOutbound({ phone: to, source: "family_update", contentSid: TEMPLATE_SID, variables: { "1": summary } });
   }
   return { ok: res.ok, status: res.status };
 }

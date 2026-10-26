@@ -93,3 +93,9 @@
 - [x] 'General information with no date' rule in the static prompt + 'Mrs Smith is off sick' test
 - [x] Free 108/108, full suite on 'new' 186/186 → chat_source='new' live (26 Oct); post-switch dry runs checked
 - [x] St Joseph's (URN 149875) 2026–27 holidays loaded
+
+## Monty sees its own messages (26 Oct)
+- [x] Every outbound message (school email, reminders, Sunday check-in, family/partner updates, alerts, welcome, newsletter) saved to the recipient's conversation with rendered template wording + source
+- [x] Chat history labels "[Monty sent — …]"; short replies (yes / seen / thanks / 👍 / no) handled in code; robotic-wording guard; "Mrs Smith" well-wish guard
+- [x] school_email_log + /admin/school-emails; opt-in emails worded "If <child>'s in …" (no gender filtering); school emails only to that school's families
+- [x] Free 122/122, full suite 205 pass + 1 flaky

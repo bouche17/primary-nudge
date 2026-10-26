@@ -46,8 +46,13 @@ export function yearGroupMatches(eventYears: string | null, childYear: string | 
 export const OPT_IN_WORDS = [
   "club", "clubs", "asc", "after school club", "breakfast club", "tournament", "tournaments", "match", "matches", "fixture", "fixtures",
   "squad", "team", "teams", "trials", "trial", "auditions", "audition", "lessons", "lesson", "tuition", "party", "parties",
-  "sign up", "signup", "sign ups", "taster", "tasters",
+  "sign up", "signup", "sign ups", "taster", "tasters", "selected",
 ];
+/** Girls-only or boys-only titles ("Y3/4 Girls Football") are for a chosen group, never filtered by gender. */
+export function isSingleGender(title: string): boolean {
+  const t = ` ${norm(title)} `;
+  return / (girls?|ladies) /.test(t) !== / (boys?) /.test(t);
+}
 /** After-school sport and activity sessions count as clubs. */
 export const ACTIVITY_WORDS = [
   "football", "netball", "rugby", "tag rugby", "hockey", "cricket", "basketball", "athletics", "cross country", "gymnastics",
@@ -73,7 +78,7 @@ export function isOptInEvent(title: string, yearGroup: string | null, startAt?: 
   const t = ` ${norm(title)} `;
   const has = (list: string[]) => list.some((w) => t.includes(` ${w} `));
   if (has(ALWAYS_INCLUDE_WORDS)) return false;
-  if (has(OPT_IN_WORDS) || has(ACTIVITY_WORDS)) return true;
+  if (has(OPT_IN_WORDS) || has(ACTIVITY_WORDS) || isSingleGender(title)) return true;
   const wholeSchool = eventYearGroups(yearGroup, title) === null;
   return !wholeSchool && !!startAt && ukMinutes(startAt) >= OPT_IN_AFTER.hour * 60 + OPT_IN_AFTER.minute;
 }
@@ -113,4 +118,14 @@ export function markerWords(title: string): Set<string> {
 export function markerContained(a: string, b: string): boolean {
   const wa = markerWords(a), wb = markerWords(b);
   return wa.size > 0 && [...wa].every((w) => wb.has(w));
+}
+
+/** A school email about an opt-in activity (tournament, team, club, trials, "selected", girls/boys-only…): still sent to
+ *  the year group, but worded "If <child>'s in …". Same word lists as reminders; no activity-word or time rule. */
+export function isOptInEmail(...texts: (string | null | undefined)[]): boolean {
+  const title = texts.filter(Boolean).join(" ");
+  const t = ` ${norm(title)} `;
+  const has = (list: string[]) => list.some((w) => t.includes(` ${w} `));
+  if (has(ALWAYS_INCLUDE_WORDS)) return false;
+  return has(OPT_IN_WORDS) || isSingleGender(title);
 }

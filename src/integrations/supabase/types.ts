@@ -655,6 +655,9 @@ export type Database = {
           direction: string
           id: string
           message_type: string
+          metadata: Json | null
+          school_email_id: string | null
+          source: string | null
         }
         Insert: {
           content: string
@@ -663,6 +666,9 @@ export type Database = {
           direction: string
           id?: string
           message_type?: string
+          metadata?: Json | null
+          school_email_id?: string | null
+          source?: string | null
         }
         Update: {
           content?: string
@@ -671,6 +677,9 @@ export type Database = {
           direction?: string
           id?: string
           message_type?: string
+          metadata?: Json | null
+          school_email_id?: string | null
+          source?: string | null
         }
         Relationships: [
           {
@@ -678,6 +687,13 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_school_email_id_fkey"
+            columns: ["school_email_id"]
+            isOneToOne: false
+            referencedRelation: "school_email_log"
             referencedColumns: ["id"]
           },
         ]
@@ -991,6 +1007,62 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "school_calendar_feeds_school_id_fkey"
+            columns: ["school_id"]
+            isOneToOne: false
+            referencedRelation: "schools"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      school_email_log: {
+        Row: {
+          event_date: string | null
+          event_title: string | null
+          extracted: Json
+          families_count: number
+          id: string
+          is_test: boolean
+          message: string | null
+          opt_in: boolean
+          phones_count: number
+          received_at: string
+          school_id: string | null
+          subject: string | null
+          year_groups: string[]
+        }
+        Insert: {
+          event_date?: string | null
+          event_title?: string | null
+          extracted?: Json
+          families_count?: number
+          id?: string
+          is_test?: boolean
+          message?: string | null
+          opt_in?: boolean
+          phones_count?: number
+          received_at?: string
+          school_id?: string | null
+          subject?: string | null
+          year_groups?: string[]
+        }
+        Update: {
+          event_date?: string | null
+          event_title?: string | null
+          extracted?: Json
+          families_count?: number
+          id?: string
+          is_test?: boolean
+          message?: string | null
+          opt_in?: boolean
+          phones_count?: number
+          received_at?: string
+          school_id?: string | null
+          subject?: string | null
+          year_groups?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "school_email_log_school_id_fkey"
             columns: ["school_id"]
             isOneToOne: false
             referencedRelation: "schools"
