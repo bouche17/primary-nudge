@@ -6,6 +6,7 @@
 // Or via GET with query param: ?user_id=uuid
 
 import { blockIfTestPhone } from "../_shared/testGuard.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(
@@ -48,6 +49,8 @@ async function sendWelcomeTemplate(to: string, childNamesText: string): Promise<
   if (!res.ok) {
     const err = await res.text();
     console.error("Twilio error:", err);
+  } else {
+    await recordOutbound({ phone: to, source: "welcome", contentSid: TWILIO_WELCOME_TEMPLATE_SID, variables: { "1": childNamesText } });
   }
   return res.ok;
 }

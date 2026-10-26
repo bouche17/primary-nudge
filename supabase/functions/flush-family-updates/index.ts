@@ -1,6 +1,7 @@
 // Runs every minute (pg_cron). Bundles queued dashboard changes per family into
 // ONE monty_family_update WhatsApp per other adult.
 import { blockIfTestPhone, isTestPhone } from "../_shared/testGuard.ts";
+import { recordOutbound } from "../_shared/outbound.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -111,6 +112,8 @@ async function sendTemplate(to: string, text: string) {
     } catch (e) {
       console.error("Failed to log message send failure:", e);
     }
+  } else {
+    await recordOutbound({ phone: to, source: "family_update", contentSid: TEMPLATE_SID, variables: { "1": text } });
   }
   return res.ok;
 }

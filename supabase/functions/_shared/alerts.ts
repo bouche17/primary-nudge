@@ -126,5 +126,6 @@ export async function sendAlertWhatsApp(text: string): Promise<{ ok: boolean; ch
     method: "POST", headers: { Authorization: "Basic " + btoa(`${sid}:${tok}`), "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });
   if (!res.ok) console.error("[alerts] WhatsApp alert failed:", res.status, await res.text());
+  else await recordOutbound({ phone: to, source: "alert", text: body });
   return { ok: res.ok, channel: "whatsapp_freeform" };
 }
