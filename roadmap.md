@@ -99,3 +99,5 @@
 - [x] Chat history labels "[Monty sent — …]"; short replies (yes / seen / thanks / 👍 / no) handled in code; robotic-wording guard; "Mrs Smith" well-wish guard
 - [x] school_email_log + /admin/school-emails; opt-in emails worded "If <child>'s in …" (no gender filtering); school emails only to that school's families
 - [x] Free 122/122, full suite 205 pass + 1 flaky
+
+- [ ] Send the two approved account-check messages (Hallie school check with pending reply; Oscar Mossley term dates) — blocked: monty_general_account_v1 still pending WhatsApp approval. Run via account-check `send` (child_id, detail, school_check for Hallie), then `delivery`.

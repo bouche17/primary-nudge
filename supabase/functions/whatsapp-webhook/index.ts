@@ -1493,7 +1493,7 @@ interface PendingAction {
   ask_frequency?: boolean;             // which-child question also asked one-off vs weekly
   freq?: "once" | "weekly";            // frequency already answered (child still missing)
   move?: { to: string; options: Array<{ id: string; child: string; title: string; day: string }> };
-  school?: { stage: "ask_school" | "pick" | "confirm"; child_ids: string[]; options?: SchoolOpt[]; chosen?: SchoolOpt };
+  school?: { stage: "ask_school" | "pick" | "confirm" | "check"; child_ids: string[]; options?: SchoolOpt[]; chosen?: SchoolOpt }; // "check": Monty asked "is <child>'s school right?" (account-check template)
   source_text?: string; // the parent's original message, for the one-off/weekly decision
   items: Array<{ tool: string; args: any }>;
   proposed: string[] | null; // proposed child names (for "yes")
@@ -1514,7 +1514,9 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   const row = await getConversationRow(phone);
   const p: PendingAction | null = row?.context?.pending_action ?? null;
   if (!row || !p) return null;
-  if (nowD().getTime() - new Date(p.created_at).getTime() > 24 * 3600_000) { await setPendingAction(phone, null); return null; }
+  // An account-check question ("is Hallie's school right?") stays open for 7 days; everything else for 24h.
+  const maxAge = (p.kind === "school" && p.school?.stage === "check" ? 7 * 24 : 24) * 3600_000;
+  if (nowD().getTime() - new Date(p.created_at).getTime() > maxAge) { await setPendingAction(phone, null); return null; }
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
   if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
@@ -2398,7 +2400,7 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
 const andNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
 const orNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} or ${ns[ns.length - 1]}`);
 const possessive = (ns: string[]) => `${andNames(ns)}'s`;
-const SCHOOL_YES = /^\s*(yes|yep|yeah|yea|yup|correct|that'?s (it|right|the one|correct)|right|sure|ok(ay)?|please do|go on|y)\b/i;
+const SCHOOL_YES = /^\s*(yes|yep|yeah|yea|yup|correct|that['’]?s (it|right|the one|correct)|right|sure|ok(ay)?|please do|go on|y)\b/i;
 const SCHOOL_NO = /^\s*(no|nope|nah|neither|none|not (that|those|any|it))\b/i;
 const ORDINAL: Record<string, number> = { first: 0, "1st": 0, second: 1, "2nd": 1, third: 2, "3rd": 2 };
 const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -2481,6 +2483,16 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
   };
   const askAgain = `No problem. Which school is it? The name and town, or the postcode, is perfect. You can also change it on your dashboard: ${DASHBOARD_URL}`;
 
+  if (s.stage === "check" && s.chosen) {
+    // We asked "is <child>'s school right?": yes keeps it; a plain no asks which school; a school name is searched below.
+    if (SCHOOL_YES.test(message) && !SCHOOL_NO.test(message)) {
+      await setPendingAction(phone, null);
+      await logDedupDecision({ phone, childName: names.join(", ") || null, tool: "school_change", newItem: message.slice(0, 300), decision: "school_confirmed",
+        match: { table: "schools", id: s.chosen.id, text: s.chosen.name } });
+      return `Thanks for confirming ✅ I'll keep ${names.length ? possessive(names) : "your child's"} school as ${s.chosen.name}.`;
+    }
+    if (SCHOOL_NO.test(message) && message.trim().split(/\s+/).length <= 4) return await keep({ stage: "ask_school", chosen: undefined }, askAgain);
+  }
   if (s.stage === "confirm" && s.chosen) {
     if (SCHOOL_YES.test(message)) {
       if (!kids.length) return await keep({}, `Which child is at ${s.chosen.name}, ${orNames(childNames)}?`);

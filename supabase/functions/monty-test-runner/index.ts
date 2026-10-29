@@ -7,6 +7,7 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
+import { accountCheckVar, schoolCheckPending, schoolEmailV3Vars } from "../_shared/twilioTemplates.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
@@ -970,6 +971,24 @@ async function runOutboundTests(): Promise<Result[]> {
     const bad = want.filter(([t, w]) => isOptInEmail(t) !== w);
     return bad.length ? `wrong: ${bad.map(([t]) => t).join(", ")}` : null;
   });
+  pure("School email v3 variables: {{1}} school name, {{2}} message, no newlines inside either", () => {
+    const v = schoolEmailV3Vars("Dean Valley Community Primary School\n", "📸 Photos on Tuesday.\nOrder by Friday.\r\nThanks");
+    return firstFail(JSON.stringify(Object.keys(v)) !== '["1","2"]' && `keys ${Object.keys(v)}`, v["1"] !== "Dean Valley Community Primary School" && `{{1}} "${v["1"]}"`,
+      v["2"] !== "📸 Photos on Tuesday. Order by Friday. Thanks" && `{{2}} "${v["2"]}"`, Object.values(v).some((x) => /[\r\n]/.test(x)) && "newline in a variable");
+  });
+  pure("School email v3 rendered text contains the template wording, the school name and the message", () => {
+    const v = schoolEmailV3Vars("Dean Valley Community Primary School", "⚽ The tournament is on Wednesday 21st October.");
+    const t = contentText({ types: { "twilio/text": { body: 'Hi! 👋 News from {{1}}:\n\n{{2}}\n\nReply "save it" and I\'ll add it to your reminders, or ask me anything about it.' } } }, v);
+    return t !== 'Hi! 👋 News from Dean Valley Community Primary School:\n\n⚽ The tournament is on Wednesday 21st October.\n\nReply "save it" and I\'ll add it to your reminders, or ask me anything about it.' ? `got: ${JSON.stringify(t)}` : null;
+  });
+  pure("Account-check variable: one line, no trailing full stop (the template adds it)", () => {
+    const v = accountCheckVar("is Hallie's school right?\nWe have St Joseph's Catholic Primary, Sale. ");
+    return v !== "is Hallie's school right? We have St Joseph's Catholic Primary, Sale" ? `got: "${v}"` : null;
+  });
+  pure("School search words: 'No, she's at St Joseph's in Stockport' → 'st josephs stockport'", () => {
+    const q = schoolSearchQuery("No, she's at St Joseph's in Stockport", ["Mila"]), q2 = schoolSearchQuery("Hallie's at Mossley CofE", ["Hallie"]);
+    return firstFail(q !== "st josephs stockport" && `got "${q}"`, q2 !== "mossley" && `got "${q2}"`);
+  });
   pure("Template text is rendered with its fixed wording (body, variables, buttons)", () => {
     const t = contentText({ types: { "twilio/quick-reply": { body: "📢 From school: {{1}}", actions: [{ title: "Thanks" }] } } }, { "1": "Photos on Tuesday." });
     return t !== "📢 From school: Photos on Tuesday.\n[Thanks]" ? `got: ${JSON.stringify(t)}` : null;
@@ -995,7 +1014,14 @@ async function runOutboundTests(): Promise<Result[]> {
         a[0] && a[0].school_email_id !== log?.id && "parent row not linked to the log", c[0] && c[0].school_email_id !== log?.id && "partner row not linked to the log",
         a[0] && !a[0].metadata?.rendered && "template wording couldn't be read (stored the variable only)"),
       a[0]?.content ?? null, { parent: a, partner: c });
-    const v1 = a[0]?.metadata?.variables?.["1"] ?? "";
+    const { data: tSchool } = await admin.from("schools").select("name").eq("id", TEST_SCHOOL_ID).maybeSingle();
+    const vars = a[0]?.metadata?.variables ?? {};
+    push("School email uses template v3: {{1}} = school name, {{2}} = message; the stored text is the rendered v3 wording with both",
+      firstFail(a[0]?.metadata?.template_sid !== "HXeb0f72555240d41d29ffb46285f5402b" && `template ${a[0]?.metadata?.template_sid}`, vars["1"] !== tSchool?.name && `{{1}} = "${vars["1"]}"`,
+        !/^Hi! 👋 News from /.test(a[0]?.content ?? "") && "not the v3 wording", !(a[0]?.content ?? "").includes(String(tSchool?.name)) && "no school name in the text",
+        !(a[0]?.content ?? "").includes(vars["2"] ?? "@@") && "message not in the text", /Reply [“"]save it[”"]/.test(a[0]?.content ?? "") ? false : "missing the 'save it' line"),
+      a[0]?.content ?? null, vars);
+    const v1 = vars["2"] ?? "";
     push("Opt-in email starts with the conditional line naming the child: \"If Harry's in the Y3/4 girls' football team: …\"",
       firstFail(!v1.startsWith("If Harry's in the Y3/4 girls' football team: ⚽") && `got: "${v1}"`, /[\r\n]/.test(v1) && "newline in the template variable", /Jude/.test(v1) && "named the Year 6 child"), v1);
     push("Girls-only title: Harry still gets it (no gender filtering), worded conditionally", firstFail(a.length !== 1 && "not sent to Harry's family", !/^If Harry's in/.test(v1) && "no conditional line"), v1);
@@ -1003,7 +1029,7 @@ async function runOutboundTests(): Promise<Result[]> {
     await seedFamily("A");
     const r2 = await send("Year 3 class photos", { message: "📸 Year 3 class photos are on Tuesday 3rd November.", what: "Year 3 class photos", yearGroups: ["Year 3"], eventTitle: "Year 3 class photos", eventDate: "2026-11-03", links: [] });
     const a2 = await sentRows(FAMILIES.A.phone, "school_email");
-    const v2 = a2[0]?.metadata?.variables?.["1"] ?? "";
+    const v2 = a2[0]?.metadata?.variables?.["2"] ?? "";
     push("Ordinary year-targeted email: \"For Harry: …\", not conditional, opt_in false",
       firstFail(r2.status !== 200 && `HTTP ${r2.status}`, r2.data?.opt_in !== false && "marked opt-in", !v2.startsWith("For Harry: 📸") && `got: "${v2}"`), v2);
     const refused = await callFn("handle-school-email", { test_send: true, school_id: TEST_SCHOOL_ID, only_phones: ["+447700900123"], subject: "x", extracted: ex });
@@ -1209,6 +1235,8 @@ interface Seed {
   realHistory?: { from: string; to: string };
   // Messages Monty sent on its own (school email / reminder / Sunday check-in), stored like the real senders do.
   sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
+  // Monty sent the account-check "is <child>'s school right?" (template text + the pending school check, as account-check does).
+  schoolCheck?: { child: string; at: string };
 }
 interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
@@ -1298,6 +1326,16 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
       const { error: me } = await admin.from("messages").insert({ conversation_id: convo.id, direction: "outbound", content: m.text, message_type: "template", source: m.source, school_email_id: logId, metadata: m.meta ?? null, created_at: m.at });
       if (me) throw new Error(`seed sent message: ${me.message}`);
     }
+  }
+  if (seed.schoolCheck) {
+    let { data: convo } = await admin.from("conversations").select("id, context").eq("phone_number", f.phone).maybeSingle();
+    if (!convo) ({ data: convo } = await admin.from("conversations").insert({ phone_number: f.phone, current_step: "active" }).select("id, context").single());
+    const { data: school } = await admin.from("schools").select("id, name, address, town, postcode, urn").eq("id", TEST_SCHOOL_ID).single();
+    const detail = `is ${seed.schoolCheck.child}'s school right? We have ${school!.name}`;
+    await admin.from("messages").insert({ conversation_id: convo!.id, direction: "outbound", message_type: "template", source: "account_check", created_at: seed.schoolCheck.at,
+      content: `Hi, it's Monty 👋 We need to check something on your account: ${detail}. Just reply to this message and we'll sort it for you.` });
+    const { error: pe } = await admin.from("conversations").update({ context: { ...((convo as any).context || {}), pending_action: schoolCheckPending(id(seed.schoolCheck.child), school as any, detail, new Date(seed.schoolCheck.at)) } }).eq("id", convo!.id);
+    if (pe) throw new Error(`seed school check: ${pe.message}`);
   }
 }
 
@@ -1612,6 +1650,20 @@ HANDLER_CASES.push(
         r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`, r4.schoolChanges !== 1 && `school_changed logged ${r4.schoolChanges} times`,
         !/done/i.test(done) || !/mila/i.test(done) ? `no confirmation naming Mila: "${done}"` : false, r4.pending !== null && "pending not cleared");
     } },
+  { name: "Account check 'is Mila's school right?' → 'yes that's right' → keeps the school and says thanks", family: "C", now: MON,
+    seed: { schoolCheck: { child: "Mila", at: "2026-10-05T09:00:00Z" } }, steps: [{ message: "yes that's right" }],
+    check: ([r], [a]) => firstFail(!schoolUnchanged(r) && "school changed", !/thank/i.test(a) && `no thanks: "${a}"`, !/Mila/.test(a) && `doesn't name Mila: "${a}"`,
+      a.includes("?") && `asked a question: "${a}"`, r.pending !== null && "pending not cleared", total(r) > 0 && "something was saved") },
+  { name: "Account check → 'No, she's at St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it", family: "C", now: MON,
+    seed: { schoolCheck: { child: "Mila", at: "2026-10-05T09:00:00Z" } },
+    steps: [{ message: "No, she's at St Joseph's in Stockport" }, { message: "1" }, { message: "yes" }],
+    check: ([r1, r2, r3], [offer, confirm, done]) => {
+      const opts = (r1.pending as any)?.school?.options ?? [];
+      return firstFail(!opts.length && `no options offered: "${offer}"`, !/SK1 1EF/.test(offer) || !/Stockport/.test(offer) ? `options lack town/postcode: "${offer}"` : false,
+        !schoolUnchanged(r1) && "changed before picking", !schoolUnchanged(r2) && "changed before confirming", !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`,
+        r3.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r3.schools["Mila"]}`, r3.schoolChanges !== 1 && `school_changed logged ${r3.schoolChanges} times`,
+        !/done/i.test(done) || !/mila/i.test(done) ? `no confirmation naming Mila: "${done}"` : false, r3.pending !== null && "pending not cleared");
+    } },
   { name: "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged", family: "C", now: MON,
     steps: [{ message: WRONG_SCHOOL_MSG }, { message: "What's on tomorrow?" }],
     check: ([, r2], [, a]) => firstFail(r2.pending !== null && (r2.pending as any)?.kind === "school" && "school question still pending",
@@ -1735,6 +1787,8 @@ const QUICK_NAMES = [
   "'I'm not with that school' → asks which school with the dashboard link, never 'wrong number', nothing changed",
   "Wrong school → 'St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it (logged)",
   "Wrong-school question + unrelated 'What's on tomorrow?' → question dropped, school unchanged",
+  "Account check 'is Mila's school right?' → 'yes that's right' → keeps the school and says thanks",
+  "Account check → 'No, she's at St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it",
   ...ASK_CASES.map((c) => c.name),
   ...SENT_CASES.map((c) => c.name),
 ];
