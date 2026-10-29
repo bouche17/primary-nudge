@@ -120,56 +120,36 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
   return parsed;
 }
 
-const sanitise = (text: string) => text
-  .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ")
-  .replace(/\s+/g, " ")
-  .trim()
-  .slice(0, 1024);
+const sanitise = templateVar;
 
-async function sendWhatsApp(to: string, text: string, logId: string | null): Promise<boolean> {
-  if (await blockIfTestPhone(to, "handle-school-email")) return false;
-  const sanitisedText = sanitise(text);
-
-  const contentVariables = JSON.stringify({ "1": sanitisedText });
-
-  const params = new URLSearchParams();
-  params.append("To", `whatsapp:${to}`);
-  params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
-  params.append("ContentSid", TWILIO_SCHOOL_NOTIFICATION_SID);
-  params.append("ContentVariables", contentVariables);
-  params.append(
-    "StatusCallback",
-    `${Deno.env.get("SUPABASE_URL")}/functions/v1/twilio-status-callback?source=handle-school-email`
-  );
-
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`),
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: params.toString(),
-  });
-
-  const responseBody = await res.text();
-  console.log("Twilio status:", res.status, responseBody);
-  if (!res.ok) {
-    try {
-      await supabase.from("message_send_failures").insert({
-        function_name: "handle-school-email",
-        phone_number: to,
-        period: null,
-        status_code: res.status,
-        error_body: responseBody,
-        context: `Template SID: ${TWILIO_SCHOOL_NOTIFICATION_SID}`,
-      });
-    } catch (logError) {
-      console.error("Failed to log message send failure:", logError);
-    }
-  } else {
-    await recordOutbound({ phone: to, source: "school_email", contentSid: TWILIO_SCHOOL_NOTIFICATION_SID, variables: { "1": sanitisedText }, schoolEmailId: logId });
+async function logSendFailure(to: string, sid: string, r: TemplateSend) {
+  try {
+    await supabase.from("message_send_failures").insert({
+      function_name: "handle-school-email", phone_number: to, period: null, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Template SID: ${sid}`,
+    });
+  } catch (logError) {
+    console.error("Failed to log message send failure:", logError);
   }
-  return res.ok;
+}
+
+/** Sends with monty_school_notification_v3 ({{1}} school name, {{2}} message); v2 only if v3 errors (logged). */
+async function sendWhatsApp(to: string, text: string, schoolName: string, logId: string | null): Promise<boolean> {
+  if (await blockIfTestPhone(to, "handle-school-email")) return false;
+  const v3 = schoolEmailV3Vars(schoolName, text);
+  const r3 = await sendTemplate(to, SCHOOL_NOTIFICATION_V3_SID, v3, "handle-school-email");
+  console.log("Twilio status (v3):", r3.status, r3.body.slice(0, 300));
+  if (r3.ok) {
+    await recordOutbound({ phone: to, source: "school_email", contentSid: SCHOOL_NOTIFICATION_V3_SID, variables: v3, schoolEmailId: logId, meta: { twilio_sid: r3.sid } });
+    return true;
+  }
+  await logSendFailure(to, SCHOOL_NOTIFICATION_V3_SID, r3);
+  console.error(`[handle-school-email] v3 failed (${r3.status}), falling back to v2`);
+  const v2 = { "1": sanitise(text) };
+  const r2 = await sendTemplate(to, SCHOOL_NOTIFICATION_V2_SID, v2, "handle-school-email");
+  console.log("Twilio status (v2 fallback):", r2.status, r2.body.slice(0, 300));
+  if (!r2.ok) { await logSendFailure(to, SCHOOL_NOTIFICATION_V2_SID, r2); return false; }
+  await recordOutbound({ phone: to, source: "school_email", contentSid: SCHOOL_NOTIFICATION_V2_SID, variables: v2, schoolEmailId: logId, meta: { twilio_sid: r2.sid, v3_fallback: true } });
+  return true;
 }
 
 const jsonRes = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
