@@ -98,7 +98,7 @@ export function isWrongSchoolMessage(message: string): boolean {
 
 const SEARCH_FILLER = new Set(["i", "im", "my", "our", "we", "she", "he", "they", "her", "his", "their", "goes", "go", "going", "attends", "attend",
   "to", "at", "in", "is", "its", "it", "the", "called", "one", "ones", "oh", "sorry", "actually", "near", "by", "please", "thanks", "thank", "you",
-  "hi", "hello", "and", "now", "currently", "school's", "s", "a", "an", "that", "this", "which", "ok", "okay", "yes", "no", "not", "with"]);
+  "hi", "hello", "and", "now", "currently", "school's", "s", "a", "an", "that", "this", "which", "ok", "okay", "yes", "no", "not", "with", "shes", "hes", "theyre", "actually", "nope", "nah"]);
 /** Search words for the school table, from a parent's free-text answer (child names and filler removed). */
 export function schoolSearchQuery(message: string, childNames: string[] = []): string {
   const names = new Set(childNames.map((n) => n.toLowerCase()));
@@ -106,7 +106,7 @@ export function schoolSearchQuery(message: string, childNames: string[] = []): s
   const pcs: string[] = [...(cleaned.match(/\b[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}\b/g) ?? [])];
   let rest = cleaned;
   for (const p of pcs) rest = rest.replace(p, " ");
-  const words = rest.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !SEARCH_FILLER.has(w) && !names.has(w));
+  const words = rest.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !SEARCH_FILLER.has(w) && !names.has(w) && !names.has(w.replace(/s$/, "")));
   return [...pcs.map((p) => p.replace(/\s+/g, "").toUpperCase()), ...words].join(" ").trim();
 }
 /** The message reads like a school answer (school words or a postcode), even if nothing was found. */
