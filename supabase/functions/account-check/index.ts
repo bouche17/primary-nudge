@@ -38,6 +38,41 @@ Deno.serve(async (req) => {
       return json({ general_account_v1: general, school_notification_v3: v3 });
     }
 
+    if (body.action === "create_contents") {
+      // One-off: create the in-session button/list records and the three button templates, submit the templates (Utility).
+      const create = async (def: Record<string, unknown>) => {
+        const r = await fetch("https://content.twilio.com/v1/Content", { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ language: "en", ...def }) });
+        const j = await r.json().catch(() => ({}));
+        return r.ok ? { sid: j.sid as string } : { error: `${r.status}: ${JSON.stringify(j).slice(0, 300)}` };
+      };
+      const submit = async (sid: string, name: string) => {
+        const r = await fetch(`https://content.twilio.com/v1/Content/${sid}/ApprovalRequests/whatsapp`, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ name, category: "UTILITY" }) });
+        const j = await r.json().catch(() => ({}));
+        return r.ok ? String(j.status ?? "submitted") : `error ${r.status}: ${JSON.stringify(j).slice(0, 300)}`;
+      };
+      const only: string[] | null = Array.isArray(body.only) ? body.only : null;
+      const session: Record<string, unknown> = {};
+      for (const [k, d] of Object.entries(SESSION_DEFS)) if (!only || only.includes(k)) session[k] = await create(d);
+      const sundayRes = await fetch(`https://content.twilio.com/v1/Content/${SUNDAY_CHECKIN_SID}`, { headers: auth });
+      const sunday = await sundayRes.json().catch(() => ({}));
+      const sundayBody = Object.values(sunday?.types ?? {}).map((t: any) => t?.body).find((b) => typeof b === "string");
+      const templates: Record<string, unknown> = {};
+      const defs: [string, string, Record<string, unknown>][] = [
+        ["school_event_v4", "monty_school_event_v4", { variables: { "1": "Dean Valley Community Primary School", "2": "⚽ The Y3/4 football tournament is at Macc FC on Wednesday 21st October after school." },
+          types: { "twilio/quick-reply": { body: TEMPLATE_BODIES.school_event_v4, actions: TEMPLATE_BUTTONS.school_event_v4 } } }],
+        ["account_v2", "monty_general_account_v2", { variables: { "1": "is Hallie's school right? We have St Joseph's Catholic Primary, Sale" },
+          types: { "twilio/quick-reply": { body: TEMPLATE_BODIES.account_v2, actions: TEMPLATE_BUTTONS.account_v2 } } }],
+      ];
+      if (sundayBody) defs.push(["sunday_v2", "monty_sunday_checkin_v2", { variables: sunday.variables ?? {}, types: { "twilio/quick-reply": { body: sundayBody, actions: TEMPLATE_BUTTONS.sunday_v2 } } }]);
+      else templates.sunday_v2 = { error: `couldn't read the current Sunday template (${sundayRes.status})` };
+      for (const [k, name, def] of defs) {
+        if (only && !only.includes(k)) continue;
+        const c = await create({ friendly_name: name, ...def });
+        templates[k] = "sid" in c ? { sid: c.sid, approval: await submit(c.sid as string, name) } : c;
+      }
+      return json({ session, templates, sunday_body: sundayBody ?? null });
+    }
+
     if (body.action === "delivery") {
       const sids: string[] = (Array.isArray(body.sids) ? body.sids : []).filter((s: unknown) => typeof s === "string" && /^(SM|MM)[0-9a-f]{32}$/i.test(s));
       const out = [];
