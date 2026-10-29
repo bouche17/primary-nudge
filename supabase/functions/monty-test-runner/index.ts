@@ -1019,7 +1019,7 @@ async function runOutboundTests(): Promise<Result[]> {
     push("School email uses template v3: {{1}} = school name, {{2}} = message; the stored text is the rendered v3 wording with both",
       firstFail(a[0]?.metadata?.template_sid !== "HXeb0f72555240d41d29ffb46285f5402b" && `template ${a[0]?.metadata?.template_sid}`, vars["1"] !== tSchool?.name && `{{1}} = "${vars["1"]}"`,
         !/^Hi! 👋 News from /.test(a[0]?.content ?? "") && "not the v3 wording", !(a[0]?.content ?? "").includes(String(tSchool?.name)) && "no school name in the text",
-        !(a[0]?.content ?? "").includes(vars["2"] ?? "@@") && "message not in the text", /Reply "save it"/.test(a[0]?.content ?? "") ? false : "missing the 'save it' line"),
+        !(a[0]?.content ?? "").includes(vars["2"] ?? "@@") && "message not in the text", /Reply [“"]save it[”"]/.test(a[0]?.content ?? "") ? false : "missing the 'save it' line"),
       a[0]?.content ?? null, vars);
     const v1 = vars["2"] ?? "";
     push("Opt-in email starts with the conditional line naming the child: \"If Harry's in the Y3/4 girls' football team: …\"",
