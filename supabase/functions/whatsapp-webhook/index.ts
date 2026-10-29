@@ -2489,7 +2489,7 @@ async function tryPickDelete(phone: string, message: string, context: MontyConte
   const st = askState(context);
   matches.forEach((r: any, i: number) => {
     const child = context.children.find((c) => c.id === r.child_id)!;
-    st.refs.set(`rd${i + 1}`, { table: "child_reminders", id: r.id, date: nextDateFor(r.day_of_week), childId: child.id, child: child.first_name, title: r.title, kind: "reminder" });
+    st.refs.set(`rd${i + 1}`, { table: "child_reminders", id: r.id, date: nextDateFor(r.day_of_week), childId: child.id, child: child.first_name, title: r.title, kind: "weekly" });
   });
   await logDedupDecision({ phone, childName: named[0]?.first_name ?? null, tool: "delete_item", newItem: message.slice(0, 300), decision: "delete_pick_asked", match: { table: "child_reminders", id: matches.map((m: any) => m.id).join(","), text: matches.map((m: any) => `${m.title} ${m.day_of_week}`).join("; ") } });
   return await maybeAskPick(phone, message, context);
