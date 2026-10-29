@@ -2473,6 +2473,28 @@ function moveLabel(o: { child: string; title: string }, to: string, childNames: 
   return `${tidyItem(o.title, o.child)} has moved to every ${to}`;
 }
 
+/** "Delete the PE kit reminder" with several matching weekly reminders and no date: ask which (buttons) in code,
+ *  before the AI — the model otherwise asked in plain words. One or no match → the AI's usual lookup flow. */
+async function tryPickDelete(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!context.whatsOn || !DELETE_INTENT.test(message) || message.trim().split(/\s+/).length > 14) return null;
+  if (messageDay(message) || /\b(today|tomorrow|tonight|\d{1,2}(st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{1,2}\/\d{1,2}|this week|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(message)) return null;
+  const names = context.children.map((c) => c.first_name);
+  const named = context.children.filter((c) => new RegExp(`\\b${c.first_name}\\b`, "i").test(message));
+  const kids = named.length ? named : context.children;
+  if (!kids.length) return null;
+  const want = itemTokens(message, names);
+  const { data: rems } = await supabase.from("child_reminders").select("id, child_id, title, day_of_week").in("child_id", kids.map((k) => k.id)).eq("active", true);
+  const matches = (rems ?? []).filter((r: any) => hasMeaningfulShared([...itemTokens(r.title, names)].filter((w) => want.has(w))));
+  if (matches.length < 2 || matches.length > 4) return null;
+  const st = askState(context);
+  matches.forEach((r: any, i: number) => {
+    const child = context.children.find((c) => c.id === r.child_id)!;
+    st.refs.set(`rd${i + 1}`, { table: "child_reminders", id: r.id, date: nextDateFor(r.day_of_week), childId: child.id, child: child.first_name, title: r.title, kind: "reminder" });
+  });
+  await logDedupDecision({ phone, childName: named[0]?.first_name ?? null, tool: "delete_item", newItem: message.slice(0, 300), decision: "delete_pick_asked", match: { table: "child_reminders", id: matches.map((m: any) => m.id).join(","), text: matches.map((m: any) => `${m.title} ${m.day_of_week}`).join("; ") } });
+  return await maybeAskPick(phone, message, context);
+}
+
 async function tryMoveReminder(phone: string, message: string, context: MontyContext): Promise<string | null> {
   if (!MOVE_WORDS.test(message) || /\b(lunch|lunches|dinner|dinners)\b/i.test(message)) return null;
   if (/\b(this week|just this|only this|this time|one-?off|next week only|for one week)\b/i.test(message)) return null; // a one-off change, not a permanent move
@@ -2998,6 +3020,9 @@ async function handleTextMessageInner(from: string, incomingMessage: string, con
   // 4) "X has moved to Wednesday" → move the existing weekly reminder in code
   const moved = await tryMoveReminder(from, incomingMessage, context);
   if (moved) return nameNotPronoun(moved, context.children.map((c) => c.first_name));
+  // 5) "Delete the PE kit reminder" with several matches → "which one?" with buttons, in code
+  const picked = await tryPickDelete(from, incomingMessage, context);
+  if (picked) return nameNotPronoun(picked, context.children.map((c) => c.first_name));
 
   let processedMessage = incomingMessage;
   if (context.children.length > 0) {
