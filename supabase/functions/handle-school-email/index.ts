@@ -4,15 +4,12 @@ import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "
 import { buildSchoolMessage, buildOldSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { recordOutbound } from "../_shared/outbound.ts";
+import { SCHOOL_NOTIFICATION_V2_SID, SCHOOL_NOTIFICATION_V3_SID, schoolEmailV3Vars, sendTemplate, templateVar, type TemplateSend } from "../_shared/twilioTemplates.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
-const TWILIO_ACCOUNT_SID = Deno.env.get("TWILIO_ACCOUNT_SID")!;
-const TWILIO_AUTH_TOKEN = Deno.env.get("TWILIO_AUTH_TOKEN")!;
-const TWILIO_WHATSAPP_NUMBER = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;
-const TWILIO_SCHOOL_NOTIFICATION_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX63040a55daeb8ef0673b8a1a156ad9a9";
 
 const TEST_PHONE_NUMBER = Deno.env.get("TEST_PHONE_NUMBER") || "+447801442732";
 // These emails come from Dean Valley's Arbor account, so only Dean Valley families receive them.
@@ -161,6 +158,8 @@ async function processEmail(o: { subject: string; extracted: Extracted; schoolId
   const yearGroups = Array.isArray(extracted.yearGroups) && extracted.yearGroups.length ? extracted.yearGroups : ["all"];
   const optIn = isOptInEmail(o.subject, extracted.what, extracted.eventTitle);
   const { data: children } = await supabase.from("children").select("parent_id, year_group, first_name").eq("school_id", o.schoolId);
+  const { data: school } = await supabase.from("schools").select("name").eq("id", o.schoolId).maybeSingle();
+  const schoolName = String(school?.name || "school");
 
   const isWholeSchool = yearGroups.some((y) => /^all$/i.test(y));
   const relevantChildren = (children ?? []).filter((c: any) => isWholeSchool || yearGroups.some((yg) => yg.toLowerCase() === (c.year_group || "").toLowerCase()));
@@ -228,13 +227,13 @@ async function processEmail(o: { subject: string; extracted: Extracted; schoolId
   for (const { phone, message, family } of sends) {
     let ok: boolean;
     if (o.stubPhones) {
-      ok = !!(await recordOutbound({ phone, source: "school_email", contentSid: TWILIO_SCHOOL_NOTIFICATION_SID, variables: { "1": sanitise(message) }, schoolEmailId: logId, meta: { stub: true } }));
-    } else ok = await sendWhatsApp(phone, message, logId);
+      ok = !!(await recordOutbound({ phone, source: "school_email", contentSid: SCHOOL_NOTIFICATION_V3_SID, variables: schoolEmailV3Vars(schoolName, message), schoolEmailId: logId, meta: { stub: true } }));
+    } else ok = await sendWhatsApp(phone, message, schoolName, logId);
     if (ok) { sentCount++; sentFamilies.add(family); }
   }
   if (logId) await supabase.from("school_email_log").update({ families_count: sentFamilies.size, phones_count: sentCount }).eq("id", logId);
   console.log(`Sent to ${sentCount} parents for year groups: ${yearGroups.join(", ")} (opt-in: ${optIn})`);
-  return { success: true, sent: sentCount, families: sentFamilies.size, log_id: logId, opt_in: optIn, messages: o.stubPhones ? sends.map((x) => ({ phone: x.phone, message: x.message })) : undefined };
+  return { success: true, sent: sentCount, families: sentFamilies.size, log_id: logId, opt_in: optIn, school_name: schoolName, messages: o.stubPhones ? sends.map((x) => ({ phone: x.phone, message: x.message, variables: schoolEmailV3Vars(schoolName, x.message) })) : undefined };
 }
 
 Deno.serve(async (req: Request) => {
