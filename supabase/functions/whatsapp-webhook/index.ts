@@ -1472,10 +1472,6 @@ function frequencyQuestionPart(tool: string, args: any, sourceText: string, chil
   if (tool === "save_parent_note" && !BRING_WORDS.test(clause)) return null;
   return `just ${dayWordFor(date!)} or every ${day}`;
 }
-function combinedQuestion(names: string[], freqPart: string): string {
-  const list = names.length <= 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
-  return `Is that for ${list}, and ${freqPart}? 😊`;
-}
 const ONCE_REPLY = /\b(just|only|once|one-?off|this one|that day|this week|tomorrow|today)\b/i;
 const WEEKLY_REPLY = /\b(every|weekly|each|always|regular(ly)?)\b|\bevery week\b/i;
 function freqFromReply(message: string): "once" | "weekly" | null {
@@ -1860,7 +1856,7 @@ async function generateReply(
           const proposed = child && childNames.includes(child) ? [child] : null;
           const args = { ...input }; if (!proposed) delete args.child_name;
           const fq = proposed ? null : frequencyQuestionPart(block.name, args, incomingMessage, childNames);
-          const q = fq ? combinedQuestion(childNames, fq) : whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args));
+          const q = whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args)); // child first; "how often" is asked next if still unclear
           addPending(proposed ? "confirm" : "which_child", [{ tool: block.name, args }], proposed, q);
           if (fq) pending!.ask_frequency = true;
           result = { ok: false, action: "pending", summary: "",
