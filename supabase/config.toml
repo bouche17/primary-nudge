@@ -38,3 +38,5 @@ verify_jwt = false
 verify_jwt = false
 [functions.school-towns]
 verify_jwt = false
+[functions.account-check]
+verify_jwt = false
