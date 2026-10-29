@@ -4,12 +4,13 @@
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 export type OutboundSource =
-  | "school_email" | "morning_reminder" | "evening_reminder" | "sunday_checkin" | "family_update" | "alert" | "welcome" | "newsletter";
+  | "school_email" | "morning_reminder" | "evening_reminder" | "sunday_checkin" | "family_update" | "alert" | "welcome" | "newsletter" | "account_check";
 
 /** Parent-facing label used in chat history: "[Monty sent — school email, Tue 20 Oct 14:42]". */
 export const SOURCE_LABEL: Record<string, string> = {
   school_email: "school email", morning_reminder: "morning reminder", evening_reminder: "evening reminder",
   sunday_checkin: "Sunday check-in", family_update: "family update", alert: "system alert", welcome: "welcome message", newsletter: "newsletter",
+  account_check: "account check",
 };
 
 let client: SupabaseClient | null = null;
