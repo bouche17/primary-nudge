@@ -2411,7 +2411,7 @@ async function maybeAskPick(phone: string, message: string, context: MontyContex
   const opts = [...seen.values()];
   if (opts.length < 2 || opts.length > 4) return null;
   const item = st.lookups[st.lookups.length - 1]?.item;
-  const options = opts.map((r) => ({ ...r, label: `${r.child ?? "Family"}'s · ${r.table === "child_reminders" ? dayShort(weekdayOf(r.date)) : shortDayDate(r.date)}` }));
+  const options = opts.map((r) => ({ ...r, label: `${r.child ?? "Family"}'s · ${r.table === "child_reminders" ? weekdayOf(r.date).slice(0, 3) : shortDayDate(r.date)}` }));
   const question = `Which ${item ? `${item} reminder` : "one"} do you mean? You've got ${opts.length}:\n${opts.map((r) => `• ${pickLine(r)}`).join("\n")}`;
   await setPendingAction(phone, { kind: "pick", pick: { action: "delete", options }, items: [], proposed: null, question, created_at: nowD().toISOString(), source_text: message });
   return question;
@@ -2447,7 +2447,7 @@ async function resolvePickPending(phone: string, p: PendingAction, message: stri
 }
 async function resolveScopePending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
   const all = SCOPE_ALL.test(message), once = !all && SCOPE_ONCE.test(message);
-  if (NEITHER.test(message)) { await setPendingAction(phone, null); return keptLine({ child: p.scope!.ref.child ?? "", title: p.scope!.ref.title } as any); }
+  if (NEITHER.test(message)) { await setPendingAction(phone, null); return keptLine({ child: p.scope!.ref.child ?? "", title: p.scope!.ref.title, op: { op: "skip_date" } } as any); }
   if (!all && !once) { await setPendingAction(phone, null, { dropped: true }); return null; }
   await setPendingAction(phone, null);
   return await askDelete(phone, p.scope!.ref, all ? "all_future" : "this_date_only", context);
