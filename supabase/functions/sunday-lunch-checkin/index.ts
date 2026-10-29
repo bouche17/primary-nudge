@@ -18,6 +18,7 @@
 
 import { auditTestEntry, blockIfTestPhone, isTestPhone, validTestSecret } from "../_shared/testGuard.ts";
 import { recordOutbound } from "../_shared/outbound.ts";
+import { approvedSid, SUNDAY_CHECKIN_V2_SID } from "../_shared/twilioTemplates.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -87,11 +88,13 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
   }
 
   const contentVariables = JSON.stringify(checkinVariables(names, weekDates, summary));
+  // "All looks right / Change lunches" buttons (v2) once WhatsApp has approved it; otherwise the current template.
+  const sid = await approvedSid(SUNDAY_CHECKIN_V2_SID, TWILIO_SUNDAY_TEMPLATE_SID);
 
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);
   params.append("From", `whatsapp:${TWILIO_WHATSAPP_NUMBER}`);
-  params.append("ContentSid", TWILIO_SUNDAY_TEMPLATE_SID);
+  params.append("ContentSid", sid);
   params.append("ContentVariables", contentVariables);
   params.append(
     "StatusCallback",
@@ -118,13 +121,15 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
         period: null,
         status_code: res.status,
         error_body: responseBody,
-        context: `Template SID: ${TWILIO_SUNDAY_TEMPLATE_SID}; summary: ${summary.slice(0, 80)}`,
+        context: `Template SID: ${sid}; summary: ${summary.slice(0, 80)}`,
       });
     } catch (logError) {
       console.error("Failed to log message send failure:", logError);
     }
   } else {
-    await recordOutbound({ phone: to, source: "sunday_checkin", contentSid: TWILIO_SUNDAY_TEMPLATE_SID, variables: checkinVariables(names, weekDates, summary), meta: { week_start: weekStart } });
+    let twilioSid: string | null = null;
+    try { twilioSid = JSON.parse(responseBody)?.sid ?? null; } catch { /* not JSON */ }
+    await recordOutbound({ phone: to, source: "sunday_checkin", contentSid: sid, variables: checkinVariables(names, weekDates, summary), meta: { week_start: weekStart, twilio_sid: twilioSid } });
   }
   return { ok: res.ok, status_code: res.status, body: responseBody };
 }
