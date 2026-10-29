@@ -13,7 +13,7 @@ import { whatsOnDays } from "../_shared/reminderFormat.ts";
 import { addDays as addDaysIso, confirmQuestion, dayShort, doneLine, EDIT_CLAIM, EDIT_INTENT, failLine, keptLine, lookupReply, matchesQuery, NOT_FOUND_REPLY, weekdayOf as weekdayOfIso, type EditOp, type EditPlan } from "../_shared/askMonty.ts";
 import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SIDS, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SIDS, tapPayload, withLabels, type Interactive } from "../_shared/interactive.ts";
 import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 
@@ -2835,12 +2835,64 @@ async function linkedOutbound(conversationId: string, source: string, repliedTo:
   return (data?.[0] as SentMsg) ?? null;
 }
 
+/** Old fixed-ID question buttons (sent before question IDs): the kinds of question they can answer. */
+function staticTapKinds(payload: string): string[] | null {
+  const id = (payload || "").trim().toLowerCase();
+  if (id === "dup_different" || id === "dup_same") return ["duplicate"];
+  if (id === "confirm_yes" || id === "confirm_no") return ["confirm", "edit", "school", "school_email"];
+  if (id === "child_all" || /^child_\d$/.test(id)) return ["which_child", "school_email"];
+  if (/^school_\d$/.test(id)) return ["school"];
+  return null;
+}
+/** Finds the question a tap answers: by the ID in its payload, else by the message it was attached to
+ *  (OriginalRepliedMessageSid → metadata.question_id), else (old buttons) the newest open question of that kind. */
+async function findTappedQuestion(conversationId: string, tap: ButtonTap, ctx: any): Promise<{ qid: string | null; entry: QuestionEntry | null; idx: number | null }> {
+  const qs: Record<string, QuestionEntry> = ctx?.questions || {};
+  const parsed = parseTapPayload(tap.payload);
+  let qid = parsed?.qid ?? null;
+  if (!qid && tap.repliedTo) {
+    const { data } = await supabase.from("messages").select("metadata").eq("conversation_id", conversationId).eq("direction", "outbound").eq("metadata->>twilio_sid", tap.repliedTo).limit(1);
+    qid = (data?.[0] as any)?.metadata?.question_id ?? null;
+  }
+  if (qid) return { qid, entry: qs[qid] ?? null, idx: parsed?.idx ?? null };
+  const kinds = staticTapKinds(tap.payload);
+  if (!kinds) return { qid: null, entry: null, idx: null };
+  const cur: PendingAction | null = ctx?.pending_action ?? null;
+  if (cur && kinds.includes(cur.kind)) return { qid: cur.id ?? null, entry: (cur.id && qs[cur.id]) || { p: cur, status: "open", at: cur.created_at }, idx: null };
+  const open = Object.entries(qs).filter(([, e]) => e.status === "open" && kinds.includes(e.p.kind)).sort((x, y) => y[1].at.localeCompare(x[1].at))[0];
+  return open ? { qid: open[0], entry: open[1], idx: null } : { qid: null, entry: null, idx: null };
+}
+
+/** A question button: answered by its question's ID, even after other messages. Never "lost track": an expired or
+ *  replaced question is asked again in full (fresh buttons); an answered one confirms what was done. */
+async function answerQuestionTap(from: string, tap: ButtonTap, staticText: string, context: MontyContext, conversationId: string): Promise<string> {
+  const names = context.children.map((c) => c.first_name);
+  const row = await getConversationRow(from);
+  const { qid, entry, idx } = await findTappedQuestion(conversationId, tap, row?.context);
+  await logDedupDecision({ phone: from, childName: null, tool: "button", newItem: tap.payload.slice(0, 100), decision: entry ? `tap_question_${entry.status}` : "tap_question_unknown", match: { table: "conversations.questions", id: qid ?? "no match", text: tap.text.slice(0, 300) } });
+  if (!entry) {
+    const cur: PendingAction | null = row?.context?.pending_action ?? null;
+    if (cur && !pendingExpired(cur)) { await setPendingAction(from, { ...cur, id: undefined, created_at: nowD().toISOString() }); return cur.question; }
+    return `That button's no longer live, so I haven't changed anything. What would you like me to do for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
+  }
+  if (entry.status === "answered") return entry.outcome ? `Already done ✅ ${entry.outcome.replace(/^(Already done ✅\s*)+/, "")}` : "That one's already sorted ✅";
+  if (entry.status === "closed" || pendingExpired(entry.p)) {
+    await setPendingAction(from, { ...entry.p, id: undefined, created_at: nowD().toISOString() });
+    return nameNotPronoun(entry.asked || entry.p.question, names);
+  }
+  const answer = idx !== null ? entry.answers?.[idx] ?? tap.text : staticText;
+  await setPendingAction(from, entry.p); // the tapped question becomes the current one again (same ID)
+  (context as any).__answering = entry.p.id ?? null;
+  return await handleTextMessage(from, answer, context, conversationId);
+}
+
 async function handleButton(from: string, tap: ButtonTap, context: MontyContext, conversationId: string): Promise<string> {
   const a = buttonAction(tap.payload, tap.text);
+  if (parseTapPayload(tap.payload) || a.kind === "pending") return await answerQuestionTap(from, tap, a.text, context, conversationId);
   const names = context.children.map((c) => c.first_name);
   const row = await getConversationRow(from);
   let p: PendingAction | null = row?.context?.pending_action ?? null;
-  if (p && pendingExpired(p)) { await setPendingAction(from, null); p = null; }
+  if (p && pendingExpired(p)) { await setPendingAction(from, null, { dropped: true }); p = null; }
   await logDedupDecision({ phone: from, childName: null, tool: "button", newItem: tap.payload.slice(0, 100), decision: `button_${a.kind}`, match: { table: "messages", id: tap.repliedTo ?? "no match", text: tap.text.slice(0, 300) } });
   switch (a.kind) {
     case "save_it": case "not_for_us": {
@@ -2859,36 +2911,55 @@ async function handleButton(from: string, tap: ButtonTap, context: MontyContext,
     case "account_ok": case "account_not_quite":
       if (p?.kind === "school") return await handleTextMessage(from, a.kind === "account_ok" ? "yes" : "no", context, conversationId);
       return a.kind === "account_ok" ? "Thanks for confirming ✅" : "No problem, what needs changing? Just reply here and we'll sort it 😊";
-    case "pending":
-      if (!p) return "Sorry, I've lost track of that one as it was a while ago. Could you tell me again what you'd like? 😊";
-      return await handleTextMessage(from, a.text, context, conversationId);
     default:
       return await handleTextMessage(from, a.text, context, conversationId);
   }
 }
 
-/** Runs one reply and works out the buttons for the question it asks (only when this turn stored a new question). */
-async function withButtons(from: string, context: MontyContext, run: () => Promise<string>): Promise<{ reply: string; inter: Interactive | null }> {
-  const before = JSON.stringify((await getConversationRow(from))?.context?.pending_action ?? null);
-  const reply = await run();
-  const after: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
-  const asked = !!after && JSON.stringify(after) !== before && /\?/.test(reply) && reply.length <= 1000;
-  const inter = asked ? interactiveFor(after, context.children.map((c) => c.first_name)) : null;
-  return { reply, inter: inter && SESSION_SIDS[inter.key] ? inter : null };
+/** The AI asked which child in plain words ("tell me whether it's for Jude or Harry"). */
+function plainChildQuestion(reply: string, names: string[]): boolean {
+  if (names.length < 2 || !/\?|\btell me\b|\blet me know\b/i.test(reply)) return false;
+  const alt = names.map(reEsc).join("|");
+  return new RegExp(`\\b(?:${alt})\\b(?:\\s*,\\s*(?:${alt})\\b)*\\s+or\\s+(?:${alt})\\b`, "i").test(reply);
 }
 
-/** Sends the reply with its buttons (in-session content), falling back to plain text if that fails. true = buttons shown. */
-async function sendReplyWithButtons(to: string, reply: string, inter: Interactive | null): Promise<boolean> {
-  if (inter) {
-    if (await blockIfTestPhone(to, "whatsapp-webhook")) return false;
-    const r = await sendTemplate(to, SESSION_SIDS[inter.key], { "1": reply, ...inter.vars }, "whatsapp-webhook");
-    if (r.ok) return true;
+/** Runs one reply and works out the buttons for the question it asks (only when this turn stored a new question).
+ *  Also records the asked wording + what each button means, and what an answered question did. */
+async function withButtons(from: string, context: MontyContext, run: () => Promise<string>, incoming = ""): Promise<{ reply: string; inter: Interactive | null; qid: string | null }> {
+  const before: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
+  const reply = await run();
+  const names = context.children.map((c) => c.first_name);
+  let after: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
+  let asked = !!after && JSON.stringify(after) !== JSON.stringify(before) && /\?/.test(reply) && reply.length <= 1000;
+  if (!asked && !after && incoming && reply.length <= 1000 && plainChildQuestion(reply, names)) {
+    // Never a plain-text child question: store it (with buttons, incl. Both); the answer re-runs the request for that child.
+    await setPendingAction(from, { kind: "which_child", retext: true, items: [], proposed: null, question: reply, created_at: nowD().toISOString(), source_text: incoming });
+    after = (await getConversationRow(from))?.context?.pending_action ?? null;
+    asked = !!after;
+  }
+  const i0 = asked ? interactiveFor(after, names) : null;
+  const inter = i0 && SESSION_SIDS[i0.key] && after?.id ? i0 : null;
+  const answeredId = ((context as any).__answering as string | undefined) ?? before?.id ?? null;
+  await noteQuestion(from, asked && after?.id ? { id: after.id, text: reply, answers: inter?.answers ?? [] } : null, answeredId, reply);
+  return { reply, inter, qid: asked && after?.id ? after.id : null };
+}
+
+/** Sends the reply with its buttons (in-session content; each payload carries the question ID), falling back to
+ *  plain text if that fails. */
+async function sendReplyWithButtons(to: string, reply: string, inter: Interactive | null, qid: string | null): Promise<{ shown: boolean; sid: string | null }> {
+  if (inter && qid) {
+    if (await blockIfTestPhone(to, "whatsapp-webhook")) return { shown: false, sid: null };
+    const r = await sendTemplate(to, SESSION_SIDS[inter.key], contentVars(inter, qid, reply), "whatsapp-webhook");
+    if (r.ok) return { shown: true, sid: r.sid };
     console.error(`[buttons] ${inter.key} send failed (${r.status}), sending plain text`);
     await supabase.from("message_send_failures").insert({ function_name: "whatsapp-webhook", phone_number: to, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Interactive ${inter.key} ${SESSION_SIDS[inter.key]}` });
   }
   await sendWhatsApp(to, reply);
-  return false;
+  return { shown: false, sid: null };
 }
+/** Outbound metadata for a question: its ID, the Twilio SID (for OriginalRepliedMessageSid) and the button payloads. */
+const questionMeta = (qid: string | null, inter: Interactive | null, sid: string | null) =>
+  qid ? { question_id: qid, ...(sid ? { twilio_sid: sid } : {}), ...(inter ? { buttons: inter.labels.map((l, i) => ({ label: l, payload: tapPayload(qid, i) })) } : {}) } : null;
 
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
@@ -3054,18 +3125,18 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     if (!context) return j({ error: "no test family for this phone" }, 400);
     const message = String(b.message || "");
     const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
-    await saveMessage(conversationId, "inbound", message);
     const tap: ButtonTap | null = b.button && typeof b.button.payload === "string"
       ? { payload: b.button.payload, text: String(b.button.text ?? message), repliedTo: typeof b.button.replied_to === "string" ? b.button.replied_to : null } : null;
+    await saveMessage(conversationId, "inbound", message, tapMeta(tap));
     const out = await withButtons(phone, context, async () => {
       let r = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
         : tap ? await handleButton(phone, tap, context, conversationId) : await handleTextMessage(phone, message, context, conversationId);
       if (typeof b.inject_reply === "string") r = `${r} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
       return await applyContactGuard(r, phone, message, context);
-    });
+    }, tap ? "" : message);
     const reply = out.reply;
-    await saveMessage(conversationId, "outbound", out.inter ? withLabels(reply, out.inter.labels) : reply);
-    return j({ reply, buttons: out.inter ? { ...out.inter, sid: SESSION_SIDS[out.inter.key] } : null, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
+    await saveMessage(conversationId, "outbound", out.inter ? withLabels(reply, out.inter.labels) : reply, { metadata: questionMeta(out.qid, out.inter, null) });
+    return j({ reply, buttons: out.inter ? { ...out.inter, sid: SESSION_SIDS[out.inter.key], question_id: out.qid, payloads: out.inter.labels.map((_l, i) => tapPayload(out.qid!, i)) } : null, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
 }
 
@@ -3111,15 +3182,20 @@ async function getRecentHistory(conversationId: string, limit = 10): Promise<Con
 async function saveMessage(
   conversationId: string,
   direction: "inbound" | "outbound",
-  content: string
+  content: string,
+  extra: { message_type?: string; metadata?: Record<string, unknown> | null } = {},
 ) {
   await supabase.from("messages").insert({
     conversation_id: conversationId,
     direction,
     content,
     created_at: nowD().toISOString(),
+    ...(extra.message_type ? { message_type: extra.message_type } : {}),
+    ...(extra.metadata ? { metadata: extra.metadata } : {}),
   });
 }
+/** Inbound metadata for a tap: the raw payload Twilio sent (ButtonPayload / ListId) and what it replied to. */
+const tapMeta = (tap: ButtonTap | null) => (tap ? { message_type: "button", metadata: { button_payload: tap.payload, button_text: tap.text, replied_to: tap.repliedTo } } : {});
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
@@ -3689,13 +3765,13 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Save inbound message
-    await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]");
-
     // Quick-reply button (ButtonPayload/ButtonText) or list-picker pick (ListId/ListTitle)
     const btnId = params.get("ButtonPayload") || params.get("ListId") || "";
     const tap: ButtonTap | null = btnId
       ? { payload: btnId, text: params.get("ButtonText") || params.get("ListTitle") || incomingMessage, repliedTo: params.get("OriginalRepliedMessageSid") } : null;
+
+    // Save inbound message (a tap keeps its payload in metadata)
+    await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]", tapMeta(tap));
 
     const out = await withButtons(from, context, async () => {
       let r: string;
@@ -3704,12 +3780,12 @@ Deno.serve(async (req: Request) => {
       else if (tap) r = await handleButton(from, tap, context, conversationId);
       else r = await handleTextMessage(from, incomingMessage, context, conversationId);
       return await applyContactGuard(r, from, incomingMessage, context);
-    });
+    }, tap ? "" : incomingMessage);
     const reply = out.reply;
 
     // Send (with buttons when the reply asks a stored question), then save what the parent actually saw
-    const shown = await sendReplyWithButtons(from, reply, out.inter);
-    await saveMessage(conversationId, "outbound", shown && out.inter ? withLabels(reply, out.inter.labels) : reply);
+    const sent = await sendReplyWithButtons(from, reply, out.inter, out.qid);
+    await saveMessage(conversationId, "outbound", sent.shown && out.inter ? withLabels(reply, out.inter.labels) : reply, { metadata: questionMeta(out.qid, sent.shown ? out.inter : null, sent.sid) });
 
     console.log(`Replied to ${from}: "${reply.slice(0, 80)}…"`);
 
