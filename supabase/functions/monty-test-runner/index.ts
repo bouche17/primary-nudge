@@ -1913,6 +1913,66 @@ const BUTTON_CASES: HandlerCase[] = [
 ];
 HANDLER_CASES.push(...BUTTON_CASES);
 
+// ── Taps answered by question ID (Matt's phone test, 29 Oct 21:25–21:35). FREE: decided in code, no AI. ──
+const THU_NIGHT = "2026-10-29T21:35:00Z";
+const FOOTBALL_NOTE = { child: "Jude", summary: "Football kit needed (after school)", date: "2026-11-05" };
+const MATT_REMINDERS = [{ child: "Jude", title: "PE kit", day: "Monday" }, { child: "Harry", title: "Outdoor PE kit", day: "Tuesday" }];
+const dupQuestion = (id: string, at: string) => ({
+  id, kind: "duplicate", items: [{ tool: "save_parent_note", args: { child_name: "Jude", summary: "Jude's PE kit", date: "2026-11-05" } }], proposed: null,
+  question: `Jude already has "Football kit needed (after school)" on Thursday 5th. Is the PE kit a different one I should save too?`, created_at: at, source_text: "Jude, just this Thursday",
+  dup: { child: "Jude", summary: "Jude's PE kit", date: "2026-11-05", existing: "Football kit needed (after school)", table: "parent_notes", tool: "save_parent_note",
+    args: { child_name: "Jude", summary: "Jude's PE kit", date: "2026-11-05" }, item: "PE kit" } });
+// The question is in the 7-day archive but no longer the current one (the parent sent another message since).
+const archived = (q: any, status = "open") => ({ pending_action: null, questions: { [q.id]: { p: q, status, at: q.created_at, asked: q.question, answers: ["different one, save it", "no, it's the same one"] } } });
+const qTap = (qid: string, i: number, text: string): Step => ({ message: text, button: { payload: `q:${qid}:${i}`, text } });
+const LOST = /lost track|a while ago/i;
+const FREE_TAP_CASES: HandlerCase[] = [
+  { name: "Free tap: 'Different, save it' 2 minutes later, after another message → saved by question ID; tapping again → 'Already done ✅'", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], reminders: MATT_REMINDERS, context: archived(dupQuestion("abc123def0", "2026-10-29T21:33:00Z")) },
+    steps: [qTap("abc123def0", 0, "Different, save it"), qTap("abc123def0", 0, "Different, save it")],
+    check: ([r1, r2], [a1, a2]) => firstFail(noteFor(r1, "Jude", "2026-11-05", /PE kit/).length !== 1 && `PE kit not saved for Jude on 5 Nov: ${JSON.stringify(r1.notes)}`,
+      !/PE kit/.test(a1) || !/✅/.test(a1) ? `confirmation: "${a1}"` : false, /pE/.test(a1 + a2) && "casing lost (pE)", noteFor(r2, "Jude", "2026-11-05", /PE kit/).length !== 1 && "second tap saved again",
+      !/^Already done ✅/.test(a2) || !/PE kit/.test(a2) ? `second tap: "${a2}"` : false, LOST.test(a1 + a2) && "said 'lost track'", r2.reminders.length !== 2 && `weekly reminders changed: ${JSON.stringify(r2.reminders)}`) },
+  { name: "Free tap: question older than 7 days → asked again in full with fresh buttons, nothing saved", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], context: archived(dupQuestion("abc123def1", "2026-10-21T21:33:00Z")) },
+    steps: [qTap("abc123def1", 0, "Different, save it")],
+    check: ([r], [a], o) => firstFail(r.notes.length !== 1 && `saved from an expired question: ${JSON.stringify(r.notes)}`, !/Football kit needed/.test(a) || !asks(a) ? `not re-asked in full: "${a}"` : false,
+      o[0]?.buttons?.labels?.[0] !== "Different, save it" && `no fresh buttons: ${JSON.stringify(o[0]?.buttons)}`, (o[0]?.buttons?.question_id ?? "abc123def1") === "abc123def1" && "buttons reuse the old question ID", LOST.test(a) && "said 'lost track'") },
+  { name: "Free tap: unknown question ID with nothing open → honest 'no longer live' line, nothing saved", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE] }, steps: [qTap("zzzz999999", 0, "Different, save it")],
+    check: ([r], [a]) => firstFail(r.notes.length !== 1 && "saved something", !/haven't changed anything/.test(a) && `reply: "${a}"`, LOST.test(a) && "said 'lost track'") },
+  { name: "Free tap: old-style 'dup_different' button with the question no longer current → still answered from the archive", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], context: archived(dupQuestion("abc123def2", "2026-10-29T21:33:00Z")) },
+    steps: [tap("dup_different", "Different, save it")],
+    check: ([r], [a]) => firstFail(noteFor(r, "Jude", "2026-11-05", /PE kit/).length !== 1 && `not saved: ${JSON.stringify(r.notes)}`, LOST.test(a) && "said 'lost track'") },
+];
+
+// ── Matt's replay (AI): child → just this one → saved; then delete only that one-off. Weekly PE kits untouched. ──
+const THU_EVE = "2026-10-29T21:25:00Z";
+BUTTON_CASES.push(
+  { name: "Replay: 'PE kit on Thursday' → child buttons → Jude → 'Just Thu 5 Nov' button → one note, 'PE kit' casing, weekly PE kits untouched", family: "A", now: THU_EVE,
+    seed: { reminders: MATT_REMINDERS, notes: [FOOTBALL_NOTE] }, chatSource: "new",
+    steps: [{ message: "PE kit on Thursday" }, { message: "Jude", tapQ: { from: 0, idx: 0 } }, { message: "Just this one", tapQ: { from: 1, idx: 0 } }],
+    check: ([r1, r2, r3], [q1, q2, a], o) => firstFail(total(r1) !== 3 && `saved before asking: ${JSON.stringify(r1.notes)}`,
+      JSON.stringify(o[0]?.buttons?.labels) !== '["Jude","Harry","Both"]' && `child buttons: ${JSON.stringify(o[0]?.buttons)}`, /every|just/i.test(q1) && `asked two things at once: "${q1}"`,
+      total(r2) !== 3 && "saved before one-off/weekly was answered", JSON.stringify(o[1]?.buttons?.labels) !== '["Just Thu 5 Nov","Every Thursday"]' && `frequency buttons: ${JSON.stringify(o[1]?.buttons)} "${q2}"`,
+      noteFor(r3, "Jude", "2026-11-05", /PE kit/).length !== 1 && `no one-off PE kit for Jude on 5 Nov: ${JSON.stringify(r3.notes)}`, remFor(r3, "Jude", "Thursday", /pe/i).length > 0 && "weekly Thursday saved",
+      /pE/.test(q1 + q2 + a) && "casing lost (pE)", /football/i.test(q2 + a) && `treated Football kit as the same thing: "${q2} / ${a}"`,
+      remFor(r3, "Jude", "Monday", /pe kit/i).length !== 1 && "Jude's Monday PE kit changed", remFor(r3, "Harry", "Tuesday", /outdoor pe kit/i).length !== 1 && "Harry's Tuesday outdoor PE kit changed") },
+  { name: "Replay: 'Delete Jude's PE kit next Thursday' (21:33 Thu) → Yes/No for 5 Nov → Yes deletes only that one-off", family: "A", now: "2026-10-29T21:33:00Z",
+    seed: { reminders: MATT_REMINDERS, notes: [FOOTBALL_NOTE, { child: "Jude", summary: "Jude's PE kit", date: "2026-11-05" }] }, chatSource: "new",
+    steps: [{ message: "Delete Jude's PE kit next Thursday" }, { message: "Yes", tapQ: { from: 0, idx: 0 } }],
+    check: ([r1, r2], [q, a], o) => firstFail(r1.notes.length !== 2 && "deleted before confirming", !/5(th)?|Thursday 5/i.test(q) && `date not repeated: "${q}"`, /29(th)?\b/.test(q) && `resolved as today: "${q}"`,
+      o[0]?.buttons?.labels?.join("/") !== "Yes/No" && `no Yes/No buttons: ${JSON.stringify(o[0]?.buttons)}`,
+      noteFor(r2, "Jude", "2026-11-05", /PE kit/).length !== 0 && `PE kit note still there: ${JSON.stringify(r2.notes)}`, noteFor(r2, "Jude", "2026-11-05", /football/i).length !== 1 && "football note deleted",
+      r2.reminders.length !== 2 && `weekly reminders changed: ${JSON.stringify(r2.reminders)}`, r2.skips.length > 0 && `weekly skipped: ${JSON.stringify(r2.skips)}`, !/✅/.test(a) && `no confirmation: "${a}"`) },
+  { name: "Replay: 'Delete the PE kit reminder' with two weekly PE kits → buttons per match + Neither → 'Neither' changes nothing", family: "A", now: THU_EVE,
+    seed: { reminders: MATT_REMINDERS }, chatSource: "new",
+    steps: [{ message: "Delete the PE kit reminder" }, { message: "Neither", tapQ: { from: 0, idx: 2 } }],
+    check: ([r1, r2], [q, a], o) => firstFail(JSON.stringify(o[0]?.buttons?.labels) !== `["Jude's · Mon","Harry's · Tue","Neither"]` && `pick buttons: ${JSON.stringify(o[0]?.buttons)} "${q}"`,
+      r1.reminders.length !== 2 && "changed before choosing", r2.reminders.length !== 2 && `changed after Neither: ${JSON.stringify(r2.reminders)}`, r2.skips.length > 0 && "skipped a date", !/left them/i.test(a) && `reply: "${a}"`) },
+);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
