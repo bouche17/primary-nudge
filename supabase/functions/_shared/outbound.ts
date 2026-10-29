@@ -34,6 +34,8 @@ export function contentText(content: any, variables: Record<string, string>): st
     let text = fillTemplate(parts.join("\n"), variables);
     const buttons = (t.actions ?? []).map((a: any) => a?.title).filter((x: unknown) => typeof x === "string" && x);
     if (buttons.length) text += `\n[${buttons.map((b: string) => fillTemplate(b, variables)).join("] [")}]`;
+    const items = (t.items ?? []).map((x: any) => x?.item).filter((x: unknown) => typeof x === "string" && x);
+    if (items.length) text += `\n[${items.map((b: string) => fillTemplate(b, variables)).join("] [")}]`;
     return text;
   }
   return null;

@@ -10,6 +10,12 @@ export const SCHOOL_NOTIFICATION_V2_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATI
 /** monty_general_account_v1: "Hi, it's Monty 👋 We need to check something on your account: {{1}}. Just reply …" */
 export const GENERAL_ACCOUNT_SID = Deno.env.get("TWILIO_GENERAL_ACCOUNT_SID") || "HX6209e9b74c432d4597f6a07e004318f4";
 
+/** Button templates (created via account-check `create_contents`, submitted as Utility). Used only once approved. */
+export const SCHOOL_EVENT_V4_SID = Deno.env.get("TWILIO_SCHOOL_EVENT_V4_SID") || "HX90eec9feb0392f39d5be5aaa8cfdc7d9";
+export const SUNDAY_CHECKIN_SID = Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
+export const SUNDAY_CHECKIN_V2_SID = Deno.env.get("TWILIO_SUNDAY_CHECKIN_V2_SID") || "HX7c54030c714a4dbeb02ce3a5a71758c8";
+export const GENERAL_ACCOUNT_V2_SID = Deno.env.get("TWILIO_GENERAL_ACCOUNT_V2_SID") || "HX695b3543f9e70eb8c52631605639ed8e";
+
 /** Template variables can't hold newlines/control characters; Twilio caps them at 1024. */
 export const templateVar = (text: string) => String(text ?? "")
   .replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().slice(0, 1024);
@@ -50,6 +56,18 @@ export async function templateApproval(contentSid: string): Promise<{ status: st
   return { status: String((raw as any)?.whatsapp?.status ?? "unknown"), raw };
 }
 
+const approvalCache = new Map<string, { ok: boolean; at: number }>();
+/** The new template once WhatsApp has approved it, otherwise the current one. One status read per 10 min per function instance. */
+export async function approvedSid(preferred: string, current: string): Promise<string> {
+  if (!preferred) return current;
+  const hit = approvalCache.get(preferred);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ok ? preferred : current;
+  let ok = false;
+  try { ok = (await templateApproval(preferred)).status === "approved"; } catch { ok = false; }
+  approvalCache.set(preferred, { ok, at: Date.now() });
+  return ok ? preferred : current;
+}
+
 let db: SupabaseClient | null = null;
 const svc = () => (db ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!));
 
@@ -57,12 +75,13 @@ const svc = () => (db ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.g
 export async function sendAccountCheck(phone: string, detail: string, meta: Record<string, unknown> = {}): Promise<TemplateSend & { blocked?: boolean; recorded: string | null }> {
   if (await blockIfTestPhone(phone, "account-check")) return { ok: false, status: 0, sid: null, body: "blocked", blocked: true, recorded: null };
   const vars = { "1": accountCheckVar(detail) };
-  const r = await sendTemplate(phone, GENERAL_ACCOUNT_SID, vars, "account-check");
+  const sid = await approvedSid(GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID);
+  const r = await sendTemplate(phone, sid, vars, "account-check");
   if (!r.ok) {
-    await svc().from("message_send_failures").insert({ function_name: "account-check", phone_number: phone, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Template SID: ${GENERAL_ACCOUNT_SID}` });
+    await svc().from("message_send_failures").insert({ function_name: "account-check", phone_number: phone, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Template SID: ${sid}` });
     return { ...r, recorded: null };
   }
-  const recorded = await recordOutbound({ phone, source: "account_check", contentSid: GENERAL_ACCOUNT_SID, variables: vars, meta: { ...meta, twilio_sid: r.sid } });
+  const recorded = await recordOutbound({ phone, source: "account_check", contentSid: sid, variables: vars, meta: { ...meta, twilio_sid: r.sid } });
   return { ...r, recorded };
 }
 

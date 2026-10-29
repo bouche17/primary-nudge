@@ -7,7 +7,8 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
-import { accountCheckVar, schoolCheckPending, schoolEmailV3Vars } from "../_shared/twilioTemplates.ts";
+import { accountCheckVar, approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, templateApproval } from "../_shared/twilioTemplates.ts";
+import { buttonAction, chooseTemplate, interactiveFor, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
@@ -971,6 +972,38 @@ async function runOutboundTests(): Promise<Result[]> {
     const bad = want.filter(([t, w]) => isOptInEmail(t) !== w);
     return bad.length ? `wrong: ${bad.map(([t]) => t).join(", ")}` : null;
   });
+  pure("Template choice: event email → v4 once approved; no event → v3; v4 not approved → v3", () => {
+    const got = [chooseTemplate("V4", "V3", true, true), chooseTemplate("V4", "V3", true, false), chooseTemplate("V4", "V3", false, true)];
+    return JSON.stringify(got) !== '["V4","V3","V3"]' ? `got ${JSON.stringify(got)}` : null;
+  });
+  push("Live: school event emails use the current template (v3) while v4 isn't approved, v4 once it is", await (async () => {
+    const st = (await templateApproval(SCHOOL_EVENT_V4_SID)).status;
+    const got = await approvedSid(SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID);
+    return got !== (st === "approved" ? SCHOOL_EVENT_V4_SID : SCHOOL_NOTIFICATION_V3_SID) ? `v4 status ${st}, chose ${got}` : null;
+  })(), null, null);
+  pure("Button ids map to the right actions", () => {
+    const want: [string, string, string, string][] = [["save_it", "Save it", "save_it", "Save it"], ["not_for_us", "Not for us", "not_for_us", "Not for us"], ["sunday_ok", "All looks right", "sunday_ok", "All looks right"],
+      ["sunday_change", "Change lunches", "sunday_change", "Change lunches"], ["account_ok", "That's right", "account_ok", "That's right"], ["account_not_quite", "Not quite", "account_not_quite", "Not quite"],
+      ["confirm_yes", "Yes", "pending", "yes"], ["confirm_no", "No", "pending", "no"], ["dup_different", "Different, save it", "pending", "different one, save it"], ["dup_same", "Same one", "pending", "no, it's the same one"],
+      ["child_2", "Harry", "pending", "Harry"], ["child_all", "Both", "pending", "both"], ["school_3", "St Joseph's", "pending", "3"], ["mystery", "hello", "text", "hello"]];
+    const bad = want.filter(([id, t, k, x]) => { const a = buttonAction(id, t); return a.kind !== k || a.text !== x; });
+    return bad.length ? `wrong: ${bad.map((b) => b[0]).join(", ")}` : null;
+  });
+  pure("Rendered outbound text includes the button labels (v4 template, list picker, in-session labels)", () => {
+    const v4 = contentText({ types: { "twilio/quick-reply": { body: TEMPLATE_BODIES.school_event_v4, actions: TEMPLATE_BUTTONS.school_event_v4 } } }, { "1": "Dean Valley", "2": "Photos on Tuesday." });
+    const list = contentText({ types: { "twilio/list-picker": { body: "{{1}}", button: "Choose", items: [{ item: "{{2}}", id: "school_1" }, { item: "{{3}}", id: "school_2" }] } } }, { "1": "Which one?", "2": "St A", "3": "St B" });
+    return firstFail(!v4?.endsWith("\n[Save it] [Not for us]") && `v4: ${JSON.stringify(v4)}`, list !== "Which one?\n[St A] [St B]" && `list: ${JSON.stringify(list)}`,
+      withLabels("Which child?", ["Jude", "Harry", "Both"]) !== "Which child?\n[Jude] [Harry] [Both]" && "withLabels");
+  });
+  pure("Question buttons: duplicate, confirm, which child (2 → buttons, 3 → list), school list with town + postcode", () => {
+    const opts = [{ name: "St Joseph's Catholic Primary School", town: "Stockport", postcode: "SK1 1EF" }, { name: "St Joseph's RC", town: "Reddish", postcode: "SK5 6BG" }, { name: "St Joseph's Sale", town: "Sale", postcode: "M33 3AF" }];
+    const d = interactiveFor({ kind: "duplicate" }, []), e = interactiveFor({ kind: "edit" }, []), c2 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry"]);
+    const c3 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry", "Ivy"]), sc = interactiveFor({ kind: "school", school: { stage: "pick", options: opts } }, []);
+    return firstFail(d?.key !== "dup" && `dup ${d?.key}`, e?.key !== "confirm" && `edit ${e?.key}`, JSON.stringify(c2?.labels) !== '["Jude","Harry","Both"]' && `child2 ${JSON.stringify(c2)}`,
+      c3?.key !== "child_list4" && `child3 ${c3?.key}`, sc?.key !== "school_list3" && `school ${sc?.key}`, !/Stockport, SK1 1EF/.test(sc?.vars["3"] ?? "") && `school desc ${sc?.vars["3"]}`,
+      (sc?.vars["2"] ?? "").length > 24 && "school item over 24 chars", interactiveFor({ kind: "frequency" }, ["Jude"]) !== null && "frequency got buttons",
+      interactiveFor({ kind: "school_email", proposed: ["Harry"] }, ["Jude", "Harry"])?.key !== "confirm" && "school_email yes/no");
+  });
   pure("School email v3 variables: {{1}} school name, {{2}} message, no newlines inside either", () => {
     const v = schoolEmailV3Vars("Dean Valley Community Primary School\n", "📸 Photos on Tuesday.\nOrder by Friday.\r\nThanks");
     return firstFail(JSON.stringify(Object.keys(v)) !== '["1","2"]' && `keys ${Object.keys(v)}`, v["1"] !== "Dean Valley Community Primary School" && `{{1}} "${v["1"]}"`,
@@ -1017,9 +1050,9 @@ async function runOutboundTests(): Promise<Result[]> {
     const { data: tSchool } = await admin.from("schools").select("name").eq("id", TEST_SCHOOL_ID).maybeSingle();
     const vars = a[0]?.metadata?.variables ?? {};
     push("School email uses template v3: {{1}} = school name, {{2}} = message; the stored text is the rendered v3 wording with both",
-      firstFail(a[0]?.metadata?.template_sid !== "HXeb0f72555240d41d29ffb46285f5402b" && `template ${a[0]?.metadata?.template_sid}`, vars["1"] !== tSchool?.name && `{{1}} = "${vars["1"]}"`,
+      firstFail(a[0]?.metadata?.template_sid !== (await approvedSid(SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID)) && `template ${a[0]?.metadata?.template_sid}`, vars["1"] !== tSchool?.name && `{{1}} = "${vars["1"]}"`,
         !/^Hi! 👋 News from /.test(a[0]?.content ?? "") && "not the v3 wording", !(a[0]?.content ?? "").includes(String(tSchool?.name)) && "no school name in the text",
-        !(a[0]?.content ?? "").includes(vars["2"] ?? "@@") && "message not in the text", /Reply [“"]save it[”"]/.test(a[0]?.content ?? "") ? false : "missing the 'save it' line"),
+        !(a[0]?.content ?? "").includes(vars["2"] ?? "@@") && "message not in the text", /save it/i.test(a[0]?.content ?? "") ? false : "missing the 'save it' line"),
       a[0]?.content ?? null, vars);
     const v1 = vars["2"] ?? "";
     push("Opt-in email starts with the conditional line naming the child: \"If Harry's in the Y3/4 girls' football team: …\"",
@@ -1238,7 +1271,7 @@ interface Seed {
   // Monty sent the account-check "is <child>'s school right?" (template text + the pending school check, as account-check does).
   schoolCheck?: { child: string; at: string };
 }
-interface Step { message: string; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
+interface Step { message: string; button?: { payload: string; text: string; replied_to?: string }; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
   notes: { child: string | null; summary: string; dates: string[] }[];
   reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
@@ -1252,7 +1285,7 @@ interface Rows {
   skips: string[];                 // child_reminder_skips dates ("Harry:Swimming:2026-10-07")
   exclusions: string[];            // event_exclusions ("Harry:Halloween Disco")
 }
-type StepOut = { familyUpdates: unknown[]; toolCalls: any[]; chatSource?: string };
+type StepOut = { familyUpdates: unknown[]; toolCalls: any[]; chatSource?: string; buttons?: { key: string; labels: string[]; vars: Record<string, string> } | null };
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
   check: (after: Rows[], replies: string[], steps: StepOut[]) => string | null | Promise<string | null>;
@@ -1766,6 +1799,54 @@ const SENT_CASES: HandlerCase[] = [
 ];
 HANDLER_CASES.push(...SENT_CASES);
 
+// ── Buttons and list pickers (taps are mapped in code; question buttons only when a question is stored) ──
+const BTN_SID = "SMbtn00000000000000000000000000001";
+const GIRLS_EMAIL_BTN = { ...GIRLS_EMAIL, meta: { twilio_sid: BTN_SID } };
+const tap = (payload: string, text: string, replied_to?: string): Step => ({ message: text, button: { payload, text, ...(replied_to ? { replied_to } : {}) } });
+const BUTTON_CASES: HandlerCase[] = [
+  { name: "Button: 'Save it' on a school event → saved for Harry, short confirmation", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL_BTN] }, steps: [tap("save_it", "Save it", BTN_SID)],
+    check: ([r], [a]) => firstFail(noteFor(r, "Harry", "2026-10-21", /football/i).length !== 1 && `expected one football note for Harry: ${JSON.stringify(r.notes)}`, r.notes.length !== 1 && "extra notes",
+      !/Harry/.test(a) || !/✅/.test(a) ? `not the confirmation: "${a}"` : false, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Button: 'Not for us' → 'No problem 👍', nothing saved", family: "A", now: MON19,
+    seed: { sent: [GIRLS_EMAIL_BTN] }, steps: [tap("not_for_us", "Not for us", BTN_SID)],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", a !== "No problem 👍" && `reply: "${a}"`) },
+  { name: "Button: Sunday 'All looks right' → this week's lunch plan confirmed, nothing changed", family: "A", now: MON_AM,
+    seed: { lunches: [{ child: "Jude", days: ["Monday", "Wednesday"], week: WK }, { child: "Harry", days: [], week: WK }],
+      sent: [{ source: "sunday_checkin", at: "2026-10-04T16:00:00Z", meta: { week_start: WK }, text: "Hey! 👋 Here's what Monty has for Jude and Harry this week (5 Oct-9 Oct): ✅ Jude - packed lunch Mon, Wed\n[All looks right] [Change lunches]" }] },
+    steps: [tap("sunday_ok", "All looks right")],
+    check: ([r], [a]) => firstFail(!/confirmed/i.test(a) && `not confirmed: "${a}"`, !/Jude/.test(a) && "doesn't name Jude", !eq(lunchDays(r, "Jude", WK), ["Monday", "Wednesday"]) && "Jude's plan changed",
+      r.notes.length + r.reminders.length > 0 && "saved something else") },
+  { name: "Button: duplicate question shows 'Different / Same one'; tapping 'Same one' saves one note under the school event's title", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
+    steps: [{ message: CASPIAN_MSG }, tap("dup_same", "Same one")],
+    check: (r, a, o) => o[0]?.buttons?.key !== "dup" ? `no duplicate buttons on the question: ${JSON.stringify(o[0]?.buttons)}` : stillAsksCheck(/Mixed Tournament/i, /Mixed Tournament/i)(r, a) },
+  { name: "Button: Ask Monty cancel shows Yes/No; tapping Yes skips only that date", family: "A", now: MON, chatSource: "new",
+    seed: { reminders: SWIM }, steps: [{ message: "Cancel Harry's swimming this week" }, tap("confirm_yes", "Yes")],
+    check: ([r1, r2], [, a], o) => firstFail(o[0]?.buttons?.key !== "confirm" && `no Yes/No buttons: ${JSON.stringify(o[0]?.buttons)}`, r1.skips.length > 0 && "changed before confirming",
+      JSON.stringify(r2.skips) !== JSON.stringify(["Harry:Swimming:2026-10-07"]) && `skips: ${JSON.stringify(r2.skips)}`, a !== "Done, Harry's swimming is off for Wednesday 7th ✅" && `confirmation: "${a}"`) },
+  { name: "Button: which-child question shows the children's names; tapping 'Jude' then 'every week' saves Jude's weekly reminder", family: "A", now: MON,
+    steps: [{ message: "Needs PE kit Thursday" }, tap("child_1", "Jude"), { message: "every week" }],
+    check: ([r1, , r3], [, , a], o) => firstFail(o[0]?.buttons?.key !== "child2" || !["Jude", "Harry", "Both"].every((l) => o[0]!.buttons!.labels.includes(l)) ? `child buttons: ${JSON.stringify(o[0]?.buttons)}` : false,
+      total(r1) > 0 && "saved before asking", remFor(r3, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly not saved: ${JSON.stringify(r3.reminders)}`, peThu(r3, "Harry") > 0 && "also saved for Harry",
+      !/Jude/.test(a) && "confirmation doesn't name Jude") },
+  { name: "List pick: wrong school → list of matches (town + postcode) → pick 1 → Yes/No → 'Yes' changes it", family: "C", now: MON,
+    steps: [{ message: WRONG_SCHOOL_MSG }, { message: "St Joseph's in Stockport" }, tap("school_1", "St Joseph's Catholic"), tap("confirm_yes", "Yes")],
+    check: ([, r2, r3, r4], [, , confirm, done], o) => {
+      const opts = (r2.pending as any)?.school?.options ?? [];
+      return firstFail(!/^school_list[23]$/.test(o[1]?.buttons?.key ?? "") && `no school list: ${JSON.stringify(o[1]?.buttons)}`, !/SK1 1EF/.test(JSON.stringify(o[1]?.buttons?.vars ?? {})) && "list lacks postcode",
+        !schoolUnchanged(r3) && "changed before confirming", !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, o[2]?.buttons?.key !== "confirm" && "no Yes/No on the confirm question",
+        r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`, !/done/i.test(done) && `no confirmation: "${done}"`, r4.pending !== null && "pending not cleared");
+    } },
+  { name: "Stale button: 'Save it' tapped 2 days later (a reminder sent since) → saves from the linked school email", family: "A", now: "2026-10-20T07:30:00Z",
+    seed: { sent: [GIRLS_EMAIL_BTN, { source: "evening_reminder", at: "2026-10-19T17:00:00Z", text: "Good evening! 🌙 Here's what's on tomorrow:\n👟 Harry: PE kit\nSleep well!" }] },
+    steps: [tap("save_it", "Save it", BTN_SID)],
+    check: ([r], [a]) => firstFail(noteFor(r, "Harry", "2026-10-21", /football/i).length !== 1 && `not saved from the linked email: ${JSON.stringify(r.notes)}`, !/✅/.test(a) && `reply: "${a}"`, ROBOTIC.test(a) && `robotic: "${a}"`) },
+  { name: "Stale button: 'Yes' tapped with no question open → one friendly line, nothing saved", family: "A", now: MON,
+    steps: [tap("confirm_yes", "Yes")],
+    check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", ROBOTIC.test(a) && `robotic: "${a}"`, a.split(/(?<=[.!?])\s/).length > 3 && `not one line: "${a}"`, /not sure/i.test(a) && `"not sure": "${a}"`) },
+];
+HANDLER_CASES.push(...BUTTON_CASES);
+
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
   "New weekly reminder",
@@ -1791,6 +1872,7 @@ const QUICK_NAMES = [
   "Account check → 'No, she's at St Joseph's in Stockport' → matches with town + postcode → '1' → confirm → 'yes' changes it",
   ...ASK_CASES.map((c) => c.name),
   ...SENT_CASES.map((c) => c.name),
+  ...BUTTON_CASES.map((c) => c.name),
 ];
 function casesFor(suite: string): HandlerCase[] {
   if (suite !== "quick") return HANDLER_CASES;
@@ -1811,12 +1893,13 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
       scenario: c.name, phone: FAMILIES[step.from ?? c.family].phone, message: step.message, now: step.now ?? c.now,
       ...((c.chatSource ?? CHAT_SOURCE) ? { chat_source: c.chatSource ?? CHAT_SOURCE } : {}),
       fail_db: step.fail_db === true, fail_followup: step.fail_followup === true, fail_claude: step.fail_claude === true, dry_run: true,
+      ...(step.button ? { button: step.button } : {}),
     });
     if (status !== 200) return { reason: `HTTP ${status}: ${JSON.stringify(data).slice(0, 200)}`, reply: null, details: null, usage };
     if (data.twilio_called !== false) return { reason: "Twilio not confirmed off", reply: null, details: null, usage };
     usage.input += data.usage?.input ?? 0; usage.output += data.usage?.output ?? 0; usage.calls += data.usage?.calls ?? 0; usage.cache_write += data.usage?.cache_write ?? 0; usage.cache_read += data.usage?.cache_read ?? 0;
     usage.ms += data.usage?.ms ?? 0; usage.truncated += data.usage?.truncated ?? 0; if (data.usage?.calls) { usage.turns++; turnMs.push(data.usage.ms ?? 0); } if (data.usage?.model) usage.model = data.usage.model;
-    replies.push(data.reply ?? ""); calls.push(data.tool_calls); outs.push({ familyUpdates: data.family_updates ?? [], toolCalls: data.tool_calls ?? [], chatSource: data.chat_source });
+    replies.push(data.reply ?? ""); calls.push(data.tool_calls); outs.push({ familyUpdates: data.family_updates ?? [], toolCalls: data.tool_calls ?? [], chatSource: data.chat_source, buttons: data.buttons ?? null });
     after.push(await familyRows(c.family));
   }
   const kidNames = FAMILIES[c.family].kids.map((k) => k.name);
@@ -1827,7 +1910,9 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const pron = replies.find((r) => /\b(he|she|his|her|him)\b/i.test(r));
   const empty = replies.findIndex((r) => !r.trim());
   const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : badConf ? `confirmation not one short line naming the child: "${badConf.r}"` : await c.check(after, replies, outs);
-  const reply = c.steps.length > 1 ? c.steps.map((s, i) => `Parent: ${s.message}\nMonty: ${replies[i]}`).join("\n") : replies[0];
+  const said = (st: Step) => (st.button ? `[tapped ${st.button.text}]` : st.message);
+  const shown = (i: number) => replies[i] + (outs[i]?.buttons ? ` [buttons: ${outs[i].buttons!.labels.join(" | ")}]` : "");
+  const reply = c.steps.length > 1 || c.steps[0]?.button || outs[0]?.buttons ? c.steps.map((st, i) => `Parent: ${said(st)}\nMonty: ${shown(i)}`).join("\n") : replies[0];
   return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, chat_source: outs.map((o) => o.chatSource), family_updates: outs.map((o) => o.familyUpdates), confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
