@@ -1154,14 +1154,21 @@ async function runOutboundTests(): Promise<Result[]> {
       fu[0] && !/Rosa's swimming moved to Thursday/.test(fu[0].content) && `family update text: ${fu[0].content}`, fu[0] && !fu[0].metadata?.rendered && "family-update template wording couldn't be read",
       al.length !== 1 && `alert rows ${al.length}`), fu[0]?.content ?? null);
   } catch (e) { push("Family update outbound tests: setup", (e as Error).message); }
-  // Button taps answered by question ID (no AI: every path here is decided in code).
+  await resetTestData();
+  return out;
+}
+
+/** Button taps answered by question ID (no AI: every path here is decided in code). Own chunk (time limit). */
+async function runFreeTapTests(): Promise<Result[]> {
+  const out: Result[] = [];
   for (const c of FREE_TAP_CASES) {
+    let reason: string | null, reply: string | null = null, details: unknown = null;
     try {
       const r = await runHandlerCase(c);
-      push(c.name, r.reason ?? (r.usage.calls > 0 ? `made ${r.usage.calls} AI call(s); must be free` : null), r.reply, r.details);
-    } catch (e) { push(c.name, (e as Error).message); }
+      reason = r.reason ?? (r.usage.calls > 0 ? `made ${r.usage.calls} AI call(s); must be free` : null); reply = r.reply; details = r.details;
+    } catch (e) { reason = (e as Error).message; }
+    out.push({ scenario: c.name, category: "sender", status: reason ? "fail" : "pass", reply, reason, details } as Result);
   }
-  await resetTestData();
   return out;
 }
 
@@ -2142,7 +2149,7 @@ Deno.serve(async (req) => {
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
-  const part: "sender" | "outbound" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : "sender";
+  const part: "sender" | "outbound" | "taps" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : body.part === "taps" ? "taps" : "sender";
   const offset = Number.isInteger(body.offset) ? body.offset : 0;
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
@@ -2164,6 +2171,7 @@ Deno.serve(async (req) => {
     await resetTestData();
     if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
     else if (part === "outbound") results = await runOutboundTests();
+    else if (part === "taps") results = await runFreeTapTests();
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
@@ -2175,7 +2183,8 @@ Deno.serve(async (req) => {
 
   let next: { part: string; offset: number } | null = null;
   if (part === "sender") next = { part: "outbound", offset: 0 }; // free tests continue in their own chunk (time limit)
-  if (part === "outbound" && suite !== "sender") next = { part: "conversation", offset: 0 };
+  if (part === "outbound") next = { part: "taps", offset: 0 };
+  if (part === "taps" && suite !== "sender") next = { part: "conversation", offset: 0 };
   if (part === "conversation" && offset + limit < casesFor(suite).length) next = { part: "conversation", offset: offset + limit };
 
   // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.
