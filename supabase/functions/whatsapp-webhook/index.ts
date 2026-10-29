@@ -2576,7 +2576,7 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
   if (words <= 15 && looksLikeSchoolAnswer(message)) {
     return await keep({ stage: "ask_school" }, `Sorry, I couldn't find that school. Could you send its name and town, or its postcode? You can also change it on your dashboard: ${DASHBOARD_URL}`);
   }
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: true });
   (context as any).__droppedPending = true;
   await logDedupDecision({ phone, childName: names.join(", ") || null, tool: "pending_action", newItem: "school question", decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
   return null;
