@@ -21,7 +21,9 @@ export const SESSION_DEFS: Record<string, { friendly_name: string; types: Record
 
 /** Content SIDs for the in-session records (created once via account-check `create_contents`). Empty = plain text only. */
 export const SESSION_SIDS: Record<string, string> = {
-  confirm: "", dup: "", child2: "", child_list4: "", child_list5: "", school_list2: "", school_list3: "",
+  confirm: "HX87102b01e664826cfa63d88bf778b7d4", dup: "HX984eb50bfdbf7aa28154b4cb220cfa04", child2: "HXdceada4234e8e858a12c0bd0b152cad8",
+  child_list4: "HX22055812e3723eed5ad49508ac940ff7", child_list5: "HX9d1637b58991c714a3effdf91fcfc55c",
+  school_list2: "HX53d1c05aacc381a7831ac119adaef49f", school_list3: "HXb03f72668607a10529d52b0146a496d1",
 };
 
 export const TEMPLATE_BODIES = {
