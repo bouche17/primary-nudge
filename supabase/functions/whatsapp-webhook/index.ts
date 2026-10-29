@@ -1498,7 +1498,11 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface SchoolOpt { id: string; name: string; address: string | null; town: string | null; postcode: string; urn: string }
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit" | "school_email";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit" | "school_email" | "pick" | "scope";
+  id?: string;                         // unique question ID: in every button's payload and the outbound message's metadata
+  retext?: boolean;                    // which_child asked in plain words by the AI: the answer re-runs source_text for that child
+  pick?: { action: "delete"; options: Array<AskRef & { label: string }> }; // "which PE kit reminder do you mean?"
+  scope?: { ref: AskRef };             // "just this week, or for good?" for deleting a weekly reminder
   email?: SchoolEmailItem;             // "yes" to a school email: the dated event waiting for a child
   edit?: EditPlan;                     // Ask Monty: the change waiting for "yes"
   dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
@@ -1516,16 +1520,49 @@ async function getConversationRow(phone: string) {
   const { data } = await supabase.from("conversations").select("id, context").eq("phone_number", phone).maybeSingle();
   return data as { id: string; context: any } | null;
 }
-async function setPendingAction(phone: string, p: PendingAction | null) {
+/** Questions stay answerable by button for 7 days (the archive is keyed by question ID). */
+const QUESTION_DAYS = 7;
+interface QuestionEntry { p: PendingAction; status: "open" | "answered" | "closed"; at: string; asked?: string; answers?: string[]; outcome?: string }
+const newQuestionId = () => crypto.randomUUID().replace(/-/g, "").slice(0, 10);
+/** Same kind + same item: a new question about it closes the older one. */
+function questionItemKey(p: PendingAction): string {
+  const items = (p.items || []).map((i) => `${String(i.args?.child_name || "").toLowerCase()}:${i.args?.date || i.args?.day_of_week || ""}:${String(i.args?.summary || i.args?.title || "").toLowerCase()}`).sort().join(",");
+  const extra = p.dup ? dupKey(p.dup) : p.edit ? JSON.stringify(p.edit.op) : p.scope ? p.scope.ref.id : p.pick ? p.pick.options.map((o) => o.id).join(",") : p.email ? `${p.email.title}|${p.email.date}` : p.school ? p.school.child_ids.join(",") : p.move ? p.move.to : "";
+  return `${p.kind}|${items}|${extra}`;
+}
+/** Stores the current question and keeps every question in a 7-day archive by ID. Clearing the current question marks it
+ *  answered, unless `dropped` (the parent moved on): a dropped question stays open, so its buttons still work. */
+async function setPendingAction(phone: string, p: PendingAction | null, opts: { dropped?: boolean } = {}) {
   const row = await getConversationRow(phone);
   if (!row) return;
-  await supabase.from("conversations").update({ context: { ...(row.context || {}), pending_action: p } }).eq("id", row.id);
+  const ctx = row.context || {};
+  const qs: Record<string, QuestionEntry> = { ...(ctx.questions || {}) };
+  const cur: PendingAction | null = ctx.pending_action ?? null;
+  const nowIso = nowD().toISOString();
+  if (p) {
+    p.id ||= newQuestionId();
+    const key = questionItemKey(p);
+    for (const [k, e] of Object.entries(qs)) if (k !== p.id && e.status === "open" && questionItemKey(e.p) === key) e.status = "closed";
+    qs[p.id] = { ...(qs[p.id] || {}), p, status: "open", at: qs[p.id]?.at ?? nowIso };
+  } else if (cur?.id && qs[cur.id] && !opts.dropped) qs[cur.id] = { ...qs[cur.id], status: "answered" };
+  const cutoff = nowD().getTime() - QUESTION_DAYS * 86_400_000;
+  const kept = Object.entries(qs).filter(([, e]) => new Date(e.at).getTime() >= cutoff).sort((a, b) => b[1].at.localeCompare(a[1].at)).slice(0, 15);
+  await supabase.from("conversations").update({ context: { ...ctx, pending_action: p, questions: Object.fromEntries(kept) } }).eq("id", row.id);
+}
+/** After a reply: remember the buttons/wording of a question just asked, and what an answered question did. */
+async function noteQuestion(phone: string, asked: { id: string; text: string; answers: string[] } | null, answeredId: string | null, outcome: string) {
+  if (!asked && !answeredId) return;
+  const row = await getConversationRow(phone);
+  if (!row) return;
+  const qs: Record<string, QuestionEntry> = { ...(row.context?.questions || {}) };
+  if (asked && qs[asked.id]) qs[asked.id] = { ...qs[asked.id], asked: asked.text, answers: asked.answers };
+  if (answeredId && qs[answeredId]?.status === "answered" && !qs[answeredId].outcome) qs[answeredId] = { ...qs[answeredId], outcome: outcome.split("\n")[0].slice(0, 200) };
+  await supabase.from("conversations").update({ context: { ...(row.context || {}), questions: qs } }).eq("id", row.id);
 }
 
-/** An account-check question ("is Hallie's school right?") stays open for 7 days; everything else for 24h. */
+/** Every stored question stays answerable for 7 days. */
 function pendingExpired(p: PendingAction): boolean {
-  const maxAge = (p.kind === "school" && p.school?.stage === "check" ? 7 * 24 : 24) * 3600_000;
-  return nowD().getTime() - new Date(p.created_at).getTime() > maxAge;
+  return nowD().getTime() - new Date(p.created_at).getTime() > QUESTION_DAYS * 86_400_000;
 }
 
 async function tryResolvePendingAction(phone: string, message: string, context: MontyContext): Promise<string | null> {
@@ -1544,7 +1581,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     const weekly = /\b(every|weekly|each|week|always|regular(ly)?)\b/i.test(message);
     if (!once && !weekly) {
       if (/^\s*(yes|yep|yeah|ok|okay|sure)\b/i.test(message) && message.trim().split(/\s+/).length <= 3) return nameNotPronoun(p.question, context.children.map((c) => c.first_name)); // still ambiguous: ask again
-      await setPendingAction(phone, null);
+      await setPendingAction(phone, null, { dropped: true });
       await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
       return null;
     }
@@ -1575,7 +1612,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     return q;
   }
   // Anything else (a "no", or a change of topic) → drop the pending item, don't re-ask.
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: targets === null });
   if (targets === null) {
     (context as any).__droppedPending = true;
     await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
@@ -1680,10 +1717,9 @@ async function holdDuplicate(phone: string, tool: string, args: any, dup: NonNul
   const item = heldItemText(dup, sourceText);
   const question = duplicateQuestion({ ...dup, item });
   if (row) {
-    await supabase.from("conversations").update({ context: { ...(row.context || {}),
-      last_dup_question: { key, at: nowD().toISOString() },
-      pending_action: { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
-        dup: { ...dup, item, tool, args } } satisfies PendingAction } }).eq("id", row.id);
+    await supabase.from("conversations").update({ context: { ...(row.context || {}), last_dup_question: { key, at: nowD().toISOString() } } }).eq("id", row.id);
+    await setPendingAction(phone, { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
+      dup: { ...dup, item, tool, args } });
   }
   return { question };
 }
@@ -1694,7 +1730,7 @@ async function resolveDuplicatePending(phone: string, p: PendingAction, message:
   const different = !same && (/^\s*(yes|yep|yeah|yea|yup|sure|ok|okay|please)\b/i.test(m) || /\b(different|another|separate|save it|please save|save that|save)\b/i.test(m));
   const names = context.children.map((c) => c.first_name);
   if (!same && !different) {
-    await setPendingAction(phone, null);
+    await setPendingAction(phone, null, { dropped: true });
     await logDedupDecision({ phone, childName: d.child, tool: "pending_action", newItem: d.summary, decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: m.slice(0, 300) } });
     return null;
   }
@@ -2324,7 +2360,7 @@ async function resolveEditPending(phone: string, p: PendingAction, message: stri
   const short = message.trim().split(/\s+/).length <= 6;
   const yes = short && /^\s*(yes|yep|yeah|yea|yup|y|ok|okay|sure|please|go ahead|do it|correct|that'?s right|yes please)\b/i.test(message);
   const no = short && /^\s*(no|nope|nah|n|don'?t|leave it|keep it|cancel that)\b/i.test(message);
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: !yes && !no });
   if (yes) return (await applyEdit(plan, context, phone)) ? doneLine(plan) : failLine(plan);
   if (no) return keptLine(plan);
   (context as any).__droppedPending = true;
