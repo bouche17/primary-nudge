@@ -1,3 +1,4 @@
+import { addressParts } from "./schoolLabel.ts";
 // Quick-reply buttons and list pickers. Pure: content definitions, which buttons a pending question gets,
 // and what a tapped button means. The webhook does the sending; tests import this directly.
 
@@ -45,7 +46,31 @@ const cut = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n - 1).tri
 const oneLine = (s: string) => String(s ?? "").replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
 
 export interface Interactive { key: string; vars: Record<string, string>; labels: string[] }
-interface PendingLike { kind: string; proposed?: string[] | null; email?: { eligible?: string[] }; school?: { stage: string; options?: { name: string; town: string | null; postcode: string }[] } }
+interface SchoolPickOpt { name: string; address?: string | null; town: string | null; postcode: string }
+interface PendingLike { kind: string; proposed?: string[] | null; email?: { eligible?: string[] }; school?: { stage: string; options?: SchoolPickOpt[] } }
+
+const STREET_WORDS: [RegExp, string][] = [[/\bStreet\b/gi, "St"], [/\bRoad\b/gi, "Rd"], [/\bLane\b/gi, "Ln"], [/\bAvenue\b/gi, "Ave"]];
+const shortStreet = (s: string) => STREET_WORDS.reduce((a, [re, to]) => a.replace(re, to), oneLine(s));
+
+/** Pure: short picker labels that tell schools apart — "Etchells St · SK1 1EF", "Reddish · SK5 6BG".
+ *  Street/area first, then town; never cut the postcode; all labels fit `max` and differ. */
+export function schoolPickLabels(opts: SchoolPickOpt[], max: number): string[] {
+  const cands = opts.map((o) => {
+    const pc = oneLine(o.postcode).toUpperCase();
+    const places = [...addressParts(o), oneLine(o.town ?? "")].map(shortStreet).filter(Boolean);
+    const fit = places.map((p) => `${p} · ${pc}`).filter((l) => l.length <= max);
+    const room = max - pc.length - 3;
+    const squeezed = places.length && room >= 3 ? `${cut(places[places.length - 1], room)} · ${pc}` : "";
+    return [...new Set([...fit, squeezed, pc].filter(Boolean))];
+  });
+  const out = cands.map((c) => c[0]);
+  for (let i = 0; i < out.length; i++) {
+    if (out.indexOf(out[i]) === i) continue;
+    const next = cands[i].find((c) => !out.includes(c));
+    out[i] = next ?? cut(`${i + 1}. ${out[i]}`, max);
+  }
+  return out;
+}
 
 /** Pure: the buttons for the question Monty just asked (body {{1}} is added at send time). null = plain text. */
 export function interactiveFor(p: PendingLike | null, childNames: string[]): Interactive | null {
@@ -71,11 +96,12 @@ export function interactiveFor(p: PendingLike | null, childNames: string[]): Int
       if (s?.stage === "confirm") return yesNo;
       if (s?.stage === "pick" && s.options && (s.options.length === 2 || s.options.length === 3)) {
         const vars: Record<string, string> = {};
+        const titles = schoolPickLabels(s.options, 24);
         s.options.forEach((o, i) => {
-          vars[String(i * 2 + 2)] = cut(oneLine(o.name), 24);
-          vars[String(i * 2 + 3)] = cut(oneLine(`${o.name} – ${[o.town, o.postcode].filter(Boolean).join(", ")}`), 72);
+          vars[String(i * 2 + 2)] = titles[i];
+          vars[String(i * 2 + 3)] = cut(oneLine(o.name), 72);
         });
-        return { key: `school_list${s.options.length}`, vars, labels: s.options.map((o) => `${cut(oneLine(o.name), 24)} (${[o.town, o.postcode].filter(Boolean).join(", ")})`) };
+        return { key: `school_list${s.options.length}`, vars, labels: titles };
       }
       return null;
     }

@@ -8,7 +8,7 @@ import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
 import { accountCheckVar, approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, templateApproval } from "../_shared/twilioTemplates.ts";
-import { buttonAction, chooseTemplate, interactiveFor, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
+import { buttonAction, chooseTemplate, interactiveFor, schoolPickLabels, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
@@ -1000,9 +1000,18 @@ async function runOutboundTests(): Promise<Result[]> {
     const d = interactiveFor({ kind: "duplicate" }, []), e = interactiveFor({ kind: "edit" }, []), c2 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry"]);
     const c3 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry", "Ivy"]), sc = interactiveFor({ kind: "school", school: { stage: "pick", options: opts } }, []);
     return firstFail(d?.key !== "dup" && `dup ${d?.key}`, e?.key !== "confirm" && `edit ${e?.key}`, JSON.stringify(c2?.labels) !== '["Jude","Harry","Both"]' && `child2 ${JSON.stringify(c2)}`,
-      c3?.key !== "child_list4" && `child3 ${c3?.key}`, sc?.key !== "school_list3" && `school ${sc?.key}`, !/Stockport, SK1 1EF/.test(sc?.vars["3"] ?? "") && `school desc ${sc?.vars["3"]}`,
+      c3?.key !== "child_list4" && `child3 ${c3?.key}`, sc?.key !== "school_list3" && `school ${sc?.key}`, !/SK1 1EF/.test(sc?.vars["2"] ?? "") && `school title ${sc?.vars["2"]}`, sc?.vars["3"] !== "St Joseph's Catholic Primary School" && `school desc ${sc?.vars["3"]}`,
       (sc?.vars["2"] ?? "").length > 24 && "school item over 24 chars", interactiveFor({ kind: "frequency" }, ["Jude"]) !== null && "frequency got buttons",
       interactiveFor({ kind: "school_email", proposed: ["Harry"] }, ["Jude", "Harry"])?.key !== "confirm" && "school_email yes/no");
+  });
+  pure("School picker labels: two same-name schools in one town get different short labels that fit and keep the postcode", () => {
+    const two = [{ name: "St Joseph's Catholic Primary School", address: "Etchells Street, St Petersgate", town: "Stockport", postcode: "SK1 1EF" },
+      { name: "St Joseph's Catholic Primary School", address: "Reddish Road, Reddish", town: "Stockport", postcode: "SK5 6BG" }];
+    const b = schoolPickLabels(two, 20), l = schoolPickLabels(two, 24);
+    const long = schoolPickLabels([{ name: "X", address: "Much Longer Avenue Name Here", town: "Stockport", postcode: "SK5 6BG" }, { name: "X", address: null, town: "Stockport", postcode: "SK5 6BG" }], 20);
+    return firstFail(l[0] !== "Etchells St · SK1 1EF" && `list 1 "${l[0]}"`, l[1] !== "Reddish Rd · SK5 6BG" && `list 2 "${l[1]}"`,
+      b[0] === b[1] && `button labels repeat ${JSON.stringify(b)}`, [...b, ...l, ...long].some((x) => x.length > (b.includes(x) || long.includes(x) ? 20 : 24)) && `over limit ${JSON.stringify([b, l, long])}`,
+      ![...b, ...long].every((x) => /SK\d \d[A-Z]{2}$/.test(x)) && `postcode cut ${JSON.stringify([b, long])}`, long[0] === long[1] && `same-postcode labels repeat ${JSON.stringify(long)}`);
   });
   pure("School email v3 variables: {{1}} school name, {{2}} message, no newlines inside either", () => {
     const v = schoolEmailV3Vars("Dean Valley Community Primary School\n", "📸 Photos on Tuesday.\nOrder by Friday.\r\nThanks");
@@ -1833,7 +1842,11 @@ const BUTTON_CASES: HandlerCase[] = [
     steps: [{ message: WRONG_SCHOOL_MSG }, { message: "St Joseph's in Stockport" }, tap("school_1", "St Joseph's Catholic"), tap("confirm_yes", "Yes")],
     check: ([, r2, r3, r4], [, , confirm, done], o) => {
       const opts = (r2.pending as any)?.school?.options ?? [];
-      return firstFail(!/^school_list[23]$/.test(o[1]?.buttons?.key ?? "") && `no school list: ${JSON.stringify(o[1]?.buttons)}`, !/SK1 1EF/.test(JSON.stringify(o[1]?.buttons?.vars ?? {})) && "list lacks postcode",
+      return firstFail(!/^school_list[23]$/.test(o[1]?.buttons?.key ?? "") && `no school list: ${JSON.stringify(o[1]?.buttons)}`, (() => { const v = o[1]?.buttons?.vars ?? {}, n = opts.length, ts = Array.from({ length: n }, (_, i) => v[String(i * 2 + 2)] ?? "");
+          const ds = Array.from({ length: n }, (_, i) => v[String(i * 2 + 3)] ?? "");
+          if (!n || opts.some((op: any, i: number) => !(ts[i] + " " + ds[i]).includes(String(op.postcode).toUpperCase()))) return `an option lacks its postcode: ${JSON.stringify(v)}`;
+          if (new Set(ts).size !== n) return `labels repeat: ${JSON.stringify(ts)}`;
+          return ts.some((t) => t.length > 24) && `label over 24: ${JSON.stringify(ts)}`; })(),
         !schoolUnchanged(r3) && "changed before confirming", !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, o[2]?.buttons?.key !== "confirm" && "no Yes/No on the confirm question",
         r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`, !/done/i.test(done) && `no confirmation: "${done}"`, r4.pending !== null && "pending not cleared");
     } },
