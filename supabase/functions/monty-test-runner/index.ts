@@ -1029,7 +1029,7 @@ async function runOutboundTests(): Promise<Result[]> {
     await seedFamily("A");
     const r2 = await send("Year 3 class photos", { message: "📸 Year 3 class photos are on Tuesday 3rd November.", what: "Year 3 class photos", yearGroups: ["Year 3"], eventTitle: "Year 3 class photos", eventDate: "2026-11-03", links: [] });
     const a2 = await sentRows(FAMILIES.A.phone, "school_email");
-    const v2 = a2[0]?.metadata?.variables?.["1"] ?? "";
+    const v2 = a2[0]?.metadata?.variables?.["2"] ?? "";
     push("Ordinary year-targeted email: \"For Harry: …\", not conditional, opt_in false",
       firstFail(r2.status !== 200 && `HTTP ${r2.status}`, r2.data?.opt_in !== false && "marked opt-in", !v2.startsWith("For Harry: 📸") && `got: "${v2}"`), v2);
     const refused = await callFn("handle-school-email", { test_send: true, school_id: TEST_SCHOOL_ID, only_phones: ["+447700900123"], subject: "x", extracted: ex });
