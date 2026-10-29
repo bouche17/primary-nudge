@@ -2400,7 +2400,7 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
 const andNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`);
 const orNames = (ns: string[]) => (ns.length <= 1 ? ns[0] ?? "" : `${ns.slice(0, -1).join(", ")} or ${ns[ns.length - 1]}`);
 const possessive = (ns: string[]) => `${andNames(ns)}'s`;
-const SCHOOL_YES = /^\s*(yes|yep|yeah|yea|yup|correct|that'?s (it|right|the one|correct)|right|sure|ok(ay)?|please do|go on|y)\b/i;
+const SCHOOL_YES = /^\s*(yes|yep|yeah|yea|yup|correct|that['’]?s (it|right|the one|correct)|right|sure|ok(ay)?|please do|go on|y)\b/i;
 const SCHOOL_NO = /^\s*(no|nope|nah|neither|none|not (that|those|any|it))\b/i;
 const ORDINAL: Record<string, number> = { first: 0, "1st": 0, second: 1, "2nd": 1, third: 2, "3rd": 2 };
 const reEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
