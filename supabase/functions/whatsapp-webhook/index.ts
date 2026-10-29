@@ -13,7 +13,8 @@ import { whatsOnDays } from "../_shared/reminderFormat.ts";
 import { addDays as addDaysIso, confirmQuestion, dayShort, doneLine, EDIT_CLAIM, EDIT_INTENT, failLine, keptLine, lookupReply, matchesQuery, NOT_FOUND_REPLY, weekdayOf as weekdayOfIso, type EditOp, type EditPlan } from "../_shared/askMonty.ts";
 import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { buttonAction, interactiveFor, SESSION_SIDS, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SIDS, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -283,6 +284,8 @@ ${onboardingInstructions}`.trimEnd(),
 - Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
 - Next 7 days:
 ${next7}
+- Day words, already worked out (use these exact dates for saves, lookups, changes and deletes; "this <day>" on that same day means today only before 3:30pm UK):
+${dayWordAnchors()}
 Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.`,
   };
 }
@@ -677,7 +680,8 @@ function matchItem(existing: string, incoming: string, childNames: string[]): "e
   const shared = [...a].filter((w) => b.has(w));
   if (shared.length === 0) return "none";
   if (shared.length === a.size && shared.length === b.size) return "exact";
-  return "ambiguous";
+  // A shared "kit" / "bag" / "day" alone never makes it the same thing (PE kit ≠ football kit).
+  return hasMeaningfulShared(shared) ? "ambiguous" : "none";
 }
 async function logDedupDecision(d: {
   phone: string; childName: string | null; tool: string; date?: string | null; newItem: string;
@@ -1320,7 +1324,7 @@ function tidyItem(text: string, child: string): string {
   let t = String(text || "").trim().replace(/\s+needed$/i, "");
   const m = t.match(/^(\w+)\s+(?:needs|has got|has|needs to bring)\s+(?:his|her|their|a|an|the)?\s*(.+)$/i);
   if (m && (!child || m[1].toLowerCase() === child.toLowerCase())) t = `${m[1]}'s ${m[2]}`;
-  else if (child && !new RegExp(`\\b${child}\\b`, "i").test(t)) t = `${child}'s ${/^[A-Z]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1)}`;
+  else if (child && !new RegExp(`\\b${child}\\b`, "i").test(t)) t = `${child}'s ${lowerFirstSafe(t)}`;
   return t;
 }
 function friendlyLabel(tool: string, args: any): string {
@@ -1352,14 +1356,24 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 const RECURRING_WORDS = /\b(every|each|weekly|fortnightly|every other|every week|moved|moving|now on|from now on|always|regularly)\b|\b(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/i;
 const ONE_OFF_WORDS = /\b(just|only|once|one-?off|one off)\b|\b(this|next) (coming )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\b\d{1,2}(st|nd|rd|th)\b|\b\d{1,2}\/\d{1,2}\b|\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
 const BRING_WORDS = /\b(needs?|bring|take|pack)\b/i;
-const GENERIC_ITEM = new Set(["kit", "bag", "stuff", "thing", "things", "clothes", "needed", "club", "lesson", "lessons"]);
+const GENERIC_ITEM = new Set(["stuff", "thing", "things", "club", "lesson", "lessons", ...COMMON_ITEM_WORDS]);
 
 const ukTodayIso = () => nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 const weekdayOf = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+/** "<day>" → the shared resolver (today only before 15:30 UK). */
 function nextDateFor(day: string): string {
-  const t = new Date(`${ukTodayIso()}T12:00:00Z`);
-  for (let i = 0; i < 7; i++) { const d = new Date(t); d.setUTCDate(t.getUTCDate() + i); if (weekdayOf(d.toISOString().slice(0, 10)) === day) return d.toISOString().slice(0, 10); }
-  return ukTodayIso();
+  const { today, minutes } = ukNowParts(nowD());
+  return resolveWeekday("", day, today, minutes);
+}
+/** The one date the parent's day words point to ("this Thursday", "next Thursday"), via the shared resolver. */
+function messageDay(text: string): string | null {
+  const { today, minutes } = ukNowParts(nowD());
+  return resolveDayInText(text, today, minutes);
+}
+/** "this/next <day>" anchors for the prompt, from the same resolver the code uses. */
+function dayWordAnchors(): string {
+  const { today, minutes } = ukNowParts(nowD());
+  return WEEKDAY_NAMES.map((d) => `- "${d}" / "this ${d}" → ${resolveWeekday("this", d, today, minutes)} · "next ${d}" → ${resolveWeekday("next", d, today, minutes)}`).join("\n");
 }
 function dayWordFor(iso: string): string {
   const today = ukTodayIso();
@@ -1428,7 +1442,7 @@ async function decideSave(tool: string, args: any, sourceText: string, context: 
         text: `ALREADY_SAVED: this is already on the list as a weekly reminder — ${label}. Nothing new saved. Tell the parent: "That's already on the list: ${label} 👍"` } };
     }
   }
-  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${/^[A-Z]{2}/.test(title) ? title : title.charAt(0).toLowerCase() + title.slice(1)}`, date, ...(childName ? { child_name: childName } : {}) } };
+  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${lowerFirstSafe(title)}`, date, ...(childName ? { child_name: childName } : {}) } };
   const asWeekly = { tool: "save_child_reminder", args: { child_name: childName, title, emoji: args.emoji || "📌", day_of_week: day, reminder_time: args.reminder_time || "both", recurrence_interval: 1 } };
   if (freqOverride === "weekly" && childName) return { kind: "save", ...asWeekly };
   if (freqOverride === "once") return { kind: "save", ...asNote };
@@ -1641,10 +1655,10 @@ function heldItemText(d: { child: string | null; summary: string }, sourceText: 
   const who = d.child ? d.child.replace(/[^A-Za-z'-]/g, "") : "\\w+";
   const m = (sourceText || "").match(new RegExp(String.raw`\b${who}\s+(?:has got|has|needs to bring|needs|is having|is doing|is)\s+(?:a|an|the|his|her|their)?\s*(.+?)(?:\s+(?:on|this|next)\s+\w+day\b.*|\s+(?:tomorrow|today)\b.*)?[.!?\s]*$`, "i"));
   const t = (m?.[1] || itemTitle("save_parent_note", { summary: d.summary })).trim();
-  return t.charAt(0).toLowerCase() + t.slice(1);
+  return lowerFirstSafe(t);
 }
 function duplicateQuestion(d: { child: string | null; summary: string; date: string; existing: string; item?: string }): string {
-  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const item = d.item || lowerFirstSafe(itemTitle("save_parent_note", { summary: d.summary }));
   const whose = d.child ? `${d.child}'s ${item}` : `the ${item}`;
   return `I've already got "${d.existing}" on ${fmtDayOrdinal(d.date)}. Is ${whose} a different one I should save too? 😊`;
 }
@@ -1696,7 +1710,7 @@ async function resolveDuplicatePending(phone: string, p: PendingAction, message:
   const r = await runSave(d.tool, args, context, phone);
   await logDedupDecision({ phone, childName: child, tool: d.tool, date: d.date, newItem: d.summary, decision: same ? "duplicate_answer_same_saved_reminder" : "duplicate_answer_different_saved", match: { table: d.table, id: "held", text: d.existing } });
   if (!r.ok) return nameNotPronoun(buildHonestReply([r]), names);
-  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const item = d.item || lowerFirstSafe(itemTitle("save_parent_note", { summary: d.summary }));
   const weekday = new Date(`${d.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   return same
     ? `That's the same one, I've added it to ${child ? `${child}'s` : "your"} reminders for ${weekday} 👍`
@@ -1822,7 +1836,7 @@ async function generateReply(
         if (childNames.length > 1 && proposed.length === childNames.length) proposed = []; // "Harry, Jude or both?" isn't a proposal
         if (items.length) {
           const fq = proposed.length || childNames.length < 2 ? null : frequencyQuestionPart(items[0].tool, items[0].args, incomingMessage, childNames);
-          addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, fq ? combinedQuestion(childNames, fq) : String(input.question || ""));
+          addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, fq ? whichChildQuestion(childNames, null, "") : String(input.question || "")); // child first; "how often" next
           if (fq) pending!.ask_frequency = true;
         }
         result = { ok: false, action: "pending", summary: "", text: items.length
@@ -3153,8 +3167,8 @@ async function handleImageMessage(
 When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
 ${dateAnchors}
 
-- "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
-- "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
+- Day words, already worked out (use these exact dates):
+${dayWordAnchors()}
 - "tomorrow" → the date marked (tomorrow) above
 - Always output dates in YYYY-MM-DD format using the anchors above — never guess`,
     };
