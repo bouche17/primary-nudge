@@ -2438,7 +2438,9 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
   const dayHits = [...message.matchAll(DAY_RE)].map((m) => dayName(m[0]));
   let pick = opts.filter((o) => dayHits.includes(o.day));
   if (pick.length !== 1) pick = opts.filter((o) => sameActivity(o.title, message, []) && new RegExp(`\\b${o.child}\\b`, "i").test(message));
-  await setPendingAction(phone, null);
+  const neither = /^\s*(neither|none|no|nope|leave (it|them))\b/i.test(message);
+  await setPendingAction(phone, null, { dropped: pick.length !== 1 && !neither });
+  if (neither) return "No problem, I've left them as they are 👍";
   if (pick.length !== 1) return null;
   const o = pick[0];
   const ok = await updateReminderDay(o.id, p.move!.to);
@@ -2669,7 +2671,7 @@ async function resolveSchoolEmailPending(phone: string, p: PendingAction, messag
   if (short && named.length) kids = named;
   else if (short && (PLURAL_CHILDREN.test(message) || /\bboth\b/i.test(message))) kids = item.eligible;
   else if (kind === "yes" && p.proposed?.length) kids = p.proposed;
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: kind !== "no" && !kids });
   if (kind === "no") return "No problem, I'll leave that one 👍";
   if (!kids) return null; // something else: carry on normally
   return await saveSchoolEmailItem(phone, item, kids, context);
