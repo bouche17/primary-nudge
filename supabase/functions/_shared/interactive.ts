@@ -40,6 +40,9 @@ export const SESSION_SIDS: Record<string, string> = {
   confirm: "HX87102b01e664826cfa63d88bf778b7d4", dup: "HX984eb50bfdbf7aa28154b4cb220cfa04", child2: "HXdceada4234e8e858a12c0bd0b152cad8",
   child_list4: "HX22055812e3723eed5ad49508ac940ff7", child_list5: "HX9d1637b58991c714a3effdf91fcfc55c",
   school_list2: "HX53d1c05aacc381a7831ac119adaef49f", school_list3: "HXb03f72668607a10529d52b0146a496d1",
+  // Generic per-question records (ids are variables) — the only ones sent now; the ones above stay for taps already out there.
+  q2: "HXbe35445a217a4a37811c4358d75c8117", q3: "HXd6046fca5e980c84ebf2a41fa379c993", l4: "HX52e9e9ef6609aff4e4b8e1e5d726f1d0",
+  l5: "HX32bc7ba1f8ec893361d0ffaef212b9e1", ls2: "HX58e72ccd678173077ce731257567f2f9", ls3: "HXf8a83fff7192d997d74cf825f91c1f17",
 };
 
 export const TEMPLATE_BODIES = {
