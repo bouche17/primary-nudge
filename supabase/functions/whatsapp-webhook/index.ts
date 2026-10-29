@@ -13,6 +13,8 @@ import { whatsOnDays } from "../_shared/reminderFormat.ts";
 import { addDays as addDaysIso, confirmQuestion, dayShort, doneLine, EDIT_CLAIM, EDIT_INTENT, failLine, keptLine, lookupReply, matchesQuery, NOT_FOUND_REPLY, weekdayOf as weekdayOfIso, type EditOp, type EditPlan } from "../_shared/askMonty.ts";
 import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { buttonAction, interactiveFor, SESSION_SIDS, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { sendTemplate } from "../_shared/twilioTemplates.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
@@ -1510,13 +1512,17 @@ async function setPendingAction(phone: string, p: PendingAction | null) {
   await supabase.from("conversations").update({ context: { ...(row.context || {}), pending_action: p } }).eq("id", row.id);
 }
 
+/** An account-check question ("is Hallie's school right?") stays open for 7 days; everything else for 24h. */
+function pendingExpired(p: PendingAction): boolean {
+  const maxAge = (p.kind === "school" && p.school?.stage === "check" ? 7 * 24 : 24) * 3600_000;
+  return nowD().getTime() - new Date(p.created_at).getTime() > maxAge;
+}
+
 async function tryResolvePendingAction(phone: string, message: string, context: MontyContext): Promise<string | null> {
   const row = await getConversationRow(phone);
   const p: PendingAction | null = row?.context?.pending_action ?? null;
   if (!row || !p) return null;
-  // An account-check question ("is Hallie's school right?") stays open for 7 days; everything else for 24h.
-  const maxAge = (p.kind === "school" && p.school?.stage === "check" ? 7 * 24 : 24) * 3600_000;
-  if (nowD().getTime() - new Date(p.created_at).getTime() > maxAge) { await setPendingAction(phone, null); return null; }
+  if (pendingExpired(p)) { await setPendingAction(phone, null); return null; }
   if (p.kind === "move") return await resolveMovePending(phone, p, message);
   if (p.kind === "duplicate") return await resolveDuplicatePending(phone, p, message, context);
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
@@ -2678,6 +2684,79 @@ async function specificQuestion(phone: string, conversationId: string, context: 
   return `What would you like me to add for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
 }
 
+// ── Quick-reply buttons and list pickers ──
+// A tapped button is mapped in code (no AI): template buttons act on the message they were attached to
+// (Twilio's OriginalRepliedMessageSid → messages.metadata.twilio_sid, else the newest of that kind); question
+// buttons answer the stored pending question. A question button with nothing pending gets one friendly line.
+interface ButtonTap { payload: string; text: string; repliedTo: string | null }
+
+async function linkedOutbound(conversationId: string, source: string, repliedTo: string | null, days = 14): Promise<SentMsg | null> {
+  const cols = "content, created_at, source, school_email_id, metadata";
+  if (repliedTo) {
+    const { data } = await supabase.from("messages").select(cols).eq("conversation_id", conversationId).eq("direction", "outbound").eq("metadata->>twilio_sid", repliedTo).limit(1);
+    if (data?.[0]) return data[0] as SentMsg;
+  }
+  const since = new Date(nowD().getTime() - days * 86_400_000).toISOString();
+  const { data } = await supabase.from("messages").select(cols).eq("conversation_id", conversationId).eq("direction", "outbound").eq("source", source)
+    .gte("created_at", since).lte("created_at", nowD().toISOString()).order("created_at", { ascending: false }).limit(1);
+  return (data?.[0] as SentMsg) ?? null;
+}
+
+async function handleButton(from: string, tap: ButtonTap, context: MontyContext, conversationId: string): Promise<string> {
+  const a = buttonAction(tap.payload, tap.text);
+  const names = context.children.map((c) => c.first_name);
+  const row = await getConversationRow(from);
+  let p: PendingAction | null = row?.context?.pending_action ?? null;
+  if (p && pendingExpired(p)) { await setPendingAction(from, null); p = null; }
+  await logDedupDecision({ phone: from, childName: null, tool: "button", newItem: tap.payload.slice(0, 100), decision: `button_${a.kind}`, match: { table: "messages", id: tap.repliedTo ?? "no match", text: tap.text.slice(0, 300) } });
+  switch (a.kind) {
+    case "save_it": case "not_for_us": {
+      if (p?.kind === "school_email") await setPendingAction(from, null);
+      if (a.kind === "not_for_us") return "No problem 👍";
+      const m = await linkedOutbound(conversationId, "school_email", tap.repliedTo);
+      if (!m) return `Sorry, I couldn't find that school message. What would you like me to add for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
+      return nameNotPronoun((await answerSchoolEmailYes(from, m, "save it", context)) ?? `Which day is it? Tell me and I'll add it for ${joinAnd(names)} 😊`, names);
+    }
+    case "sunday_ok": {
+      const m = await linkedOutbound(conversationId, "sunday_checkin", tap.repliedTo, 7);
+      return m ? await answerSundayYes(m, context) : "Great 😊";
+    }
+    case "sunday_change":
+      return `No problem. Which days ${names.length === 1 ? "does" : "do"} ${joinAnd(names.length ? names : ["your children"])} need a packed lunch this week? 🥪`;
+    case "account_ok": case "account_not_quite":
+      if (p?.kind === "school") return await handleTextMessage(from, a.kind === "account_ok" ? "yes" : "no", context, conversationId);
+      return a.kind === "account_ok" ? "Thanks for confirming ✅" : "No problem, what needs changing? Just reply here and we'll sort it 😊";
+    case "pending":
+      if (!p) return "Sorry, I've lost track of that one as it was a while ago. Could you tell me again what you'd like? 😊";
+      return await handleTextMessage(from, a.text, context, conversationId);
+    default:
+      return await handleTextMessage(from, a.text, context, conversationId);
+  }
+}
+
+/** Runs one reply and works out the buttons for the question it asks (only when this turn stored a new question). */
+async function withButtons(from: string, context: MontyContext, run: () => Promise<string>): Promise<{ reply: string; inter: Interactive | null }> {
+  const before = JSON.stringify((await getConversationRow(from))?.context?.pending_action ?? null);
+  const reply = await run();
+  const after: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
+  const asked = !!after && JSON.stringify(after) !== before && /\?/.test(reply) && reply.length <= 1000;
+  const inter = asked ? interactiveFor(after, context.children.map((c) => c.first_name)) : null;
+  return { reply, inter: inter && SESSION_SIDS[inter.key] ? inter : null };
+}
+
+/** Sends the reply with its buttons (in-session content), falling back to plain text if that fails. true = buttons shown. */
+async function sendReplyWithButtons(to: string, reply: string, inter: Interactive | null): Promise<boolean> {
+  if (inter) {
+    if (await blockIfTestPhone(to, "whatsapp-webhook")) return false;
+    const r = await sendTemplate(to, SESSION_SIDS[inter.key], { "1": reply, ...inter.vars }, "whatsapp-webhook");
+    if (r.ok) return true;
+    console.error(`[buttons] ${inter.key} send failed (${r.status}), sending plain text`);
+    await supabase.from("message_send_failures").insert({ function_name: "whatsapp-webhook", phone_number: to, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Interactive ${inter.key} ${SESSION_SIDS[inter.key]}` });
+  }
+  await sendWhatsApp(to, reply);
+  return false;
+}
+
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
   const names = context.children.map((c) => c.first_name);
@@ -2841,12 +2920,17 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     const message = String(b.message || "");
     const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
     await saveMessage(conversationId, "inbound", message);
-    let reply = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
-      : await handleTextMessage(phone, message, context, conversationId);
-    if (typeof b.inject_reply === "string") reply = `${reply} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
-    reply = await applyContactGuard(reply, phone, message, context);
-    await saveMessage(conversationId, "outbound", reply);
-    return j({ reply, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
+    const tap: ButtonTap | null = b.button && typeof b.button.payload === "string"
+      ? { payload: b.button.payload, text: String(b.button.text ?? message), repliedTo: typeof b.button.replied_to === "string" ? b.button.replied_to : null } : null;
+    const out = await withButtons(phone, context, async () => {
+      let r = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
+        : tap ? await handleButton(phone, tap, context, conversationId) : await handleTextMessage(phone, message, context, conversationId);
+      if (typeof b.inject_reply === "string") r = `${r} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
+      return await applyContactGuard(r, phone, message, context);
+    });
+    const reply = out.reply;
+    await saveMessage(conversationId, "outbound", out.inter ? withLabels(reply, out.inter.labels) : reply);
+    return j({ reply, buttons: out.inter ? { ...out.inter, sid: SESSION_SIDS[out.inter.key] } : null, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
 }
 
@@ -3473,23 +3557,24 @@ Deno.serve(async (req: Request) => {
     // Save inbound message
     await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]");
 
-    let reply: string;
+    // Quick-reply button (ButtonPayload/ButtonText) or list-picker pick (ListId/ListTitle)
+    const btnId = params.get("ButtonPayload") || params.get("ListId") || "";
+    const tap: ButtonTap | null = btnId
+      ? { payload: btnId, text: params.get("ButtonText") || params.get("ListTitle") || incomingMessage, repliedTo: params.get("OriginalRepliedMessageSid") } : null;
 
-    // New parent — kick off onboarding
-    if (context.onboardingStatus === "new") {
-      reply = await handleNewParent(from, context);
-    } else if (numMedia > 0 && mediaUrl && isImageType(mediaType)) {
-      // Parent forwarded an image/screenshot
-      reply = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from);
-    } else {
-      reply = await handleTextMessage(from, incomingMessage, context, conversationId);
-    }
+    const out = await withButtons(from, context, async () => {
+      let r: string;
+      if (context.onboardingStatus === "new") r = await handleNewParent(from, context); // New parent — kick off onboarding
+      else if (numMedia > 0 && mediaUrl && isImageType(mediaType)) r = await handleImageMessage(mediaUrl, mediaType, incomingMessage, context, from); // forwarded image
+      else if (tap) r = await handleButton(from, tap, context, conversationId);
+      else r = await handleTextMessage(from, incomingMessage, context, conversationId);
+      return await applyContactGuard(r, from, incomingMessage, context);
+    });
+    const reply = out.reply;
 
-    reply = await applyContactGuard(reply, from, incomingMessage, context);
-
-    // Save and send reply
-    await saveMessage(conversationId, "outbound", reply);
-    await sendWhatsApp(from, reply);
+    // Send (with buttons when the reply asks a stored question), then save what the parent actually saw
+    const shown = await sendReplyWithButtons(from, reply, out.inter);
+    await saveMessage(conversationId, "outbound", shown && out.inter ? withLabels(reply, out.inter.labels) : reply);
 
     console.log(`Replied to ${from}: "${reply.slice(0, 80)}…"`);
 
