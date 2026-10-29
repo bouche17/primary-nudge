@@ -1370,6 +1370,15 @@ function messageDay(text: string): string | null {
   const { today, minutes } = ukNowParts(nowD());
   return resolveDayInText(text, today, minutes);
 }
+/** The parent's "this/next <day>" wins over the model's date for the same weekday (save, lookup, change, delete). */
+function applyMessageDay(tool: string, input: any, message: string) {
+  const md = messageDay(message);
+  if (!md || !input) return;
+  const fix = (d: unknown) => (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && d !== md && weekdayOf(d) === weekdayOf(md) ? md : d);
+  if (tool === "save_parent_note") input.date = fix(input.date);
+  if (tool === "lookup_whats_on" && input.from_date === input.to_date) input.from_date = input.to_date = fix(input.from_date);
+  if (tool === "ask_parent_to_confirm" && Array.isArray(input.items)) for (const it of input.items) if (it?.tool === "save_parent_note" && it.args) it.args.date = fix(it.args.date);
+}
 /** "this/next <day>" anchors for the prompt, from the same resolver the code uses. */
 function dayWordAnchors(): string {
   const { today, minutes } = ukNowParts(nowD());
@@ -1575,6 +1584,17 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
   if (p.kind === "edit") return await resolveEditPending(phone, p, message, context);
   if (p.kind === "school_email") return await resolveSchoolEmailPending(phone, p, message, context);
+  if (p.kind === "pick") return await resolvePickPending(phone, p, message, context);
+  if (p.kind === "scope") return await resolveScopePending(phone, p, message, context);
+  if (p.retext) {
+    // The AI asked "Jude or Harry?" in plain words: the answer re-runs the parent's request for that child.
+    const nm = context.children.map((c) => c.first_name).filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+    const kids = nm.length ? nm : PLURAL_CHILDREN.test(message) ? context.children.map((c) => c.first_name) : [];
+    if (!kids.length || message.trim().split(/\s+/).length > 7) { await setPendingAction(phone, null, { dropped: true }); return null; }
+    await setPendingAction(phone, null);
+    (context as any).__retext = `${p.source_text} (this is for ${kids.join(" and ")})`;
+    return null;
+  }
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
@@ -1862,6 +1882,7 @@ async function generateReply(
     for (const block of data.content.filter((b: any) => b.type === "tool_use")) {
       let result: ToolResult;
       const input = block.input ?? {};
+      applyMessageDay(block.name, input, incomingMessage);
       if (block.name === "ask_parent_to_confirm") {
         const items = (Array.isArray(input.items) ? input.items : []).filter((i: any) => SAVE_TOOLS.has(i?.tool) && i.args && typeof i.args === "object");
         let proposed = Array.isArray(input.proposed_children) ? input.proposed_children.filter((n: string) => childNames.includes(n)) : [];
@@ -1969,6 +1990,8 @@ async function generateReply(
     if (ask.lookups.length && !structuredResults.some((r) => r.ok || r.failed)) {
       const total = ask.lookups.reduce((n, v) => n + v.days.reduce((m, d) => m + d.lines.length, 0), 0);
       if (EDIT_INTENT.test(incomingMessage)) {
+        const pickQ = await maybeAskPick(phone, incomingMessage, context);
+        if (pickQ) return pickQ;
         const modelAsks = text.includes("?") && !EDIT_CLAIM.test(text) && !SUCCESS_CLAIM.test(text) && !SYSTEM_WORDS.test(text) && !hasPlainPromise(text);
         return total && modelAsks ? nameNotPronoun(text, childNames) : lookupReply(ask.lookups[ask.lookups.length - 1], true);
       }
@@ -2366,6 +2389,68 @@ async function resolveEditPending(phone: string, p: PendingAction, message: stri
   (context as any).__droppedPending = true;
   await logDedupDecision({ phone, childName: plan.child, tool: "pending_action", newItem: JSON.stringify(plan.op).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
   return null;
+}
+
+// ── "Which PE kit reminder do you mean?" (several matches for a delete) → buttons, then "just this week / for good" ──
+const DELETE_INTENT = /\b(delete|remove|cancel|get rid of|take (it |that )?off|drop|stop)\b/i;
+const SCOPE_ALL = /\b(for good|always|every week|all of them|stopped|any ?more|permanent(ly)?|completely)\b/i;
+const SCOPE_ONCE = /\b(just|only|once|this week|this one|that day|today|tomorrow)\b/i;
+const NEITHER = /^\s*(neither|none|no|nope|nah|leave (it|them))\b/i;
+const pickLine = (r: AskRef) => r.table === "child_reminders" ? `${tidyItem(r.title, r.child ?? "")}, every ${weekdayOf(r.date)}` : `${tidyItem(r.title, r.child ?? "")}, ${fmtDayOrdinal(r.date)}`;
+
+/** Several of the family's own items match a delete: ask which, with a button per item plus Neither (stored). */
+async function maybeAskPick(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!DELETE_INTENT.test(message)) return null;
+  const st = askState(context);
+  const seen = new Map<string, AskRef>();
+  for (const r of st.refs.values()) {
+    if (SCHOOL_TABLES.has(r.table)) continue;
+    const k = `${r.table}|${r.id}`;
+    if (!seen.has(k) || r.date < seen.get(k)!.date) seen.set(k, r);
+  }
+  const opts = [...seen.values()];
+  if (opts.length < 2 || opts.length > 4) return null;
+  const item = st.lookups[st.lookups.length - 1]?.item;
+  const options = opts.map((r) => ({ ...r, label: `${r.child ?? "Family"}'s · ${r.table === "child_reminders" ? dayShort(weekdayOf(r.date)) : shortDayDate(r.date)}` }));
+  const question = `Which ${item ? `${item} reminder` : "one"} do you mean? You've got ${opts.length}:\n${opts.map((r) => `• ${pickLine(r)}`).join("\n")}`;
+  await setPendingAction(phone, { kind: "pick", pick: { action: "delete", options }, items: [], proposed: null, question, created_at: nowD().toISOString(), source_text: message });
+  return question;
+}
+/** Asks the usual "… Yes / No" delete confirmation for one item chosen from a pick. */
+async function askDelete(phone: string, ref: AskRef, scope: "this_date_only" | "all_future", context: MontyContext): Promise<string> {
+  const st = askState(context);
+  st.refs.set("rpick", ref); st.handled = false; st.reply = undefined; st.pending = undefined;
+  await handleAskEdit("delete_item", { ref: "rpick", scope }, context, phone);
+  if (st.pending) await setPendingAction(phone, st.pending);
+  return st.reply ?? NOT_FOUND_REPLY;
+}
+async function resolvePickPending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const opts = p.pick!.options;
+  const m = message.trim();
+  if (NEITHER.test(m)) { await setPendingAction(phone, null); return "No problem, I've left them as they are 👍"; }
+  let idx = /^[1-5]$/.test(m) ? Number(m) - 1 : -1;
+  if (idx < 0) {
+    const hits = opts.map((o, i) => ({ o, i })).filter(({ o }) => (!o.child || new RegExp(`\\b${o.child}\\b`, "i").test(m)) && (new RegExp(`\\b${weekdayOf(o.date)}\\b`, "i").test(m) || sameActivity(o.title, m, [])));
+    if (hits.length === 1) idx = hits[0].i;
+  }
+  if (!opts[idx]) { await setPendingAction(phone, null, { dropped: true }); return null; }
+  await setPendingAction(phone, null);
+  const ref = opts[idx];
+  const said = p.source_text || "";
+  const scope = SCOPE_ALL.test(said) ? "all_future" : SCOPE_ONCE.test(said) || ref.table !== "child_reminders" ? "this_date_only" : null;
+  if (!scope) {
+    const q = `Delete ${tidyItem(ref.title, ref.child ?? "")} just this week (${shortDayDate(ref.date)}), or for good? 😊`;
+    await setPendingAction(phone, { kind: "scope", scope: { ref }, items: [], proposed: null, question: q, created_at: nowD().toISOString(), source_text: said });
+    return q;
+  }
+  return await askDelete(phone, ref, scope, context);
+}
+async function resolveScopePending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const all = SCOPE_ALL.test(message), once = !all && SCOPE_ONCE.test(message);
+  if (NEITHER.test(message)) { await setPendingAction(phone, null); return keptLine({ child: p.scope!.ref.child ?? "", title: p.scope!.ref.title } as any); }
+  if (!all && !once) { await setPendingAction(phone, null, { dropped: true }); return null; }
+  await setPendingAction(phone, null);
+  return await askDelete(phone, p.scope!.ref, all ? "all_future" : "this_date_only", context);
 }
 
 // ── Moving a weekly reminder to another day (decided in code, same row updated) ──
@@ -2826,6 +2911,8 @@ async function handleTextMessageInner(from: string, incomingMessage: string, con
   // 3) Text items awaiting "which child?" / "do you mean…?" / "which school?"
   const resolved = await tryResolvePendingAction(from, incomingMessage, context);
   if (resolved) return resolved;
+  const retext = (context as any).__retext as string | undefined;
+  if (retext) { delete (context as any).__retext; incomingMessage = retext; } // "Jude" → the request again, for Jude
   // 3b) Short replies ("yes", "seen", "thanks") to what Monty last sent — decided in code
   const short = await tryShortReply(from, incomingMessage, context, conversationId);
   if (short) return nameNotPronoun(short, context.children.map((c) => c.first_name));
