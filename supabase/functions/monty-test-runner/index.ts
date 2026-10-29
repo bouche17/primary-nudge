@@ -1949,7 +1949,7 @@ const FREE_TAP_CASES: HandlerCase[] = [
 
 // ── Matt's replay (AI): child → just this one → saved; then delete only that one-off. Weekly PE kits untouched. ──
 const THU_EVE = "2026-10-29T21:25:00Z";
-BUTTON_CASES.push(
+const REPLAY_CASES: HandlerCase[] = [
   { name: "Replay: 'PE kit on Thursday' → child buttons → Jude → 'Just Thu 5 Nov' button → one note, 'PE kit' casing, weekly PE kits untouched", family: "A", now: THU_EVE,
     seed: { reminders: MATT_REMINDERS, notes: [FOOTBALL_NOTE] }, chatSource: "new",
     steps: [{ message: "PE kit on Thursday" }, { message: "Jude", tapQ: { from: 0, idx: 0 } }, { message: "Just this one", tapQ: { from: 1, idx: 0 } }],
@@ -1971,7 +1971,9 @@ BUTTON_CASES.push(
     steps: [{ message: "Delete the PE kit reminder" }, { message: "Neither", tapQ: { from: 0, idx: 2 } }],
     check: ([r1, r2], [q, a], o) => firstFail(JSON.stringify(o[0]?.buttons?.labels) !== `["Jude's · Mon","Harry's · Tue","Neither"]` && `pick buttons: ${JSON.stringify(o[0]?.buttons)} "${q}"`,
       r1.reminders.length !== 2 && "changed before choosing", r2.reminders.length !== 2 && `changed after Neither: ${JSON.stringify(r2.reminders)}`, r2.skips.length > 0 && "skipped a date", !/left them/i.test(a) && `reply: "${a}"`) },
-);
+];
+BUTTON_CASES.push(...REPLAY_CASES);
+HANDLER_CASES.push(...REPLAY_CASES);
 
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [

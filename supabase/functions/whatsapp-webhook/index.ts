@@ -2402,9 +2402,14 @@ const pickLine = (r: AskRef) => r.table === "child_reminders" ? `${tidyItem(r.ti
 async function maybeAskPick(phone: string, message: string, context: MontyContext): Promise<string | null> {
   if (!DELETE_INTENT.test(message)) return null;
   const st = askState(context);
+  const names = context.children.map((c) => c.first_name);
+  const named = names.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+  const want = itemTokens(message, names);
   const seen = new Map<string, AskRef>();
   for (const r of st.refs.values()) {
     if (SCHOOL_TABLES.has(r.table)) continue;
+    if (named.length && r.child && !named.includes(r.child)) continue;
+    if (!hasMeaningfulShared([...itemTokens(r.title, names)].filter((w) => want.has(w)))) continue; // PE kit ≠ football kit
     const k = `${r.table}|${r.id}`;
     if (!seen.has(k) || r.date < seen.get(k)!.date) seen.set(k, r);
   }
@@ -2875,7 +2880,10 @@ async function answerQuestionTap(from: string, tap: ButtonTap, staticText: strin
     if (cur && !pendingExpired(cur)) { await setPendingAction(from, { ...cur, id: undefined, created_at: nowD().toISOString() }); return cur.question; }
     return `That button's no longer live, so I haven't changed anything. What would you like me to do for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
   }
-  if (entry.status === "answered") return entry.outcome ? `Already done ✅ ${entry.outcome.replace(/^(Already done ✅\s*)+/, "")}` : "That one's already sorted ✅";
+  if (entry.status === "answered") {
+    const o = (entry.outcome || "").replace(/^(Already done ✅\s*)+/, "").replace(/^(Got it|Done|Great|OK|Okay),?\s*/i, "").replace(/\s*[✅👍]+\s*$/u, "").trim();
+    return o ? `Already done ✅ ${o.charAt(0).toUpperCase()}${o.slice(1)}` : "That one's already sorted ✅";
+  }
   if (entry.status === "closed" || pendingExpired(entry.p)) {
     await setPendingAction(from, { ...entry.p, id: undefined, created_at: nowD().toISOString() });
     return nameNotPronoun(entry.asked || entry.p.question, names);
