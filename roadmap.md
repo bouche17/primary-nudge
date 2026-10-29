@@ -103,10 +103,10 @@
 - [ ] Send the two approved account-check messages (Hallie school check with pending reply; Oscar Mossley term dates) — blocked: monty_general_account_v1 still pending WhatsApp approval. Run via account-check `send` (child_id, detail, school_check for Hallie), then `delivery`.
 
 ## Button fixes from Matt's phone test (29 Oct)
-- [ ] 1 Stale taps: question IDs in payloads + 7-day question archive, re-ask / "already done" instead of "lost track"
-- [ ] 2 Child first, then "just/every" (one question per button set)
-- [ ] 3 Buttons on reminder picks (+ Neither, then Just this week / For good) and on plain-text child questions (+ Both)
-- [ ] 4 Common words never a duplicate match on their own
-- [ ] 5 One shared "this/next <day>" resolver (15:30 cut-off)
-- [ ] 6 Keep the parent's capitalisation (PE, not pE)
-- [ ] Tests: free + Matt's replay, then one quick suite
+- [x] 1 Stale taps: question IDs in payloads + 7-day question archive, re-ask / "already done" instead of "lost track"
+- [x] 2 Child first, then "just/every" (one question per button set)
+- [x] 3 Buttons on reminder picks (+ Neither, then Just this week / For good) and on plain-text child questions (+ Both)
+- [x] 4 Common words never a duplicate match on their own
+- [x] 5 One shared "this/next <day>" resolver (15:30 cut-off)
+- [x] 6 Keep the parent's capitalisation (PE, not pE)
+- [x] Tests: free + Matt's replay, then one quick suite
