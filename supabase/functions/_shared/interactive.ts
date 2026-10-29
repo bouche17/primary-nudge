@@ -1,3 +1,4 @@
+import { addressParts } from "./schoolLabel.ts";
 // Quick-reply buttons and list pickers. Pure: content definitions, which buttons a pending question gets,
 // and what a tapped button means. The webhook does the sending; tests import this directly.
 
