@@ -8,7 +8,8 @@ import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
 import { accountCheckVar, approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, templateApproval } from "../_shared/twilioTemplates.ts";
-import { buttonAction, chooseTemplate, interactiveFor, schoolPickLabels, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
+import { buttonAction, chooseTemplate, contentVars, interactiveFor, parseTapPayload, schoolPickLabels, tapPayload, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
+import { hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday } from "../_shared/chatRules.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { detectOptIntent, isOptedOut, optIn, OPT_REPLIES } from "../_shared/optOut.ts";
 import { evaluateClaudeAlerts, evaluateDeliveryAlerts } from "../_shared/alerts.ts";
@@ -999,10 +1000,48 @@ async function runOutboundTests(): Promise<Result[]> {
     const opts = [{ name: "St Joseph's Catholic Primary School", town: "Stockport", postcode: "SK1 1EF" }, { name: "St Joseph's RC", town: "Reddish", postcode: "SK5 6BG" }, { name: "St Joseph's Sale", town: "Sale", postcode: "M33 3AF" }];
     const d = interactiveFor({ kind: "duplicate" }, []), e = interactiveFor({ kind: "edit" }, []), c2 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry"]);
     const c3 = interactiveFor({ kind: "which_child" }, ["Jude", "Harry", "Ivy"]), sc = interactiveFor({ kind: "school", school: { stage: "pick", options: opts } }, []);
-    return firstFail(d?.key !== "dup" && `dup ${d?.key}`, e?.key !== "confirm" && `edit ${e?.key}`, JSON.stringify(c2?.labels) !== '["Jude","Harry","Both"]' && `child2 ${JSON.stringify(c2)}`,
-      c3?.key !== "child_list4" && `child3 ${c3?.key}`, sc?.key !== "school_list3" && `school ${sc?.key}`, !/SK1 1EF/.test(sc?.vars["2"] ?? "") && `school title ${sc?.vars["2"]}`, sc?.vars["3"] !== "St Joseph's Catholic Primary School" && `school desc ${sc?.vars["3"]}`,
-      (sc?.vars["2"] ?? "").length > 24 && "school item over 24 chars", interactiveFor({ kind: "frequency" }, ["Jude"]) !== null && "frequency got buttons",
-      interactiveFor({ kind: "school_email", proposed: ["Harry"] }, ["Jude", "Harry"])?.key !== "confirm" && "school_email yes/no");
+    return firstFail(JSON.stringify(d?.labels) !== '["Different, save it","Same one"]' && `dup ${JSON.stringify(d)}`, JSON.stringify(e?.labels) !== '["Yes","No"]' && `edit ${JSON.stringify(e)}`,
+      (c2?.key !== "q3" || JSON.stringify(c2?.labels) !== '["Jude","Harry","Both"]' || c2?.answers[2] !== "both") && `child2 ${JSON.stringify(c2)}`,
+      c3?.key !== "l4" && `child3 ${c3?.key}`, sc?.key !== "ls3" && `school ${sc?.key}`, !/SK1 1EF/.test(sc?.labels[0] ?? "") && `school title ${sc?.labels[0]}`, sc?.descs?.[0] !== "St Joseph's Catholic Primary School" && `school desc ${sc?.descs?.[0]}`,
+      (sc?.labels[0] ?? "").length > 24 && "school item over 24 chars", interactiveFor({ kind: "frequency" }, ["Jude"]) !== null && "frequency without both options got buttons",
+      interactiveFor({ kind: "school_email", proposed: ["Harry"] }, ["Jude", "Harry"])?.key !== "q2" && "school_email yes/no");
+  });
+  pure("Every button carries its question's ID; variables are body, labels, (descriptions), ids", () => {
+    const i = interactiveFor({ kind: "which_child" }, ["Jude", "Harry"])!;
+    const v = contentVars(i, "abc123def0", "Which child?");
+    const back = parseTapPayload(v["7"]);
+    return firstFail(JSON.stringify(v) !== JSON.stringify({ "1": "Which child?", "2": "Jude", "3": "Harry", "4": "Both", "5": "q:abc123def0:0", "6": "q:abc123def0:1", "7": "q:abc123def0:2" }) && `vars ${JSON.stringify(v)}`,
+      (back?.qid !== "abc123def0" || back?.idx !== 2) && `parse ${JSON.stringify(back)}`, parseTapPayload("dup_same") !== null && "old ids parsed as question ids", tapPayload("abc123def0", 1) !== "q:abc123def0:1" && "payload");
+  });
+  pure("One question per button set: frequency → 'Just Thu 5 Nov' / 'Every Thursday'; reminder pick → one per match + Neither; delete scope", () => {
+    const f = interactiveFor({ kind: "frequency", items: [{ tool: "save_parent_note", args: { date: "2026-11-05" } }, { tool: "save_child_reminder", args: { day_of_week: "Thursday" } }] }, ["Jude"]);
+    const pk = interactiveFor({ kind: "pick", pick: { options: [{ label: "Jude's · Mon" }, { label: "Harry's · Tue" }] } }, []);
+    const sc = interactiveFor({ kind: "scope" }, []);
+    return firstFail(JSON.stringify(f?.labels) !== '["Just Thu 5 Nov","Every Thursday"]' && `frequency ${JSON.stringify(f)}`,
+      JSON.stringify(pk?.labels) !== `["Jude's · Mon","Harry's · Tue","Neither"]` && `pick ${JSON.stringify(pk)}`, JSON.stringify(pk?.answers) !== '["1","2","neither"]' && `pick answers ${JSON.stringify(pk?.answers)}`,
+      JSON.stringify(sc?.labels) !== '["Just this week","For good"]' && `scope ${JSON.stringify(sc)}`);
+  });
+  pure("Date rule: 'this Thursday' on a Thursday = today before 15:30 UK, next week after; 'next Thursday' = the coming week's; plain day = next one", () => {
+    const thu = "2026-10-29", mon = "2026-10-26";
+    const got = [resolveWeekday("this", "Thursday", thu, 10 * 60), resolveWeekday("this", "Thursday", thu, 15 * 60 + 29), resolveWeekday("this", "Thursday", thu, 15 * 60 + 30),
+      resolveWeekday("this", "Thursday", thu, 21 * 60 + 33), resolveWeekday("next", "Thursday", thu, 9 * 60), resolveWeekday("", "Thursday", mon, 9 * 60),
+      resolveWeekday("next", "Thursday", mon, 9 * 60), resolveWeekday("", "Monday", thu, 9 * 60), resolveWeekday("next", "Monday", "2026-11-01", 9 * 60)];
+    const want = ["2026-10-29", "2026-10-29", "2026-11-05", "2026-11-05", "2026-11-05", "2026-10-29", "2026-11-05", "2026-11-02", "2026-11-02"];
+    return JSON.stringify(got) !== JSON.stringify(want) ? `got ${JSON.stringify(got)}` : null;
+  });
+  pure("Date rule from a message: 'Delete Jude's PE kit this Thursday' at 21:33 Thu → 5 Nov; 'every Thursday' / explicit dates → no override", () => {
+    const at = (t: string) => resolveDayInText(t, "2026-10-29", 21 * 60 + 33);
+    const got = [at("Delete Jude's PE kit this Thursday"), at("Delete Jude's PE kit next Thursday"), at("PE kit on Thursday"), at("PE kit every Thursday"), at("PE kit on Thursday 12th"), at("Football Tuesday and PE Thursday"), at("PE kit tomorrow")];
+    const want = ["2026-11-05", "2026-11-05", "2026-11-05", null, null, null, null];
+    return JSON.stringify(got) !== JSON.stringify(want) ? `got ${JSON.stringify(got)}` : null;
+  });
+  pure("Duplicate check: common words (kit, bag, money, needed…) never match on their own; a real topic word does", () => {
+    const got = [hasMeaningfulShared(["kit"]), hasMeaningfulShared(["kit", "needed"]), hasMeaningfulShared(["bags", "money"]), hasMeaningfulShared(["pe", "kit"]), hasMeaningfulShared(["football"])];
+    return JSON.stringify(got) !== "[false,false,false,true,true]" ? `got ${JSON.stringify(got)}` : null;
+  });
+  pure("Casing: the parent's capitals are kept (PE kit, Y3 trip), ordinary words lower-cased mid-sentence", () => {
+    const got = ["PE kit", "Football kit", "Y3 trip", "ASC", "swimming", "Outdoor PE kit"].map(lowerFirstSafe);
+    return JSON.stringify(got) !== JSON.stringify(["PE kit", "football kit", "Y3 trip", "ASC", "swimming", "outdoor PE kit"]) ? `got ${JSON.stringify(got)}` : null;
   });
   pure("School picker labels: two same-name schools in one town get different short labels that fit and keep the postcode", () => {
     const two = [{ name: "St Joseph's Catholic Primary School", address: "Etchells Street, St Petersgate", town: "Stockport", postcode: "SK1 1EF" },
@@ -1116,6 +1155,20 @@ async function runOutboundTests(): Promise<Result[]> {
       al.length !== 1 && `alert rows ${al.length}`), fu[0]?.content ?? null);
   } catch (e) { push("Family update outbound tests: setup", (e as Error).message); }
   await resetTestData();
+  return out;
+}
+
+/** Button taps answered by question ID (no AI: every path here is decided in code). Own chunk (time limit). */
+async function runFreeTapTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  for (const c of FREE_TAP_CASES) {
+    let reason: string | null, reply: string | null = null, details: unknown = null;
+    try {
+      const r = await runHandlerCase(c);
+      reason = r.reason ?? (r.usage.calls > 0 ? `made ${r.usage.calls} AI call(s); must be free` : null); reply = r.reply; details = r.details;
+    } catch (e) { reason = (e as Error).message; }
+    out.push({ scenario: c.name, category: "sender", status: reason ? "fail" : "pass", reply, reason, details } as Result);
+  }
   return out;
 }
 
@@ -1279,8 +1332,10 @@ interface Seed {
   sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
   // Monty sent the account-check "is <child>'s school right?" (template text + the pending school check, as account-check does).
   schoolCheck?: { child: string; at: string };
+  // Stored conversation context (e.g. a 7-day question archive) — fake test families only.
+  context?: Record<string, unknown>;
 }
-interface Step { message: string; button?: { payload: string; text: string; replied_to?: string }; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
+interface Step { message: string; button?: { payload: string; text: string; replied_to?: string }; tapQ?: { from: number; idx: number }; now?: string; fail_db?: boolean; fail_followup?: boolean; fail_claude?: boolean; from?: keyof typeof FAMILIES }
 interface Rows {
   notes: { child: string | null; summary: string; dates: string[] }[];
   reminders: { child: string; title: string; day: string; interval: number; anchor: string | null }[];
@@ -1294,7 +1349,7 @@ interface Rows {
   skips: string[];                 // child_reminder_skips dates ("Harry:Swimming:2026-10-07")
   exclusions: string[];            // event_exclusions ("Harry:Halloween Disco")
 }
-type StepOut = { familyUpdates: unknown[]; toolCalls: any[]; chatSource?: string; buttons?: { key: string; labels: string[]; vars: Record<string, string> } | null };
+type StepOut = { familyUpdates: unknown[]; toolCalls: any[]; chatSource?: string; buttons?: { key: string; labels: string[]; answers: string[]; descs?: string[]; payloads?: string[]; question_id?: string | null } | null };
 interface HandlerCase {
   name: string; family: keyof typeof FAMILIES; now: string; seed?: Seed; steps: Step[];
   check: (after: Rows[], replies: string[], steps: StepOut[]) => string | null | Promise<string | null>;
@@ -1368,6 +1423,12 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
       const { error: me } = await admin.from("messages").insert({ conversation_id: convo.id, direction: "outbound", content: m.text, message_type: "template", source: m.source, school_email_id: logId, metadata: m.meta ?? null, created_at: m.at });
       if (me) throw new Error(`seed sent message: ${me.message}`);
     }
+  }
+  if (seed.context) {
+    let { data: convo } = await admin.from("conversations").select("id").eq("phone_number", f.phone).maybeSingle();
+    if (!convo) ({ data: convo } = await admin.from("conversations").insert({ phone_number: f.phone, current_step: "active" }).select("id").single());
+    const { error: ce } = await admin.from("conversations").update({ context: seed.context }).eq("id", convo!.id);
+    if (ce) throw new Error(`seed context: ${ce.message}`);
   }
   if (seed.schoolCheck) {
     let { data: convo } = await admin.from("conversations").select("id, context").eq("phone_number", f.phone).maybeSingle();
@@ -1505,21 +1566,21 @@ const HANDLER_CASES: HandlerCase[] = [
   // ── which child / clarification ──
   { name: "No child named, 2 children → asks which child, then 'Jude' saves for Jude", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude" }, { message: "every week" }],
-    check: ([r1, r2, r3], [q, q2, a]) => firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`, !(asks(q) && /jude/i.test(q) && /harry/i.test(q) && /every thursday/i.test(q)) && `didn't ask child + one-off/weekly together: "${q}"`,
+    check: ([r1, r2, r3], [q, q2, a]) => firstFail(total(r1) > 0 && `saved before asking: ${JSON.stringify(r1)}`, !(asks(q) && /jude/i.test(q) && /harry/i.test(q)) && `didn't ask which child: "${q}"`, /every thursday|just /i.test(q) && `asked two things at once: "${q}"`,
       total(r2) > 0 && "saved before one-off/weekly was answered", !/every thursday/i.test(q2) && `didn't ask one-off or weekly: "${q2}"`, /harry/i.test(q2) && "re-asked which child",
       remFor(r3, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly not saved: ${JSON.stringify(r3)}`, peThu(r3, "Harry") > 0 && "also saved for Harry",
       !/jude/i.test(a) && "confirmation doesn't name Jude", r3.pending !== null && "pending not cleared") },
-  { name: "Combined question, full answer 'Jude, every week' → one Jude weekly reminder", family: "A", now: MON,
+  { name: "Child question, full answer 'Jude, every week' → one Jude weekly reminder, no second question", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "Jude, every week" }],
-    check: ([r1, r2], [q, a]) => firstFail(total(r1) > 0 && "saved before asking", !(/jude/i.test(q) && /harry/i.test(q) && /every thursday/i.test(q)) && `not one combined question: "${q}"`,
+    check: ([r1, r2], [q, a]) => firstFail(total(r1) > 0 && "saved before asking", !(/jude/i.test(q) && /harry/i.test(q)) && `didn't ask which child: "${q}"`,
       remFor(r2, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly missing: ${JSON.stringify(r2)}`, peThu(r2, "Harry") > 0 && "saved for Harry", r2.notes.length > 0 && "dated note saved too",
       asks(a) && `asked again: "${a}"`, r2.pending !== null && "pending not cleared") },
-  { name: "Combined question, partial answer 'every week' → asks only which child, then 'Harry' saves", family: "A", now: MON,
+  { name: "Child question, answer 'every week' → asks only which child, then 'Harry' saves", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "every week" }, { message: "Harry" }],
     check: ([, r2, r3], [, q2, a]) => firstFail(total(r2) > 0 && `saved with no child: ${JSON.stringify(r2)}`, !(asks(q2) && /harry/i.test(q2) && /jude/i.test(q2)) && `didn't ask which child: "${q2}"`,
       /every thursday|just/i.test(q2) && "re-asked one-off/weekly", remFor(r3, "Harry", "Thursday", /pe/i).length !== 1 && `Harry weekly missing: ${JSON.stringify(r3)}`,
       peThu(r3, "Jude") > 0 && "saved for Jude", asks(a) && `asked again: "${a}"`) },
-  { name: "Combined question, 'both, every week' → weekly for both", family: "A", now: MON,
+  { name: "Child question, 'both, every week' → weekly for both", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, { message: "both, every week" }],
     check: ([, r2]) => firstFail(remFor(r2, "Jude", "Thursday", /pe/i).length !== 1 && `Jude: ${JSON.stringify(r2)}`, remFor(r2, "Harry", "Thursday", /pe/i).length !== 1 && "Harry missing", r2.notes.length > 0 && "dated notes saved") },
   { name: "Reply 'both' to which-child → saved for both", family: "A", now: MON,
@@ -1828,26 +1889,25 @@ const BUTTON_CASES: HandlerCase[] = [
       r.notes.length + r.reminders.length > 0 && "saved something else") },
   { name: "Button: duplicate question shows 'Different / Same one'; tapping 'Same one' saves one note under the school event's title", family: "D", now: SUN_PM, seed: { events: [SCHOOL_EVENT_NO_TOPIC] },
     steps: [{ message: CASPIAN_MSG }, tap("dup_same", "Same one")],
-    check: (r, a, o) => o[0]?.buttons?.key !== "dup" ? `no duplicate buttons on the question: ${JSON.stringify(o[0]?.buttons)}` : stillAsksCheck(/Mixed Tournament/i, /Mixed Tournament/i)(r, a) },
+    check: (r, a, o) => o[0]?.buttons?.labels?.[0] !== "Different, save it" ? `no duplicate buttons on the question: ${JSON.stringify(o[0]?.buttons)}` : stillAsksCheck(/Mixed Tournament/i, /Mixed Tournament/i)(r, a) },
   { name: "Button: Ask Monty cancel shows Yes/No; tapping Yes skips only that date", family: "A", now: MON, chatSource: "new",
     seed: { reminders: SWIM }, steps: [{ message: "Cancel Harry's swimming this week" }, tap("confirm_yes", "Yes")],
-    check: ([r1, r2], [, a], o) => firstFail(o[0]?.buttons?.key !== "confirm" && `no Yes/No buttons: ${JSON.stringify(o[0]?.buttons)}`, r1.skips.length > 0 && "changed before confirming",
+    check: ([r1, r2], [, a], o) => firstFail(o[0]?.buttons?.labels?.join("/") !== "Yes/No" && `no Yes/No buttons: ${JSON.stringify(o[0]?.buttons)}`, r1.skips.length > 0 && "changed before confirming",
       JSON.stringify(r2.skips) !== JSON.stringify(["Harry:Swimming:2026-10-07"]) && `skips: ${JSON.stringify(r2.skips)}`, a !== "Done, Harry's swimming is off for Wednesday 7th ✅" && `confirmation: "${a}"`) },
   { name: "Button: which-child question shows the children's names; tapping 'Jude' then 'every week' saves Jude's weekly reminder", family: "A", now: MON,
     steps: [{ message: "Needs PE kit Thursday" }, tap("child_1", "Jude"), { message: "every week" }],
-    check: ([r1, , r3], [, , a], o) => firstFail(o[0]?.buttons?.key !== "child2" || !["Jude", "Harry", "Both"].every((l) => o[0]!.buttons!.labels.includes(l)) ? `child buttons: ${JSON.stringify(o[0]?.buttons)}` : false,
+    check: ([r1, , r3], [, , a], o) => firstFail(o[0]?.buttons?.key !== "q3" || !["Jude", "Harry", "Both"].every((l) => o[0]!.buttons!.labels.includes(l)) ? `child buttons: ${JSON.stringify(o[0]?.buttons)}` : false,
       total(r1) > 0 && "saved before asking", remFor(r3, "Jude", "Thursday", /pe/i).length !== 1 && `Jude weekly not saved: ${JSON.stringify(r3.reminders)}`, peThu(r3, "Harry") > 0 && "also saved for Harry",
       !/Jude/.test(a) && "confirmation doesn't name Jude") },
   { name: "List pick: wrong school → list of matches (town + postcode) → pick 1 → Yes/No → 'Yes' changes it", family: "C", now: MON,
     steps: [{ message: WRONG_SCHOOL_MSG }, { message: "St Joseph's in Stockport" }, tap("school_1", "St Joseph's Catholic"), tap("confirm_yes", "Yes")],
     check: ([, r2, r3, r4], [, , confirm, done], o) => {
       const opts = (r2.pending as any)?.school?.options ?? [];
-      return firstFail(!/^school_list[23]$/.test(o[1]?.buttons?.key ?? "") && `no school list: ${JSON.stringify(o[1]?.buttons)}`, (() => { const v = o[1]?.buttons?.vars ?? {}, n = opts.length, ts = Array.from({ length: n }, (_, i) => v[String(i * 2 + 2)] ?? "");
-          const ds = Array.from({ length: n }, (_, i) => v[String(i * 2 + 3)] ?? "");
-          if (!n || opts.some((op: any, i: number) => !(ts[i] + " " + ds[i]).includes(String(op.postcode).toUpperCase()))) return `an option lacks its postcode: ${JSON.stringify(v)}`;
+      return firstFail(!/^ls[23]$/.test(o[1]?.buttons?.key ?? "") && `no school list: ${JSON.stringify(o[1]?.buttons)}`, (() => { const b = o[1]?.buttons, n = opts.length, ts = b?.labels ?? [], ds = b?.descs ?? [];
+          if (!n || opts.some((op: any, i: number) => !((ts[i] ?? "") + " " + (ds[i] ?? "")).includes(String(op.postcode).toUpperCase()))) return `an option lacks its postcode: ${JSON.stringify(b)}`;
           if (new Set(ts).size !== n) return `labels repeat: ${JSON.stringify(ts)}`;
           return ts.some((t) => t.length > 24) && `label over 24: ${JSON.stringify(ts)}`; })(),
-        !schoolUnchanged(r3) && "changed before confirming", !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, o[2]?.buttons?.key !== "confirm" && "no Yes/No on the confirm question",
+        !schoolUnchanged(r3) && "changed before confirming", !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, o[2]?.buttons?.labels?.join("/") !== "Yes/No" && "no Yes/No on the confirm question",
         r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`, !/done/i.test(done) && `no confirmation: "${done}"`, r4.pending !== null && "pending not cleared");
     } },
   { name: "Stale button: 'Save it' tapped 2 days later (a reminder sent since) → saves from the linked school email", family: "A", now: "2026-10-20T07:30:00Z",
@@ -1859,6 +1919,68 @@ const BUTTON_CASES: HandlerCase[] = [
     check: ([r], [a]) => firstFail(total(r) > 0 && "saved something", ROBOTIC.test(a) && `robotic: "${a}"`, a.split(/(?<=[.!?])\s/).length > 3 && `not one line: "${a}"`, /not sure/i.test(a) && `"not sure": "${a}"`) },
 ];
 HANDLER_CASES.push(...BUTTON_CASES);
+
+// ── Taps answered by question ID (Matt's phone test, 29 Oct 21:25–21:35). FREE: decided in code, no AI. ──
+const THU_NIGHT = "2026-10-29T21:35:00Z";
+const FOOTBALL_NOTE = { child: "Jude", summary: "Football kit needed (after school)", date: "2026-11-05" };
+const MATT_REMINDERS = [{ child: "Jude", title: "PE kit", day: "Monday" }, { child: "Harry", title: "Outdoor PE kit", day: "Tuesday" }];
+const dupQuestion = (id: string, at: string) => ({
+  id, kind: "duplicate", items: [{ tool: "save_parent_note", args: { child_name: "Jude", summary: "Jude's PE kit", date: "2026-11-05" } }], proposed: null,
+  question: `Jude already has "Football kit needed (after school)" on Thursday 5th. Is the PE kit a different one I should save too?`, created_at: at, source_text: "Jude, just this Thursday",
+  dup: { child: "Jude", summary: "Jude's PE kit", date: "2026-11-05", existing: "Football kit needed (after school)", table: "parent_notes", tool: "save_parent_note",
+    args: { child_name: "Jude", summary: "Jude's PE kit", date: "2026-11-05" }, item: "PE kit" } });
+// The question is in the 7-day archive but no longer the current one (the parent sent another message since).
+const archived = (q: any, status = "open") => ({ pending_action: null, questions: { [q.id]: { p: q, status, at: q.created_at, asked: q.question, answers: ["different one, save it", "no, it's the same one"] } } });
+const qTap = (qid: string, i: number, text: string): Step => ({ message: text, button: { payload: `q:${qid}:${i}`, text } });
+const LOST = /lost track|a while ago/i;
+const FREE_TAP_CASES: HandlerCase[] = [
+  { name: "Free tap: 'Different, save it' 2 minutes later, after another message → saved by question ID; tapping again → 'Already done ✅'", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], reminders: MATT_REMINDERS, context: archived(dupQuestion("abc123def0", "2026-10-29T21:33:00Z")) },
+    steps: [qTap("abc123def0", 0, "Different, save it"), qTap("abc123def0", 0, "Different, save it")],
+    check: ([r1, r2], [a1, a2]) => firstFail(noteFor(r1, "Jude", "2026-11-05", /PE kit/).length !== 1 && `PE kit not saved for Jude on 5 Nov: ${JSON.stringify(r1.notes)}`,
+      !/PE kit/.test(a1) || !/✅/.test(a1) ? `confirmation: "${a1}"` : false, /pE/.test(a1 + a2) && "casing lost (pE)", noteFor(r2, "Jude", "2026-11-05", /PE kit/).length !== 1 && "second tap saved again",
+      !/^Already done ✅/.test(a2) || !/PE kit/.test(a2) ? `second tap: "${a2}"` : false, LOST.test(a1 + a2) && "said 'lost track'", r2.reminders.length !== 2 && `weekly reminders changed: ${JSON.stringify(r2.reminders)}`) },
+  { name: "Free tap: question older than 7 days → asked again in full with fresh buttons, nothing saved", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], context: archived(dupQuestion("abc123def1", "2026-10-21T21:33:00Z")) },
+    steps: [qTap("abc123def1", 0, "Different, save it")],
+    check: ([r], [a], o) => firstFail(r.notes.length !== 1 && `saved from an expired question: ${JSON.stringify(r.notes)}`, !/Football kit needed/.test(a) || !asks(a) ? `not re-asked in full: "${a}"` : false,
+      o[0]?.buttons?.labels?.[0] !== "Different, save it" && `no fresh buttons: ${JSON.stringify(o[0]?.buttons)}`, (o[0]?.buttons?.question_id ?? "abc123def1") === "abc123def1" && "buttons reuse the old question ID", LOST.test(a) && "said 'lost track'") },
+  { name: "Free tap: unknown question ID with nothing open → honest 'no longer live' line, nothing saved", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE] }, steps: [qTap("zzzz999999", 0, "Different, save it")],
+    check: ([r], [a]) => firstFail(r.notes.length !== 1 && "saved something", !/haven't changed anything/.test(a) && `reply: "${a}"`, LOST.test(a) && "said 'lost track'") },
+  { name: "Free tap: old-style 'dup_different' button with the question no longer current → still answered from the archive", family: "A", now: THU_NIGHT,
+    seed: { notes: [FOOTBALL_NOTE], context: archived(dupQuestion("abc123def2", "2026-10-29T21:33:00Z")) },
+    steps: [tap("dup_different", "Different, save it")],
+    check: ([r], [a]) => firstFail(noteFor(r, "Jude", "2026-11-05", /PE kit/).length !== 1 && `not saved: ${JSON.stringify(r.notes)}`, LOST.test(a) && "said 'lost track'") },
+];
+
+// ── Matt's replay (AI): child → just this one → saved; then delete only that one-off. Weekly PE kits untouched. ──
+const THU_EVE = "2026-10-29T21:25:00Z";
+const REPLAY_CASES: HandlerCase[] = [
+  { name: "Replay: 'PE kit on Thursday' → child buttons → Jude → 'Just Thu 5 Nov' button → one note, 'PE kit' casing, weekly PE kits untouched", family: "A", now: THU_EVE,
+    seed: { reminders: MATT_REMINDERS, notes: [FOOTBALL_NOTE] }, chatSource: "new",
+    steps: [{ message: "PE kit on Thursday" }, { message: "Jude", tapQ: { from: 0, idx: 0 } }, { message: "Just this one", tapQ: { from: 1, idx: 0 } }],
+    check: ([r1, r2, r3], [q1, q2, a], o) => firstFail(total(r1) !== 3 && `saved before asking: ${JSON.stringify(r1.notes)}`,
+      JSON.stringify(o[0]?.buttons?.labels) !== '["Jude","Harry","Both"]' && `child buttons: ${JSON.stringify(o[0]?.buttons)}`, /every|just/i.test(q1) && `asked two things at once: "${q1}"`,
+      total(r2) !== 3 && "saved before one-off/weekly was answered", JSON.stringify(o[1]?.buttons?.labels) !== '["Just Thu 5 Nov","Every Thursday"]' && `frequency buttons: ${JSON.stringify(o[1]?.buttons)} "${q2}"`,
+      noteFor(r3, "Jude", "2026-11-05", /PE kit/).length !== 1 && `no one-off PE kit for Jude on 5 Nov: ${JSON.stringify(r3.notes)}`, remFor(r3, "Jude", "Thursday", /pe/i).length > 0 && "weekly Thursday saved",
+      /pE/.test(q1 + q2 + a) && "casing lost (pE)", /football/i.test(q2 + a) && `treated Football kit as the same thing: "${q2} / ${a}"`,
+      remFor(r3, "Jude", "Monday", /pe kit/i).length !== 1 && "Jude's Monday PE kit changed", remFor(r3, "Harry", "Tuesday", /outdoor pe kit/i).length !== 1 && "Harry's Tuesday outdoor PE kit changed") },
+  { name: "Replay: 'Delete Jude's PE kit next Thursday' (21:33 Thu) → Yes/No for 5 Nov → Yes deletes only that one-off", family: "A", now: "2026-10-29T21:33:00Z",
+    seed: { reminders: MATT_REMINDERS, notes: [FOOTBALL_NOTE, { child: "Jude", summary: "Jude's PE kit", date: "2026-11-05" }] }, chatSource: "new",
+    steps: [{ message: "Delete Jude's PE kit next Thursday" }, { message: "Yes", tapQ: { from: 0, idx: 0 } }],
+    check: ([r1, r2], [q, a], o) => firstFail(r1.notes.length !== 2 && "deleted before confirming", !/5(th)?|Thursday 5/i.test(q) && `date not repeated: "${q}"`, /29(th)?\b/.test(q) && `resolved as today: "${q}"`,
+      o[0]?.buttons?.labels?.join("/") !== "Yes/No" && `no Yes/No buttons: ${JSON.stringify(o[0]?.buttons)}`,
+      noteFor(r2, "Jude", "2026-11-05", /PE kit/).length !== 0 && `PE kit note still there: ${JSON.stringify(r2.notes)}`, noteFor(r2, "Jude", "2026-11-05", /football/i).length !== 1 && "football note deleted",
+      r2.reminders.length !== 2 && `weekly reminders changed: ${JSON.stringify(r2.reminders)}`, r2.skips.length > 0 && `weekly skipped: ${JSON.stringify(r2.skips)}`, !/✅/.test(a) && `no confirmation: "${a}"`) },
+  { name: "Replay: 'Delete the PE kit reminder' with two weekly PE kits → buttons per match + Neither → 'Neither' changes nothing", family: "A", now: THU_EVE,
+    seed: { reminders: MATT_REMINDERS }, chatSource: "new",
+    steps: [{ message: "Delete the PE kit reminder" }, { message: "Neither", tapQ: { from: 0, idx: 2 } }],
+    check: ([r1, r2], [q, a], o) => firstFail(JSON.stringify(o[0]?.buttons?.labels) !== `["Jude's · Mon","Harry's · Tue","Neither"]` && `pick buttons: ${JSON.stringify(o[0]?.buttons)} "${q}"`,
+      r1.reminders.length !== 2 && "changed before choosing", r2.reminders.length !== 2 && `changed after Neither: ${JSON.stringify(r2.reminders)}`, r2.skips.length > 0 && "skipped a date", !/left them/i.test(a) && `reply: "${a}"`) },
+];
+BUTTON_CASES.push(...REPLAY_CASES);
+HANDLER_CASES.push(...REPLAY_CASES);
 
 // Quick suite: the core conversation checks (~10 AI scenarios) run after every change.
 const QUICK_NAMES = [
@@ -1901,7 +2023,11 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const after: Rows[] = []; const replies: string[] = []; const calls: unknown[] = []; const outs: StepOut[] = [];
   const usage: CaseOut["usage"] = { input: 0, output: 0, cache_write: 0, cache_read: 0, calls: 0, ms: 0, truncated: 0, turns: 0 };
   const turnMs: number[] = [];
-  for (const step of c.steps) {
+  for (const step0 of c.steps) {
+    // tapQ: tap a button Monty actually sent in an earlier step (its real question-ID payload)
+    const prev = step0.tapQ ? outs[step0.tapQ.from]?.buttons : null;
+    const step: Step = step0.tapQ ? { ...step0, message: prev?.labels?.[step0.tapQ.idx] ?? step0.message,
+      button: { payload: prev?.payloads?.[step0.tapQ.idx] ?? "q:nobuttons0:0", text: prev?.labels?.[step0.tapQ.idx] ?? step0.message } } : step0;
     const { status, data } = await callFn("whatsapp-webhook", {
       scenario: c.name, phone: FAMILIES[step.from ?? c.family].phone, message: step.message, now: step.now ?? c.now,
       ...((c.chatSource ?? CHAT_SOURCE) ? { chat_source: c.chatSource ?? CHAT_SOURCE } : {}),
@@ -1923,9 +2049,9 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const pron = replies.find((r) => /\b(he|she|his|her|him)\b/i.test(r));
   const empty = replies.findIndex((r) => !r.trim());
   const reason = sys ? `system wording reached the parent: "${sys.slice(0, 120)}"` : pron ? `pronoun used for a child: "${pron.slice(0, 160)}"` : empty >= 0 ? `empty reply at step ${empty + 1}` : badConf ? `confirmation not one short line naming the child: "${badConf.r}"` : await c.check(after, replies, outs);
-  const said = (st: Step) => (st.button ? `[tapped ${st.button.text}]` : st.message);
+  const said = (st: Step) => (st.button || st.tapQ ? `[tapped ${st.button?.text ?? (outs[st.tapQ!.from]?.buttons?.labels?.[st.tapQ!.idx] ?? "?")}]` : st.message);
   const shown = (i: number) => replies[i] + (outs[i]?.buttons ? ` [buttons: ${outs[i].buttons!.labels.join(" | ")}]` : "");
-  const reply = c.steps.length > 1 || c.steps[0]?.button || outs[0]?.buttons ? c.steps.map((st, i) => `Parent: ${said(st)}\nMonty: ${shown(i)}`).join("\n") : replies[0];
+  const reply = c.steps.length > 1 || c.steps[0]?.button || c.steps[0]?.tapQ || outs[0]?.buttons ? c.steps.map((st, i) => `Parent: ${said(st)}\nMonty: ${shown(i)}`).join("\n") : replies[0];
   return { reason, reply, details: { rows: after[after.length - 1], tool_calls: calls, chat_source: outs.map((o) => o.chatSource), family_updates: outs.map((o) => o.familyUpdates), confirmations: confirmations.map((x) => x.r), model: usage.model, ai_ms_per_turn: turnMs, truncated: usage.truncated }, usage };
 }
 
@@ -2023,7 +2149,7 @@ Deno.serve(async (req) => {
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
   // A run with only one part (e.g. action "sender_suite") finishes in one call.
-  const part: "sender" | "outbound" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : "sender";
+  const part: "sender" | "outbound" | "taps" | "conversation" = body.part === "conversation" ? "conversation" : body.part === "outbound" ? "outbound" : body.part === "taps" ? "taps" : "sender";
   const offset = Number.isInteger(body.offset) ? body.offset : 0;
   const limit = Math.min(Number.isInteger(body.limit) ? body.limit : 2, 6);
   let runId: string | null = typeof body.run_id === "string" ? body.run_id : null;
@@ -2045,6 +2171,7 @@ Deno.serve(async (req) => {
     await resetTestData();
     if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
     else if (part === "outbound") results = await runOutboundTests();
+    else if (part === "taps") results = await runFreeTapTests();
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;
@@ -2056,7 +2183,8 @@ Deno.serve(async (req) => {
 
   let next: { part: string; offset: number } | null = null;
   if (part === "sender") next = { part: "outbound", offset: 0 }; // free tests continue in their own chunk (time limit)
-  if (part === "outbound" && suite !== "sender") next = { part: "conversation", offset: 0 };
+  if (part === "outbound") next = { part: "taps", offset: 0 };
+  if (part === "taps" && suite !== "sender") next = { part: "conversation", offset: 0 };
   if (part === "conversation" && offset + limit < casesFor(suite).length) next = { part: "conversation", offset: offset + limit };
 
   // Last chunk: one suite-wide check that every confirmation is a single short line naming the child.

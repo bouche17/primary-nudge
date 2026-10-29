@@ -13,7 +13,8 @@ import { whatsOnDays } from "../_shared/reminderFormat.ts";
 import { addDays as addDaysIso, confirmQuestion, dayShort, doneLine, EDIT_CLAIM, EDIT_INTENT, failLine, keptLine, lookupReply, matchesQuery, NOT_FOUND_REPLY, weekdayOf as weekdayOfIso, type EditOp, type EditPlan } from "../_shared/askMonty.ts";
 import { isWrongSchoolMessage, looksLikeSchoolAnswer, schoolChatOption, schoolOneLine, schoolSearchQuery } from "../_shared/schoolLabel.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { buttonAction, interactiveFor, SESSION_SIDS, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SIDS, tapPayload, withLabels, type Interactive } from "../_shared/interactive.ts";
+import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
@@ -283,6 +284,8 @@ ${onboardingInstructions}`.trimEnd(),
 - Tomorrow: ${tomorrowD.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })} (${tomorrowD.toISOString().split("T")[0]})
 - Next 7 days:
 ${next7}
+- Day words, already worked out (use these exact dates for saves, lookups, changes and deletes; "this <day>" on that same day means today only before 3:30pm UK):
+${dayWordAnchors()}
 Earlier messages in the chat history may refer to "tomorrow" or "this week" relative to an older date — always resolve relative dates using the anchors above, never from past messages.`,
   };
 }
@@ -677,7 +680,8 @@ function matchItem(existing: string, incoming: string, childNames: string[]): "e
   const shared = [...a].filter((w) => b.has(w));
   if (shared.length === 0) return "none";
   if (shared.length === a.size && shared.length === b.size) return "exact";
-  return "ambiguous";
+  // A shared "kit" / "bag" / "day" alone never makes it the same thing (PE kit ≠ football kit).
+  return hasMeaningfulShared(shared) ? "ambiguous" : "none";
 }
 async function logDedupDecision(d: {
   phone: string; childName: string | null; tool: string; date?: string | null; newItem: string;
@@ -1320,7 +1324,7 @@ function tidyItem(text: string, child: string): string {
   let t = String(text || "").trim().replace(/\s+needed$/i, "");
   const m = t.match(/^(\w+)\s+(?:needs|has got|has|needs to bring)\s+(?:his|her|their|a|an|the)?\s*(.+)$/i);
   if (m && (!child || m[1].toLowerCase() === child.toLowerCase())) t = `${m[1]}'s ${m[2]}`;
-  else if (child && !new RegExp(`\\b${child}\\b`, "i").test(t)) t = `${child}'s ${/^[A-Z]{2}/.test(t) ? t : t.charAt(0).toLowerCase() + t.slice(1)}`;
+  else if (child && !new RegExp(`\\b${child}\\b`, "i").test(t)) t = `${child}'s ${lowerFirstSafe(t)}`;
   return t;
 }
 function friendlyLabel(tool: string, args: any): string {
@@ -1352,14 +1356,33 @@ const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Satur
 const RECURRING_WORDS = /\b(every|each|weekly|fortnightly|every other|every week|moved|moving|now on|from now on|always|regularly)\b|\b(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/i;
 const ONE_OFF_WORDS = /\b(just|only|once|one-?off|one off)\b|\b(this|next) (coming )?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\b\d{1,2}(st|nd|rd|th)\b|\b\d{1,2}\/\d{1,2}\b|\b(january|february|march|april|may|june|july|august|september|october|november|december)\b/i;
 const BRING_WORDS = /\b(needs?|bring|take|pack)\b/i;
-const GENERIC_ITEM = new Set(["kit", "bag", "stuff", "thing", "things", "clothes", "needed", "club", "lesson", "lessons"]);
+const GENERIC_ITEM = new Set(["stuff", "thing", "things", "club", "lesson", "lessons", ...COMMON_ITEM_WORDS]);
 
 const ukTodayIso = () => nowD().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
 const weekdayOf = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
+/** "<day>" → the shared resolver (today only before 15:30 UK). */
 function nextDateFor(day: string): string {
-  const t = new Date(`${ukTodayIso()}T12:00:00Z`);
-  for (let i = 0; i < 7; i++) { const d = new Date(t); d.setUTCDate(t.getUTCDate() + i); if (weekdayOf(d.toISOString().slice(0, 10)) === day) return d.toISOString().slice(0, 10); }
-  return ukTodayIso();
+  const { today, minutes } = ukNowParts(nowD());
+  return resolveWeekday("", day, today, minutes);
+}
+/** The one date the parent's day words point to ("this Thursday", "next Thursday"), via the shared resolver. */
+function messageDay(text: string): string | null {
+  const { today, minutes } = ukNowParts(nowD());
+  return resolveDayInText(text, today, minutes);
+}
+/** The parent's "this/next <day>" wins over the model's date for the same weekday (save, lookup, change, delete). */
+function applyMessageDay(tool: string, input: any, message: string) {
+  const md = messageDay(message);
+  if (!md || !input) return;
+  const fix = (d: unknown) => (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && d !== md && weekdayOf(d) === weekdayOf(md) ? md : d);
+  if (tool === "save_parent_note") input.date = fix(input.date);
+  if (tool === "lookup_whats_on" && input.from_date === input.to_date) input.from_date = input.to_date = fix(input.from_date);
+  if (tool === "ask_parent_to_confirm" && Array.isArray(input.items)) for (const it of input.items) if (it?.tool === "save_parent_note" && it.args) it.args.date = fix(it.args.date);
+}
+/** "this/next <day>" anchors for the prompt, from the same resolver the code uses. */
+function dayWordAnchors(): string {
+  const { today, minutes } = ukNowParts(nowD());
+  return WEEKDAY_NAMES.map((d) => `- "${d}" / "this ${d}" → ${resolveWeekday("this", d, today, minutes)} · "next ${d}" → ${resolveWeekday("next", d, today, minutes)}`).join("\n");
 }
 function dayWordFor(iso: string): string {
   const today = ukTodayIso();
@@ -1428,7 +1451,7 @@ async function decideSave(tool: string, args: any, sourceText: string, context: 
         text: `ALREADY_SAVED: this is already on the list as a weekly reminder — ${label}. Nothing new saved. Tell the parent: "That's already on the list: ${label} 👍"` } };
     }
   }
-  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${/^[A-Z]{2}/.test(title) ? title : title.charAt(0).toLowerCase() + title.slice(1)}`, date, ...(childName ? { child_name: childName } : {}) } };
+  const asNote = { tool: "save_parent_note", args: { summary: tool === "save_parent_note" ? args.summary : `${childName ? childName + " needs " : ""}${lowerFirstSafe(title)}`, date, ...(childName ? { child_name: childName } : {}) } };
   const asWeekly = { tool: "save_child_reminder", args: { child_name: childName, title, emoji: args.emoji || "📌", day_of_week: day, reminder_time: args.reminder_time || "both", recurrence_interval: 1 } };
   if (freqOverride === "weekly" && childName) return { kind: "save", ...asWeekly };
   if (freqOverride === "once") return { kind: "save", ...asNote };
@@ -1458,10 +1481,6 @@ function frequencyQuestionPart(tool: string, args: any, sourceText: string, chil
   if (tool === "save_parent_note" && !BRING_WORDS.test(clause)) return null;
   return `just ${dayWordFor(date!)} or every ${day}`;
 }
-function combinedQuestion(names: string[], freqPart: string): string {
-  const list = names.length <= 2 ? names.join(" or ") : `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
-  return `Is that for ${list}, and ${freqPart}? 😊`;
-}
 const ONCE_REPLY = /\b(just|only|once|one-?off|this one|that day|this week|tomorrow|today)\b/i;
 const WEEKLY_REPLY = /\b(every|weekly|each|always|regular(ly)?)\b|\bevery week\b/i;
 function freqFromReply(message: string): "once" | "weekly" | null {
@@ -1488,7 +1507,11 @@ function nameNotPronoun(text: string, childNames: string[]): string {
 // ── Pending actions for text messages (stored on the conversation, 24h expiry) ──
 interface SchoolOpt { id: string; name: string; address: string | null; town: string | null; postcode: string; urn: string }
 interface PendingAction {
-  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit" | "school_email";
+  kind: "which_child" | "confirm" | "frequency" | "move" | "duplicate" | "school" | "edit" | "school_email" | "pick" | "scope";
+  id?: string;                         // unique question ID: in every button's payload and the outbound message's metadata
+  retext?: boolean;                    // which_child asked in plain words by the AI: the answer re-runs source_text for that child
+  pick?: { action: "delete"; options: Array<AskRef & { label: string }> }; // "which PE kit reminder do you mean?"
+  scope?: { ref: AskRef };             // "just this week, or for good?" for deleting a weekly reminder
   email?: SchoolEmailItem;             // "yes" to a school email: the dated event waiting for a child
   edit?: EditPlan;                     // Ask Monty: the change waiting for "yes"
   dup?: { child: string | null; summary: string; date: string; existing: string; table: string; yearGroup?: string | null; tool: string; args: any; item?: string };
@@ -1506,16 +1529,49 @@ async function getConversationRow(phone: string) {
   const { data } = await supabase.from("conversations").select("id, context").eq("phone_number", phone).maybeSingle();
   return data as { id: string; context: any } | null;
 }
-async function setPendingAction(phone: string, p: PendingAction | null) {
+/** Questions stay answerable by button for 7 days (the archive is keyed by question ID). */
+const QUESTION_DAYS = 7;
+interface QuestionEntry { p: PendingAction; status: "open" | "answered" | "closed"; at: string; asked?: string; answers?: string[]; outcome?: string }
+const newQuestionId = () => crypto.randomUUID().replace(/-/g, "").slice(0, 10);
+/** Same kind + same item: a new question about it closes the older one. */
+function questionItemKey(p: PendingAction): string {
+  const items = (p.items || []).map((i) => `${String(i.args?.child_name || "").toLowerCase()}:${i.args?.date || i.args?.day_of_week || ""}:${String(i.args?.summary || i.args?.title || "").toLowerCase()}`).sort().join(",");
+  const extra = p.dup ? dupKey(p.dup) : p.edit ? JSON.stringify(p.edit.op) : p.scope ? p.scope.ref.id : p.pick ? p.pick.options.map((o) => o.id).join(",") : p.email ? `${p.email.title}|${p.email.date}` : p.school ? p.school.child_ids.join(",") : p.move ? p.move.to : "";
+  return `${p.kind}|${items}|${extra}`;
+}
+/** Stores the current question and keeps every question in a 7-day archive by ID. Clearing the current question marks it
+ *  answered, unless `dropped` (the parent moved on): a dropped question stays open, so its buttons still work. */
+async function setPendingAction(phone: string, p: PendingAction | null, opts: { dropped?: boolean } = {}) {
   const row = await getConversationRow(phone);
   if (!row) return;
-  await supabase.from("conversations").update({ context: { ...(row.context || {}), pending_action: p } }).eq("id", row.id);
+  const ctx = row.context || {};
+  const qs: Record<string, QuestionEntry> = { ...(ctx.questions || {}) };
+  const cur: PendingAction | null = ctx.pending_action ?? null;
+  const nowIso = nowD().toISOString();
+  if (p) {
+    p.id ||= newQuestionId();
+    const key = questionItemKey(p);
+    for (const [k, e] of Object.entries(qs)) if (k !== p.id && e.status === "open" && questionItemKey(e.p) === key) e.status = "closed";
+    qs[p.id] = { ...(qs[p.id] || {}), p, status: "open", at: qs[p.id]?.at ?? nowIso };
+  } else if (cur?.id && qs[cur.id] && !opts.dropped) qs[cur.id] = { ...qs[cur.id], status: "answered" };
+  const cutoff = nowD().getTime() - QUESTION_DAYS * 86_400_000;
+  const kept = Object.entries(qs).filter(([, e]) => new Date(e.at).getTime() >= cutoff).sort((a, b) => b[1].at.localeCompare(a[1].at)).slice(0, 15);
+  await supabase.from("conversations").update({ context: { ...ctx, pending_action: p, questions: Object.fromEntries(kept) } }).eq("id", row.id);
+}
+/** After a reply: remember the buttons/wording of a question just asked, and what an answered question did. */
+async function noteQuestion(phone: string, asked: { id: string; text: string; answers: string[] } | null, answeredId: string | null, outcome: string) {
+  if (!asked && !answeredId) return;
+  const row = await getConversationRow(phone);
+  if (!row) return;
+  const qs: Record<string, QuestionEntry> = { ...(row.context?.questions || {}) };
+  if (asked && qs[asked.id]) qs[asked.id] = { ...qs[asked.id], asked: asked.text, answers: asked.answers };
+  if (answeredId && qs[answeredId]?.status === "answered" && !qs[answeredId].outcome) qs[answeredId] = { ...qs[answeredId], outcome: outcome.split("\n")[0].slice(0, 200) };
+  await supabase.from("conversations").update({ context: { ...(row.context || {}), questions: qs } }).eq("id", row.id);
 }
 
-/** An account-check question ("is Hallie's school right?") stays open for 7 days; everything else for 24h. */
+/** Every stored question stays answerable for 7 days. */
 function pendingExpired(p: PendingAction): boolean {
-  const maxAge = (p.kind === "school" && p.school?.stage === "check" ? 7 * 24 : 24) * 3600_000;
-  return nowD().getTime() - new Date(p.created_at).getTime() > maxAge;
+  return nowD().getTime() - new Date(p.created_at).getTime() > QUESTION_DAYS * 86_400_000;
 }
 
 async function tryResolvePendingAction(phone: string, message: string, context: MontyContext): Promise<string | null> {
@@ -1528,13 +1584,24 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
   if (p.kind === "school") return await resolveSchoolPending(phone, p, message, context);
   if (p.kind === "edit") return await resolveEditPending(phone, p, message, context);
   if (p.kind === "school_email") return await resolveSchoolEmailPending(phone, p, message, context);
+  if (p.kind === "pick") return await resolvePickPending(phone, p, message, context);
+  if (p.kind === "scope") return await resolveScopePending(phone, p, message, context);
+  if (p.retext) {
+    // The AI asked "Jude or Harry?" in plain words: the answer re-runs the parent's request for that child.
+    const nm = context.children.map((c) => c.first_name).filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+    const kids = nm.length ? nm : PLURAL_CHILDREN.test(message) ? context.children.map((c) => c.first_name) : [];
+    if (!kids.length || message.trim().split(/\s+/).length > 7) { await setPendingAction(phone, null, { dropped: true }); return null; }
+    await setPendingAction(phone, null);
+    (context as any).__retext = `${p.source_text} (this is for ${kids.join(" and ")})`;
+    return null;
+  }
 
   if (p.kind === "frequency") {
     const once = /\b(just|only|once|one-?off|this one|that day|tomorrow|today)\b/i.test(message);
     const weekly = /\b(every|weekly|each|week|always|regular(ly)?)\b/i.test(message);
     if (!once && !weekly) {
       if (/^\s*(yes|yep|yeah|ok|okay|sure)\b/i.test(message) && message.trim().split(/\s+/).length <= 3) return nameNotPronoun(p.question, context.children.map((c) => c.first_name)); // still ambiguous: ask again
-      await setPendingAction(phone, null);
+      await setPendingAction(phone, null, { dropped: true });
       await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
       return null;
     }
@@ -1565,7 +1632,7 @@ async function tryResolvePendingAction(phone: string, message: string, context: 
     return q;
   }
   // Anything else (a "no", or a change of topic) → drop the pending item, don't re-ask.
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: targets === null });
   if (targets === null) {
     (context as any).__droppedPending = true;
     await logDedupDecision({ phone, childName: null, tool: "pending_action", newItem: JSON.stringify(p.items).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
@@ -1641,10 +1708,10 @@ function heldItemText(d: { child: string | null; summary: string }, sourceText: 
   const who = d.child ? d.child.replace(/[^A-Za-z'-]/g, "") : "\\w+";
   const m = (sourceText || "").match(new RegExp(String.raw`\b${who}\s+(?:has got|has|needs to bring|needs|is having|is doing|is)\s+(?:a|an|the|his|her|their)?\s*(.+?)(?:\s+(?:on|this|next)\s+\w+day\b.*|\s+(?:tomorrow|today)\b.*)?[.!?\s]*$`, "i"));
   const t = (m?.[1] || itemTitle("save_parent_note", { summary: d.summary })).trim();
-  return t.charAt(0).toLowerCase() + t.slice(1);
+  return lowerFirstSafe(t);
 }
 function duplicateQuestion(d: { child: string | null; summary: string; date: string; existing: string; item?: string }): string {
-  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const item = d.item || lowerFirstSafe(itemTitle("save_parent_note", { summary: d.summary }));
   const whose = d.child ? `${d.child}'s ${item}` : `the ${item}`;
   return `I've already got "${d.existing}" on ${fmtDayOrdinal(d.date)}. Is ${whose} a different one I should save too? 😊`;
 }
@@ -1670,10 +1737,9 @@ async function holdDuplicate(phone: string, tool: string, args: any, dup: NonNul
   const item = heldItemText(dup, sourceText);
   const question = duplicateQuestion({ ...dup, item });
   if (row) {
-    await supabase.from("conversations").update({ context: { ...(row.context || {}),
-      last_dup_question: { key, at: nowD().toISOString() },
-      pending_action: { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
-        dup: { ...dup, item, tool, args } } satisfies PendingAction } }).eq("id", row.id);
+    await supabase.from("conversations").update({ context: { ...(row.context || {}), last_dup_question: { key, at: nowD().toISOString() } } }).eq("id", row.id);
+    await setPendingAction(phone, { kind: "duplicate", items: [{ tool, args }], proposed: null, question, created_at: nowD().toISOString(), source_text: sourceText,
+      dup: { ...dup, item, tool, args } });
   }
   return { question };
 }
@@ -1684,7 +1750,7 @@ async function resolveDuplicatePending(phone: string, p: PendingAction, message:
   const different = !same && (/^\s*(yes|yep|yeah|yea|yup|sure|ok|okay|please)\b/i.test(m) || /\b(different|another|separate|save it|please save|save that|save)\b/i.test(m));
   const names = context.children.map((c) => c.first_name);
   if (!same && !different) {
-    await setPendingAction(phone, null);
+    await setPendingAction(phone, null, { dropped: true });
     await logDedupDecision({ phone, childName: d.child, tool: "pending_action", newItem: d.summary, decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: m.slice(0, 300) } });
     return null;
   }
@@ -1696,7 +1762,7 @@ async function resolveDuplicatePending(phone: string, p: PendingAction, message:
   const r = await runSave(d.tool, args, context, phone);
   await logDedupDecision({ phone, childName: child, tool: d.tool, date: d.date, newItem: d.summary, decision: same ? "duplicate_answer_same_saved_reminder" : "duplicate_answer_different_saved", match: { table: d.table, id: "held", text: d.existing } });
   if (!r.ok) return nameNotPronoun(buildHonestReply([r]), names);
-  const item = d.item || itemTitle("save_parent_note", { summary: d.summary }).toLowerCase();
+  const item = d.item || lowerFirstSafe(itemTitle("save_parent_note", { summary: d.summary }));
   const weekday = new Date(`${d.date}T12:00:00Z`).toLocaleDateString("en-GB", { weekday: "long", timeZone: "UTC" });
   return same
     ? `That's the same one, I've added it to ${child ? `${child}'s` : "your"} reminders for ${weekday} 👍`
@@ -1816,13 +1882,14 @@ async function generateReply(
     for (const block of data.content.filter((b: any) => b.type === "tool_use")) {
       let result: ToolResult;
       const input = block.input ?? {};
+      applyMessageDay(block.name, input, incomingMessage);
       if (block.name === "ask_parent_to_confirm") {
         const items = (Array.isArray(input.items) ? input.items : []).filter((i: any) => SAVE_TOOLS.has(i?.tool) && i.args && typeof i.args === "object");
         let proposed = Array.isArray(input.proposed_children) ? input.proposed_children.filter((n: string) => childNames.includes(n)) : [];
         if (childNames.length > 1 && proposed.length === childNames.length) proposed = []; // "Harry, Jude or both?" isn't a proposal
         if (items.length) {
           const fq = proposed.length || childNames.length < 2 ? null : frequencyQuestionPart(items[0].tool, items[0].args, incomingMessage, childNames);
-          addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, fq ? combinedQuestion(childNames, fq) : String(input.question || ""));
+          addPending(proposed.length ? "confirm" : "which_child", items, proposed.length ? proposed : null, fq ? whichChildQuestion(childNames, null, "") : String(input.question || "")); // child first; "how often" next
           if (fq) pending!.ask_frequency = true;
         }
         result = { ok: false, action: "pending", summary: "", text: items.length
@@ -1846,7 +1913,7 @@ async function generateReply(
           const proposed = child && childNames.includes(child) ? [child] : null;
           const args = { ...input }; if (!proposed) delete args.child_name;
           const fq = proposed ? null : frequencyQuestionPart(block.name, args, incomingMessage, childNames);
-          const q = fq ? combinedQuestion(childNames, fq) : whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args));
+          const q = whichChildQuestion(childNames, proposed, friendlyLabel(block.name, args)); // child first; "how often" is asked next if still unclear
           addPending(proposed ? "confirm" : "which_child", [{ tool: block.name, args }], proposed, q);
           if (fq) pending!.ask_frequency = true;
           result = { ok: false, action: "pending", summary: "",
@@ -1923,6 +1990,8 @@ async function generateReply(
     if (ask.lookups.length && !structuredResults.some((r) => r.ok || r.failed)) {
       const total = ask.lookups.reduce((n, v) => n + v.days.reduce((m, d) => m + d.lines.length, 0), 0);
       if (EDIT_INTENT.test(incomingMessage)) {
+        const pickQ = await maybeAskPick(phone, incomingMessage, context);
+        if (pickQ) return pickQ;
         const modelAsks = text.includes("?") && !EDIT_CLAIM.test(text) && !SUCCESS_CLAIM.test(text) && !SYSTEM_WORDS.test(text) && !hasPlainPromise(text);
         return total && modelAsks ? nameNotPronoun(text, childNames) : lookupReply(ask.lookups[ask.lookups.length - 1], true);
       }
@@ -2314,12 +2383,79 @@ async function resolveEditPending(phone: string, p: PendingAction, message: stri
   const short = message.trim().split(/\s+/).length <= 6;
   const yes = short && /^\s*(yes|yep|yeah|yea|yup|y|ok|okay|sure|please|go ahead|do it|correct|that'?s right|yes please)\b/i.test(message);
   const no = short && /^\s*(no|nope|nah|n|don'?t|leave it|keep it|cancel that)\b/i.test(message);
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: !yes && !no });
   if (yes) return (await applyEdit(plan, context, phone)) ? doneLine(plan) : failLine(plan);
   if (no) return keptLine(plan);
   (context as any).__droppedPending = true;
   await logDedupDecision({ phone, childName: plan.child, tool: "pending_action", newItem: JSON.stringify(plan.op).slice(0, 500), decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
   return null;
+}
+
+// ── "Which PE kit reminder do you mean?" (several matches for a delete) → buttons, then "just this week / for good" ──
+const DELETE_INTENT = /\b(delete|remove|cancel|get rid of|take (it |that )?off|drop|stop)\b/i;
+const SCOPE_ALL = /\b(for good|always|every week|all of them|stopped|any ?more|permanent(ly)?|completely)\b/i;
+const SCOPE_ONCE = /\b(just|only|once|this week|this one|that day|today|tomorrow)\b/i;
+const NEITHER = /^\s*(neither|none|no|nope|nah|leave (it|them))\b/i;
+const pickLine = (r: AskRef) => r.table === "child_reminders" ? `${tidyItem(r.title, r.child ?? "")}, every ${weekdayOf(r.date)}` : `${tidyItem(r.title, r.child ?? "")}, ${fmtDayOrdinal(r.date)}`;
+
+/** Several of the family's own items match a delete: ask which, with a button per item plus Neither (stored). */
+async function maybeAskPick(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!DELETE_INTENT.test(message)) return null;
+  const st = askState(context);
+  const names = context.children.map((c) => c.first_name);
+  const named = names.filter((n) => new RegExp(`\\b${n}\\b`, "i").test(message));
+  const want = itemTokens(message, names);
+  const seen = new Map<string, AskRef>();
+  for (const r of st.refs.values()) {
+    if (SCHOOL_TABLES.has(r.table)) continue;
+    if (named.length && r.child && !named.includes(r.child)) continue;
+    if (!hasMeaningfulShared([...itemTokens(r.title, names)].filter((w) => want.has(w)))) continue; // PE kit ≠ football kit
+    const k = `${r.table}|${r.id}`;
+    if (!seen.has(k) || r.date < seen.get(k)!.date) seen.set(k, r);
+  }
+  const opts = [...seen.values()];
+  if (opts.length < 2 || opts.length > 4) return null;
+  const item = st.lookups[st.lookups.length - 1]?.item;
+  const options = opts.map((r) => ({ ...r, label: `${r.child ?? "Family"}'s · ${r.table === "child_reminders" ? weekdayOf(r.date).slice(0, 3) : shortDayDate(r.date)}` }));
+  const question = `Which ${item ? `${item} reminder` : "one"} do you mean? You've got ${opts.length}:\n${opts.map((r) => `• ${pickLine(r)}`).join("\n")}`;
+  await setPendingAction(phone, { kind: "pick", pick: { action: "delete", options }, items: [], proposed: null, question, created_at: nowD().toISOString(), source_text: message });
+  return question;
+}
+/** Asks the usual "… Yes / No" delete confirmation for one item chosen from a pick. */
+async function askDelete(phone: string, ref: AskRef, scope: "this_date_only" | "all_future", context: MontyContext): Promise<string> {
+  const st = askState(context);
+  st.refs.set("rpick", ref); st.handled = false; st.reply = undefined; st.pending = undefined;
+  await handleAskEdit("delete_item", { ref: "rpick", scope }, context, phone);
+  if (st.pending) await setPendingAction(phone, st.pending);
+  return st.reply ?? NOT_FOUND_REPLY;
+}
+async function resolvePickPending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const opts = p.pick!.options;
+  const m = message.trim();
+  if (NEITHER.test(m)) { await setPendingAction(phone, null); return "No problem, I've left them as they are 👍"; }
+  let idx = /^[1-5]$/.test(m) ? Number(m) - 1 : -1;
+  if (idx < 0) {
+    const hits = opts.map((o, i) => ({ o, i })).filter(({ o }) => (!o.child || new RegExp(`\\b${o.child}\\b`, "i").test(m)) && (new RegExp(`\\b${weekdayOf(o.date)}\\b`, "i").test(m) || sameActivity(o.title, m, [])));
+    if (hits.length === 1) idx = hits[0].i;
+  }
+  if (!opts[idx]) { await setPendingAction(phone, null, { dropped: true }); return null; }
+  await setPendingAction(phone, null);
+  const ref = opts[idx];
+  const said = p.source_text || "";
+  const scope = SCOPE_ALL.test(said) ? "all_future" : SCOPE_ONCE.test(said) || ref.table !== "child_reminders" ? "this_date_only" : null;
+  if (!scope) {
+    const q = `Delete ${tidyItem(ref.title, ref.child ?? "")} just this week (${shortDayDate(ref.date)}), or for good? 😊`;
+    await setPendingAction(phone, { kind: "scope", scope: { ref }, items: [], proposed: null, question: q, created_at: nowD().toISOString(), source_text: said });
+    return q;
+  }
+  return await askDelete(phone, ref, scope, context);
+}
+async function resolveScopePending(phone: string, p: PendingAction, message: string, context: MontyContext): Promise<string | null> {
+  const all = SCOPE_ALL.test(message), once = !all && SCOPE_ONCE.test(message);
+  if (NEITHER.test(message)) { await setPendingAction(phone, null); return keptLine({ child: p.scope!.ref.child ?? "", title: p.scope!.ref.title, op: { op: "skip_date" } } as any); }
+  if (!all && !once) { await setPendingAction(phone, null, { dropped: true }); return null; }
+  await setPendingAction(phone, null);
+  return await askDelete(phone, p.scope!.ref, all ? "all_future" : "this_date_only", context);
 }
 
 // ── Moving a weekly reminder to another day (decided in code, same row updated) ──
@@ -2335,6 +2471,28 @@ async function updateReminderDay(id: string, to: string): Promise<boolean> {
 }
 function moveLabel(o: { child: string; title: string }, to: string, childNames: string[]) {
   return `${tidyItem(o.title, o.child)} has moved to every ${to}`;
+}
+
+/** "Delete the PE kit reminder" with several matching weekly reminders and no date: ask which (buttons) in code,
+ *  before the AI — the model otherwise asked in plain words. One or no match → the AI's usual lookup flow. */
+async function tryPickDelete(phone: string, message: string, context: MontyContext): Promise<string | null> {
+  if (!context.whatsOn || !DELETE_INTENT.test(message) || message.trim().split(/\s+/).length > 14) return null;
+  if (messageDay(message) || /\b(today|tomorrow|tonight|\d{1,2}(st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\d{1,2}\/\d{1,2}|this week|next week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(message)) return null;
+  const names = context.children.map((c) => c.first_name);
+  const named = context.children.filter((c) => new RegExp(`\\b${c.first_name}\\b`, "i").test(message));
+  const kids = named.length ? named : context.children;
+  if (!kids.length) return null;
+  const want = itemTokens(message, names);
+  const { data: rems } = await supabase.from("child_reminders").select("id, child_id, title, day_of_week").in("child_id", kids.map((k) => k.id)).eq("active", true);
+  const matches = (rems ?? []).filter((r: any) => hasMeaningfulShared([...itemTokens(r.title, names)].filter((w) => want.has(w))));
+  if (matches.length < 2 || matches.length > 4) return null;
+  const st = askState(context);
+  matches.forEach((r: any, i: number) => {
+    const child = context.children.find((c) => c.id === r.child_id)!;
+    st.refs.set(`rd${i + 1}`, { table: "child_reminders", id: r.id, date: nextDateFor(r.day_of_week), childId: child.id, child: child.first_name, title: r.title, kind: "weekly" });
+  });
+  await logDedupDecision({ phone, childName: named[0]?.first_name ?? null, tool: "delete_item", newItem: message.slice(0, 300), decision: "delete_pick_asked", match: { table: "child_reminders", id: matches.map((m: any) => m.id).join(","), text: matches.map((m: any) => `${m.title} ${m.day_of_week}`).join("; ") } });
+  return await maybeAskPick(phone, message, context);
 }
 
 async function tryMoveReminder(phone: string, message: string, context: MontyContext): Promise<string | null> {
@@ -2392,7 +2550,9 @@ async function resolveMovePending(phone: string, p: PendingAction, message: stri
   const dayHits = [...message.matchAll(DAY_RE)].map((m) => dayName(m[0]));
   let pick = opts.filter((o) => dayHits.includes(o.day));
   if (pick.length !== 1) pick = opts.filter((o) => sameActivity(o.title, message, []) && new RegExp(`\\b${o.child}\\b`, "i").test(message));
-  await setPendingAction(phone, null);
+  const neither = /^\s*(neither|none|no|nope|leave (it|them))\b/i.test(message);
+  await setPendingAction(phone, null, { dropped: pick.length !== 1 && !neither });
+  if (neither) return "No problem, I've left them as they are 👍";
   if (pick.length !== 1) return null;
   const o = pick[0];
   const ok = await updateReminderDay(o.id, p.move!.to);
@@ -2530,7 +2690,7 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
   if (words <= 15 && looksLikeSchoolAnswer(message)) {
     return await keep({ stage: "ask_school" }, `Sorry, I couldn't find that school. Could you send its name and town, or its postcode? You can also change it on your dashboard: ${DASHBOARD_URL}`);
   }
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: true });
   (context as any).__droppedPending = true;
   await logDedupDecision({ phone, childName: names.join(", ") || null, tool: "pending_action", newItem: "school question", decision: "pending_dropped_topic_change", match: { table: "inbound_message", id: "no match", text: message.slice(0, 300) } });
   return null;
@@ -2623,7 +2783,7 @@ async function resolveSchoolEmailPending(phone: string, p: PendingAction, messag
   if (short && named.length) kids = named;
   else if (short && (PLURAL_CHILDREN.test(message) || /\bboth\b/i.test(message))) kids = item.eligible;
   else if (kind === "yes" && p.proposed?.length) kids = p.proposed;
-  await setPendingAction(phone, null);
+  await setPendingAction(phone, null, { dropped: kind !== "no" && !kids });
   if (kind === "no") return "No problem, I'll leave that one 👍";
   if (!kids) return null; // something else: carry on normally
   return await saveSchoolEmailItem(phone, item, kids, context);
@@ -2702,12 +2862,67 @@ async function linkedOutbound(conversationId: string, source: string, repliedTo:
   return (data?.[0] as SentMsg) ?? null;
 }
 
+/** Old fixed-ID question buttons (sent before question IDs): the kinds of question they can answer. */
+function staticTapKinds(payload: string): string[] | null {
+  const id = (payload || "").trim().toLowerCase();
+  if (id === "dup_different" || id === "dup_same") return ["duplicate"];
+  if (id === "confirm_yes" || id === "confirm_no") return ["confirm", "edit", "school", "school_email"];
+  if (id === "child_all" || /^child_\d$/.test(id)) return ["which_child", "school_email"];
+  if (/^school_\d$/.test(id)) return ["school"];
+  return null;
+}
+/** Finds the question a tap answers: by the ID in its payload, else by the message it was attached to
+ *  (OriginalRepliedMessageSid → metadata.question_id), else (old buttons) the newest open question of that kind. */
+async function findTappedQuestion(conversationId: string, tap: ButtonTap, ctx: any): Promise<{ qid: string | null; entry: QuestionEntry | null; idx: number | null }> {
+  const qs: Record<string, QuestionEntry> = ctx?.questions || {};
+  const parsed = parseTapPayload(tap.payload);
+  let qid = parsed?.qid ?? null;
+  if (!qid && tap.repliedTo) {
+    const { data } = await supabase.from("messages").select("metadata").eq("conversation_id", conversationId).eq("direction", "outbound").eq("metadata->>twilio_sid", tap.repliedTo).limit(1);
+    qid = (data?.[0] as any)?.metadata?.question_id ?? null;
+  }
+  if (qid) return { qid, entry: qs[qid] ?? null, idx: parsed?.idx ?? null };
+  const kinds = staticTapKinds(tap.payload);
+  if (!kinds) return { qid: null, entry: null, idx: null };
+  const cur: PendingAction | null = ctx?.pending_action ?? null;
+  if (cur && kinds.includes(cur.kind)) return { qid: cur.id ?? null, entry: (cur.id && qs[cur.id]) || { p: cur, status: "open", at: cur.created_at }, idx: null };
+  const open = Object.entries(qs).filter(([, e]) => e.status === "open" && kinds.includes(e.p.kind)).sort((x, y) => y[1].at.localeCompare(x[1].at))[0];
+  return open ? { qid: open[0], entry: open[1], idx: null } : { qid: null, entry: null, idx: null };
+}
+
+/** A question button: answered by its question's ID, even after other messages. Never "lost track": an expired or
+ *  replaced question is asked again in full (fresh buttons); an answered one confirms what was done. */
+async function answerQuestionTap(from: string, tap: ButtonTap, staticText: string, context: MontyContext, conversationId: string): Promise<string> {
+  const names = context.children.map((c) => c.first_name);
+  const row = await getConversationRow(from);
+  const { qid, entry, idx } = await findTappedQuestion(conversationId, tap, row?.context);
+  await logDedupDecision({ phone: from, childName: null, tool: "button", newItem: tap.payload.slice(0, 100), decision: entry ? `tap_question_${entry.status}` : "tap_question_unknown", match: { table: "conversations.questions", id: qid ?? "no match", text: tap.text.slice(0, 300) } });
+  if (!entry) {
+    const cur: PendingAction | null = row?.context?.pending_action ?? null;
+    if (cur && !pendingExpired(cur)) { await setPendingAction(from, { ...cur, id: undefined, created_at: nowD().toISOString() }); return cur.question; }
+    return `That button's no longer live, so I haven't changed anything. What would you like me to do for ${joinAnd(names.length ? names : ["your family"])}? 😊`;
+  }
+  if (entry.status === "answered") {
+    const o = (entry.outcome || "").replace(/^(Already done ✅\s*)+/, "").replace(/^(Got it|Done|Great|OK|Okay),?\s*/i, "").replace(/\s*[✅👍]+\s*$/u, "").trim();
+    return o ? `Already done ✅ ${o.charAt(0).toUpperCase()}${o.slice(1)}` : "That one's already sorted ✅";
+  }
+  if (entry.status === "closed" || pendingExpired(entry.p)) {
+    await setPendingAction(from, { ...entry.p, id: undefined, created_at: nowD().toISOString() });
+    return nameNotPronoun(entry.asked || entry.p.question, names);
+  }
+  const answer = idx !== null ? entry.answers?.[idx] ?? tap.text : staticText;
+  await setPendingAction(from, entry.p); // the tapped question becomes the current one again (same ID)
+  (context as any).__answering = entry.p.id ?? null;
+  return await handleTextMessage(from, answer, context, conversationId);
+}
+
 async function handleButton(from: string, tap: ButtonTap, context: MontyContext, conversationId: string): Promise<string> {
   const a = buttonAction(tap.payload, tap.text);
+  if (parseTapPayload(tap.payload) || a.kind === "pending") return await answerQuestionTap(from, tap, a.text, context, conversationId);
   const names = context.children.map((c) => c.first_name);
   const row = await getConversationRow(from);
   let p: PendingAction | null = row?.context?.pending_action ?? null;
-  if (p && pendingExpired(p)) { await setPendingAction(from, null); p = null; }
+  if (p && pendingExpired(p)) { await setPendingAction(from, null, { dropped: true }); p = null; }
   await logDedupDecision({ phone: from, childName: null, tool: "button", newItem: tap.payload.slice(0, 100), decision: `button_${a.kind}`, match: { table: "messages", id: tap.repliedTo ?? "no match", text: tap.text.slice(0, 300) } });
   switch (a.kind) {
     case "save_it": case "not_for_us": {
@@ -2726,36 +2941,55 @@ async function handleButton(from: string, tap: ButtonTap, context: MontyContext,
     case "account_ok": case "account_not_quite":
       if (p?.kind === "school") return await handleTextMessage(from, a.kind === "account_ok" ? "yes" : "no", context, conversationId);
       return a.kind === "account_ok" ? "Thanks for confirming ✅" : "No problem, what needs changing? Just reply here and we'll sort it 😊";
-    case "pending":
-      if (!p) return "Sorry, I've lost track of that one as it was a while ago. Could you tell me again what you'd like? 😊";
-      return await handleTextMessage(from, a.text, context, conversationId);
     default:
       return await handleTextMessage(from, a.text, context, conversationId);
   }
 }
 
-/** Runs one reply and works out the buttons for the question it asks (only when this turn stored a new question). */
-async function withButtons(from: string, context: MontyContext, run: () => Promise<string>): Promise<{ reply: string; inter: Interactive | null }> {
-  const before = JSON.stringify((await getConversationRow(from))?.context?.pending_action ?? null);
-  const reply = await run();
-  const after: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
-  const asked = !!after && JSON.stringify(after) !== before && /\?/.test(reply) && reply.length <= 1000;
-  const inter = asked ? interactiveFor(after, context.children.map((c) => c.first_name)) : null;
-  return { reply, inter: inter && SESSION_SIDS[inter.key] ? inter : null };
+/** The AI asked which child in plain words ("tell me whether it's for Jude or Harry"). */
+function plainChildQuestion(reply: string, names: string[]): boolean {
+  if (names.length < 2 || !/\?|\btell me\b|\blet me know\b/i.test(reply)) return false;
+  const alt = names.map(reEsc).join("|");
+  return new RegExp(`\\b(?:${alt})\\b(?:\\s*,\\s*(?:${alt})\\b)*\\s+or\\s+(?:${alt})\\b`, "i").test(reply);
 }
 
-/** Sends the reply with its buttons (in-session content), falling back to plain text if that fails. true = buttons shown. */
-async function sendReplyWithButtons(to: string, reply: string, inter: Interactive | null): Promise<boolean> {
-  if (inter) {
-    if (await blockIfTestPhone(to, "whatsapp-webhook")) return false;
-    const r = await sendTemplate(to, SESSION_SIDS[inter.key], { "1": reply, ...inter.vars }, "whatsapp-webhook");
-    if (r.ok) return true;
+/** Runs one reply and works out the buttons for the question it asks (only when this turn stored a new question).
+ *  Also records the asked wording + what each button means, and what an answered question did. */
+async function withButtons(from: string, context: MontyContext, run: () => Promise<string>, incoming = ""): Promise<{ reply: string; inter: Interactive | null; qid: string | null }> {
+  const before: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
+  const reply = await run();
+  const names = context.children.map((c) => c.first_name);
+  let after: PendingAction | null = (await getConversationRow(from))?.context?.pending_action ?? null;
+  let asked = !!after && JSON.stringify(after) !== JSON.stringify(before) && /\?/.test(reply) && reply.length <= 1000;
+  if (!asked && !after && incoming && reply.length <= 1000 && plainChildQuestion(reply, names)) {
+    // Never a plain-text child question: store it (with buttons, incl. Both); the answer re-runs the request for that child.
+    await setPendingAction(from, { kind: "which_child", retext: true, items: [], proposed: null, question: reply, created_at: nowD().toISOString(), source_text: incoming });
+    after = (await getConversationRow(from))?.context?.pending_action ?? null;
+    asked = !!after;
+  }
+  const i0 = asked ? interactiveFor(after, names) : null;
+  const inter = i0 && SESSION_SIDS[i0.key] && after?.id ? i0 : null;
+  const answeredId = ((context as any).__answering as string | undefined) ?? before?.id ?? null;
+  await noteQuestion(from, asked && after?.id ? { id: after.id, text: reply, answers: inter?.answers ?? [] } : null, answeredId, reply);
+  return { reply, inter, qid: asked && after?.id ? after.id : null };
+}
+
+/** Sends the reply with its buttons (in-session content; each payload carries the question ID), falling back to
+ *  plain text if that fails. */
+async function sendReplyWithButtons(to: string, reply: string, inter: Interactive | null, qid: string | null): Promise<{ shown: boolean; sid: string | null }> {
+  if (inter && qid) {
+    if (await blockIfTestPhone(to, "whatsapp-webhook")) return { shown: false, sid: null };
+    const r = await sendTemplate(to, SESSION_SIDS[inter.key], contentVars(inter, qid, reply), "whatsapp-webhook");
+    if (r.ok) return { shown: true, sid: r.sid };
     console.error(`[buttons] ${inter.key} send failed (${r.status}), sending plain text`);
     await supabase.from("message_send_failures").insert({ function_name: "whatsapp-webhook", phone_number: to, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Interactive ${inter.key} ${SESSION_SIDS[inter.key]}` });
   }
   await sendWhatsApp(to, reply);
-  return false;
+  return { shown: false, sid: null };
 }
+/** Outbound metadata for a question: its ID, the Twilio SID (for OriginalRepliedMessageSid) and the button payloads. */
+const questionMeta = (qid: string | null, inter: Interactive | null, sid: string | null) =>
+  qid ? { question_id: qid, ...(sid ? { twilio_sid: sid } : {}), ...(inter ? { buttons: inter.labels.map((l, i) => ({ label: l, payload: tapPayload(qid, i) })) } : {}) } : null;
 
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
@@ -2778,12 +3012,17 @@ async function handleTextMessageInner(from: string, incomingMessage: string, con
   // 3) Text items awaiting "which child?" / "do you mean…?" / "which school?"
   const resolved = await tryResolvePendingAction(from, incomingMessage, context);
   if (resolved) return resolved;
+  const retext = (context as any).__retext as string | undefined;
+  if (retext) { delete (context as any).__retext; incomingMessage = retext; } // "Jude" → the request again, for Jude
   // 3b) Short replies ("yes", "seen", "thanks") to what Monty last sent — decided in code
   const short = await tryShortReply(from, incomingMessage, context, conversationId);
   if (short) return nameNotPronoun(short, context.children.map((c) => c.first_name));
   // 4) "X has moved to Wednesday" → move the existing weekly reminder in code
   const moved = await tryMoveReminder(from, incomingMessage, context);
   if (moved) return nameNotPronoun(moved, context.children.map((c) => c.first_name));
+  // 5) "Delete the PE kit reminder" with several matches → "which one?" with buttons, in code
+  const picked = await tryPickDelete(from, incomingMessage, context);
+  if (picked) return nameNotPronoun(picked, context.children.map((c) => c.first_name));
 
   let processedMessage = incomingMessage;
   if (context.children.length > 0) {
@@ -2919,18 +3158,18 @@ async function handleTestEntry(req: Request, rawBody: string): Promise<Response>
     if (!context) return j({ error: "no test family for this phone" }, 400);
     const message = String(b.message || "");
     const conversationId = await getOrCreateConversation(phone); // test number's own conversation only
-    await saveMessage(conversationId, "inbound", message);
     const tap: ButtonTap | null = b.button && typeof b.button.payload === "string"
       ? { payload: b.button.payload, text: String(b.button.text ?? message), repliedTo: typeof b.button.replied_to === "string" ? b.button.replied_to : null } : null;
+    await saveMessage(conversationId, "inbound", message, tapMeta(tap));
     const out = await withButtons(phone, context, async () => {
       let r = context.onboardingStatus === "new" ? await handleNewParent(phone, context)
         : tap ? await handleButton(phone, tap, context, conversationId) : await handleTextMessage(phone, message, context, conversationId);
       if (typeof b.inject_reply === "string") r = `${r} ${b.inject_reply.slice(0, 300)}`; // test-only: simulate an invented detail
       return await applyContactGuard(r, phone, message, context);
-    });
+    }, tap ? "" : message);
     const reply = out.reply;
-    await saveMessage(conversationId, "outbound", out.inter ? withLabels(reply, out.inter.labels) : reply);
-    return j({ reply, buttons: out.inter ? { ...out.inter, sid: SESSION_SIDS[out.inter.key] } : null, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
+    await saveMessage(conversationId, "outbound", out.inter ? withLabels(reply, out.inter.labels) : reply, { metadata: questionMeta(out.qid, out.inter, null) });
+    return j({ reply, buttons: out.inter ? { ...out.inter, sid: SESSION_SIDS[out.inter.key], question_id: out.qid, payloads: out.inter.labels.map((_l, i) => tapPayload(out.qid!, i)) } : null, tool_calls: store.toolCalls, family_updates: store.familyUpdates, chat_source: context.chatSource, usage: store.usage ?? { input: 0, output: 0, calls: 0 }, now: now.toISOString(), dry_run: true, twilio_called: false });
   });
 }
 
@@ -2976,15 +3215,20 @@ async function getRecentHistory(conversationId: string, limit = 10): Promise<Con
 async function saveMessage(
   conversationId: string,
   direction: "inbound" | "outbound",
-  content: string
+  content: string,
+  extra: { message_type?: string; metadata?: Record<string, unknown> | null } = {},
 ) {
   await supabase.from("messages").insert({
     conversation_id: conversationId,
     direction,
     content,
     created_at: nowD().toISOString(),
+    ...(extra.message_type ? { message_type: extra.message_type } : {}),
+    ...(extra.metadata ? { metadata: extra.metadata } : {}),
   });
 }
+/** Inbound metadata for a tap: the raw payload Twilio sent (ButtonPayload / ListId) and what it replied to. */
+const tapMeta = (tap: ButtonTap | null) => (tap ? { message_type: "button", metadata: { button_payload: tap.payload, button_text: tap.text, replied_to: tap.repliedTo } } : {});
 
 // ── WhatsApp sender ───────────────────────────────────────────────────────────
 
@@ -3153,8 +3397,8 @@ async function handleImageMessage(
 When the image mentions a day name like "Monday", "Tuesday", "next Friday" etc., resolve it using these exact anchors. Do NOT calculate the date yourself — use this lookup:
 ${dateAnchors}
 
-- "Monday", "this Monday", "on Monday" → the NEXT occurrence of Monday from the list above (today counts only if today is Monday)
-- "next Monday" → the Monday in the list above (in British usage this usually means the upcoming Monday, not the one after)
+- Day words, already worked out (use these exact dates):
+${dayWordAnchors()}
 - "tomorrow" → the date marked (tomorrow) above
 - Always output dates in YYYY-MM-DD format using the anchors above — never guess`,
     };
@@ -3554,13 +3798,13 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Save inbound message
-    await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]");
-
     // Quick-reply button (ButtonPayload/ButtonText) or list-picker pick (ListId/ListTitle)
     const btnId = params.get("ButtonPayload") || params.get("ListId") || "";
     const tap: ButtonTap | null = btnId
       ? { payload: btnId, text: params.get("ButtonText") || params.get("ListTitle") || incomingMessage, repliedTo: params.get("OriginalRepliedMessageSid") } : null;
+
+    // Save inbound message (a tap keeps its payload in metadata)
+    await saveMessage(conversationId, "inbound", incomingMessage || "[image forwarded]", tapMeta(tap));
 
     const out = await withButtons(from, context, async () => {
       let r: string;
@@ -3569,12 +3813,12 @@ Deno.serve(async (req: Request) => {
       else if (tap) r = await handleButton(from, tap, context, conversationId);
       else r = await handleTextMessage(from, incomingMessage, context, conversationId);
       return await applyContactGuard(r, from, incomingMessage, context);
-    });
+    }, tap ? "" : incomingMessage);
     const reply = out.reply;
 
     // Send (with buttons when the reply asks a stored question), then save what the parent actually saw
-    const shown = await sendReplyWithButtons(from, reply, out.inter);
-    await saveMessage(conversationId, "outbound", shown && out.inter ? withLabels(reply, out.inter.labels) : reply);
+    const sent = await sendReplyWithButtons(from, reply, out.inter, out.qid);
+    await saveMessage(conversationId, "outbound", sent.shown && out.inter ? withLabels(reply, out.inter.labels) : reply, { metadata: questionMeta(out.qid, sent.shown ? out.inter : null, sent.sid) });
 
     console.log(`Replied to ${from}: "${reply.slice(0, 80)}…"`);
 
