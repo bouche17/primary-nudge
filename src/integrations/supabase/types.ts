@@ -973,6 +973,48 @@ export type Database = {
         }
         Relationships: []
       }
+      scheduled_send_runs: {
+        Row: {
+          alerted_at: string | null
+          attempts: number
+          completed_at: string | null
+          created_at: string
+          is_test: boolean
+          job: string
+          last_called_at: string | null
+          last_reason: string | null
+          last_status: number | null
+          request_ids: number[]
+          slot_date: string
+        }
+        Insert: {
+          alerted_at?: string | null
+          attempts?: number
+          completed_at?: string | null
+          created_at?: string
+          is_test?: boolean
+          job: string
+          last_called_at?: string | null
+          last_reason?: string | null
+          last_status?: number | null
+          request_ids?: number[]
+          slot_date: string
+        }
+        Update: {
+          alerted_at?: string | null
+          attempts?: number
+          completed_at?: string | null
+          created_at?: string
+          is_test?: boolean
+          job?: string
+          last_called_at?: string | null
+          last_reason?: string | null
+          last_status?: number | null
+          request_ids?: number[]
+          slot_date?: string
+        }
+        Relationships: []
+      }
       school_calendar_feeds: {
         Row: {
           created_at: string
@@ -1625,6 +1667,32 @@ export type Database = {
       queue_suite_chunk: { Args: { _body: Json }; Returns: number }
       queue_whats_on_shadow: { Args: never; Returns: number }
       rollover_year_groups: { Args: never; Returns: undefined }
+      scheduled_send_fire: {
+        Args: { _job: string; _probe?: boolean }
+        Returns: number
+      }
+      scheduled_send_reason: {
+        Args: {
+          _content: string
+          _error: string
+          _status: number
+          _timed_out: boolean
+        }
+        Returns: string
+      }
+      scheduled_send_record_test: {
+        Args: {
+          _job: string
+          _ok: boolean
+          _reason?: string
+          _slot_date: string
+        }
+        Returns: undefined
+      }
+      scheduled_send_tick: {
+        Args: { _now?: string; _test?: boolean }
+        Returns: Json
+      }
       search_schools: {
         Args: { _limit?: number; _q: string }
         Returns: {
