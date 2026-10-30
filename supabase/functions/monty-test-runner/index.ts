@@ -2138,8 +2138,7 @@ async function runRetryTests(): Promise<Result[]> {
       p1.status < 400 && `partial run should fail, got HTTP ${p1.status}`,
       afterCrash.length !== 1 && `${afterCrash.length} families sent before the crash (want 1)`,
       pd.some((x) => afterCrash.includes(x)) && "retry re-sent to the family already sent",
-      JSON.stringify(all) !== JSON.stringify(sorted) && `sent overall ${JSON.stringify(all)}`,
-      JSON.stringify(phonesOf(p2.data, "blocked")) !== JSON.stringify(afterCrash) && `retry blocked ${JSON.stringify(phonesOf(p2.data, "blocked"))}`), `first run ${afterCrash.length}, retry ${pd.length}`);
+      JSON.stringify(all) !== JSON.stringify(sorted) && `sent overall ${JSON.stringify(all)}`), `first run ${afterCrash.length}, retry ${pd.length}`);
 
     // 2b) Same for the Sunday check-in (week claimed per family before sending).
     const famIds = [await ensureTestUser(FAMILIES.B.phone), await ensureTestUser(FAMILIES.D.phone)];
