@@ -7,7 +7,7 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
-import { accountCheckVar, approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, templateApproval } from "../_shared/twilioTemplates.ts";
+import { accountCheckVar, approvedSid, GENERAL_ACCOUNT_SID, GENERAL_ACCOUNT_V2_SID, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, SUNDAY_CHECKIN_SID, SUNDAY_CHECKIN_V2_SID, templateApproval, usableTemplate } from "../_shared/twilioTemplates.ts";
 import { buttonAction, chooseTemplate, contentVars, interactiveFor, parseTapPayload, schoolPickLabels, tapPayload, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
 import { hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday } from "../_shared/chatRules.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
@@ -977,11 +977,22 @@ async function runOutboundTests(): Promise<Result[]> {
     const got = [chooseTemplate("V4", "V3", true, true), chooseTemplate("V4", "V3", true, false), chooseTemplate("V4", "V3", false, true)];
     return JSON.stringify(got) !== '["V4","V3","V3"]' ? `got ${JSON.stringify(got)}` : null;
   });
-  push("Live: school event emails use the current template (v3) while v4 isn't approved, v4 once it is", await (async () => {
-    const st = (await templateApproval(SCHOOL_EVENT_V4_SID)).status;
-    const got = await approvedSid(SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID);
-    return got !== (st === "approved" ? SCHOOL_EVENT_V4_SID : SCHOOL_NOTIFICATION_V3_SID) ? `v4 status ${st}, chose ${got}` : null;
-  })(), null, null);
+  pure("Newer template only when approved AND Utility: approved+Marketing → kept on current; approved+Utility → switched; pending+Utility → current", () => {
+    const got = [usableTemplate("approved", "MARKETING"), usableTemplate("approved", "UTILITY"), usableTemplate("approved", "utility"), usableTemplate("pending", "UTILITY"), usableTemplate("approved", "unknown")];
+    return JSON.stringify(got) !== "[false,true,true,false,false]" ? `got ${JSON.stringify(got)}` : null;
+  });
+  { // Live (read-only Twilio status reads, no sends): each sender's choice follows approved+Utility.
+    const live: [string, string, string][] = [["school event email", SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID], ["Sunday check-in", SUNDAY_CHECKIN_V2_SID, SUNDAY_CHECKIN_SID], ["account check", GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID]];
+    const notes: string[] = []; const bad: string[] = [];
+    for (const [label, pref, cur] of live) {
+      const a = await templateApproval(pref);
+      const got = await approvedSid(pref, cur);
+      const want = usableTemplate(a.status, a.category) ? pref : cur;
+      notes.push(`${label}: ${a.status}/${a.category} → ${got}`);
+      if (got !== want) bad.push(`${label}: ${a.status}/${a.category}, chose ${got}`);
+    }
+    push("Live: each sender uses its newer template only if WhatsApp approved it as Utility", bad.length ? bad.join(" | ") : null, notes.join(" | "), null);
+  }
   pure("Button ids map to the right actions", () => {
     const want: [string, string, string, string][] = [["save_it", "Save it", "save_it", "Save it"], ["not_for_us", "Not for us", "not_for_us", "Not for us"], ["sunday_ok", "All looks right", "sunday_ok", "All looks right"],
       ["sunday_change", "Change lunches", "sunday_change", "Change lunches"], ["account_ok", "That's right", "account_ok", "That's right"], ["account_not_quite", "Not quite", "account_not_quite", "Not quite"],

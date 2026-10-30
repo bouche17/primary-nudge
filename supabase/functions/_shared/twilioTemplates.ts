@@ -48,22 +48,33 @@ export async function sendTemplate(to: string, contentSid: string, vars: Record<
   return { ok: res.ok, status: res.status, sid, body };
 }
 
-/** WhatsApp approval status of a Content template ("approved", "pending", "rejected", …). */
-export async function templateApproval(contentSid: string): Promise<{ status: string; raw: unknown }> {
+/** WhatsApp approval status + category of a Content template (status "approved"/"pending"/…, category "UTILITY"/"MARKETING"/…). */
+export async function templateApproval(contentSid: string): Promise<{ status: string; category: string; raw: unknown }> {
   const res = await fetch(`https://content.twilio.com/v1/Content/${contentSid}/ApprovalRequests`, { headers: { Authorization: twAuth() } });
   const raw = await res.json().catch(() => null);
-  if (!res.ok) return { status: `error ${res.status}`, raw };
-  return { status: String((raw as any)?.whatsapp?.status ?? "unknown"), raw };
+  if (!res.ok) return { status: `error ${res.status}`, category: "unknown", raw };
+  const wa = (raw as any)?.whatsapp ?? {};
+  return { status: String(wa.status ?? "unknown"), category: String(wa.category ?? "unknown").toUpperCase(), raw };
 }
 
+/** Pure: a newer template is used only when WhatsApp has approved it AND filed it under Utility
+ *  (Marketing templates cost more, can be throttled and parents can mute them). */
+export const usableTemplate = (status: string, category: string) =>
+  String(status).toLowerCase() === "approved" && String(category).toUpperCase() === "UTILITY";
+
 const approvalCache = new Map<string, { ok: boolean; at: number }>();
-/** The new template once WhatsApp has approved it, otherwise the current one. One status read per 10 min per function instance. */
+/** The new template once WhatsApp has approved it as Utility, otherwise the current one. One status read per 10 min per
+ *  function instance; status and category are logged on every read, so a successful category appeal switches on its own. */
 export async function approvedSid(preferred: string, current: string): Promise<string> {
   if (!preferred) return current;
   const hit = approvalCache.get(preferred);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ok ? preferred : current;
   let ok = false;
-  try { ok = (await templateApproval(preferred)).status === "approved"; } catch { ok = false; }
+  try {
+    const a = await templateApproval(preferred);
+    ok = usableTemplate(a.status, a.category);
+    console.log(`[templates] ${preferred}: status=${a.status} category=${a.category} → ${ok ? "using it" : `keeping ${current}`}`);
+  } catch (e) { ok = false; console.warn(`[templates] ${preferred}: approval check failed, keeping ${current}:`, e); }
   approvalCache.set(preferred, { ok, at: Date.now() });
   return ok ? preferred : current;
 }
