@@ -692,7 +692,8 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
   }
   // Stub delivery: never Twilio. Belt and braces: every planned phone is an allowlisted test number.
   const safe = planned.filter((p) => phones.includes(p.phone));
-  const { delivered, blocked } = await deliverReminderMessages(safe, period, targetDateStr, "stub");
+  const crashAfter = Number.isInteger(body.crash_after) ? Number(body.crash_after) : undefined; // test-only partial-run hook
+  const { delivered, blocked } = await deliverReminderMessages(safe, period, targetDateStr, "stub", { crashAfter });
   return jsonRes({ scope, period, target_date: targetDateStr, stub_send: true, delivered, blocked });
 }
 
