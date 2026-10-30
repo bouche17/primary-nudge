@@ -570,39 +570,55 @@ async function buildReminderMessages(period: "morning" | "evening", opts: BuildO
  */
 async function deliverReminderMessages(
   planned: PlannedMessage[], period: "morning" | "evening", targetDateStr: string, mode: "real" | "stub",
+  opts: { crashAfter?: number } = {},
 ) {
   const delivered: Array<{ phone: string; message: string; channel: "freeform" | "template" }> = [];
   const blocked: Array<{ phone: string; reason: string }> = [];
+  const errored: string[] = [];
   for (const p of planned) {
+    // Test-only: simulate the run dying part-way (only reachable from the stub test entry).
+    if (mode === "stub" && opts.crashAfter !== undefined && delivered.length >= opts.crashAfter) throw new Error("simulated crash (test)");
     if (!(await claimSlot(p.phone, targetDateStr, period))) {
       console.log(`[${period}] Skipping ${p.phone} — slot ${targetDateStr} already claimed`);
       blocked.push({ phone: p.phone, reason: "slot_already_claimed" });
       continue;
     }
-    // Real line breaks only inside the parent's 24h window; otherwise the approved one-line template.
-    let channel: "freeform" | "template" = (await inParentWindow(p.phone)) ? "freeform" : "template";
-    let ok = true;
-    if (mode === "real") {
-      ok = channel === "freeform" ? await sendFreeform(p.phone, p.freeform, period) : false;
-      if (!ok) { channel = "template"; ok = await sendWhatsApp(p.phone, p.message, period); } // window closed or free-form failed
-    }
-    if (ok && mode === "stub" && (await isTestPhone(p.phone))) {
-      // Stub: never Twilio, but the parent's conversation gets the same record a real send writes.
-      const source = period === "morning" ? "morning_reminder" : "evening_reminder";
-      if (channel === "freeform") await recordOutbound({ phone: p.phone, source, text: p.freeform.slice(0, 1500), meta: { channel, stub: true } });
-      else await recordOutbound({ phone: p.phone, source, contentSid: period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID,
-        variables: { "1": p.message.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().slice(0, 1024) }, meta: { channel, stub: true } });
-    }
-    if (ok) {
-      for (const { refId, title, type } of p.refIdsToLog) {
-        await logReminder(p.phone, type, refId, title, period);
+    let ok = false;
+    try {
+      // Real line breaks only inside the parent's 24h window; otherwise the approved one-line template.
+      let channel: "freeform" | "template" = (await inParentWindow(p.phone)) ? "freeform" : "template";
+      ok = true;
+      if (mode === "real") {
+        ok = channel === "freeform" ? await sendFreeform(p.phone, p.freeform, period) : false;
+        if (!ok) { channel = "template"; ok = await sendWhatsApp(p.phone, p.message, period); } // window closed or free-form failed
       }
-      delivered.push({ phone: p.phone, message: channel === "freeform" ? p.freeform : p.message, channel });
-      console.log(`[${period}] ${mode === "stub" ? "Recorded (stub)" : "Sent"} to ${p.phone} with ${p.itemCount} items via ${channel}`);
-    } else {
-      await releaseSlot(p.phone, targetDateStr, period);
+      if (ok && mode === "stub" && (await isTestPhone(p.phone))) {
+        // Stub: never Twilio, but the parent's conversation gets the same record a real send writes.
+        const source = period === "morning" ? "morning_reminder" : "evening_reminder";
+        if (channel === "freeform") await recordOutbound({ phone: p.phone, source, text: p.freeform.slice(0, 1500), meta: { channel, stub: true } });
+        else await recordOutbound({ phone: p.phone, source, contentSid: period === "morning" ? TWILIO_MORNING_TEMPLATE_SID : TWILIO_EVENING_TEMPLATE_SID,
+          variables: { "1": p.message.replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim().slice(0, 1024) }, meta: { channel, stub: true } });
+      }
+      if (ok) {
+        for (const { refId, title, type } of p.refIdsToLog) {
+          await logReminder(p.phone, type, refId, title, period);
+        }
+        delivered.push({ phone: p.phone, message: channel === "freeform" ? p.freeform : p.message, channel });
+        console.log(`[${period}] ${mode === "stub" ? "Recorded (stub)" : "Sent"} to ${p.phone} with ${p.itemCount} items via ${channel}`);
+      } else {
+        await releaseSlot(p.phone, targetDateStr, period);
+      }
+    } catch (e) {
+      // Unexpected error for this family. If nothing went out, free its slot so the retry run sends it;
+      // if the send already went out, keep the slot so a retry can never send it twice.
+      console.error(`[${period}] error for ${p.phone}:`, e);
+      if (!ok) await releaseSlot(p.phone, targetDateStr, period).catch(() => {});
+      else delivered.push({ phone: p.phone, message: p.message, channel: "template" });
+      if (!ok) errored.push(p.phone);
     }
   }
+  // Fail the run (non-2xx) so the scheduled retry picks up the families that errored; everyone else stays claimed.
+  if (errored.length) throw new Error(`${errored.length} famil${errored.length === 1 ? "y" : "ies"} errored before sending`);
   return { delivered, blocked };
 }
 
