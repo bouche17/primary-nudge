@@ -110,3 +110,8 @@
 - [x] 5 One shared "this/next <day>" resolver (15:30 cut-off)
 - [x] 6 Keep the parent's capitalisation (PE, not pE)
 - [x] Tests: free + Matt's replay, then one quick suite
+
+## Reliability before 2 Nov (30 Oct)
+- [x] Nightly what's-on shadow cron (job 22) off, no failure alerts; table, /admin/whats-on-diffs and queue_whats_on_shadow() kept for manual runs
+- [x] Morning/evening/Sunday runs via one UK-time scheduler with retries at +5 / +15 and one alert if all fail
+- [x] Free tests: failure+retry, partial runs (reminders + Sunday), one alert, GMT/BST times

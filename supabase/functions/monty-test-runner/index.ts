@@ -2072,6 +2072,132 @@ async function runHandlerSlice(offset: number, limit: number, cases: HandlerCase
   return out;
 }
 
+// ── Scheduled-send retries (no AI, stub sends only, never Twilio) ──
+// scheduled_send_tick(_test := true) makes the real retry decisions on is_test rows without calling anything;
+// the test performs each "call" itself against the stub test entry, so the real slot / week claims are exercised.
+async function runRetryTests(): Promise<Result[]> {
+  const out: Result[] = [];
+  const push = (scenario: string, reason: string | null, reply: string | null, details?: unknown) =>
+    out.push({ scenario, category: "sender", status: reason ? "fail" : "pass", reply, reason, details } as Result);
+  const PHONES = [FAMILIES.A.phone, FAMILIES.B.phone, FAMILIES.D.phone];
+  const sorted = [...PHONES].sort();
+  const tick = async (at: string) => {
+    const { data, error } = await admin.rpc("scheduled_send_tick" as any, { _now: at, _test: true });
+    if (error) throw new Error(`tick ${at}: ${error.message}`);
+    return (data ?? []) as any[];
+  };
+  const record = async (job: string, slot: string, ok: boolean, reason: string | null) => {
+    const { error } = await admin.rpc("scheduled_send_record_test" as any, { _job: job, _slot_date: slot, _ok: ok, _reason: reason });
+    if (error) throw new Error(`record: ${error.message}`);
+  };
+  const clearRuns = async () => {
+    await admin.from("scheduled_send_runs" as any).delete().eq("is_test", true);
+    await admin.from("ops_alerts").delete().eq("is_test", true).eq("alert_type", "scheduled_send_failed");
+  };
+  const clearLog = () => admin.from("reminder_log").delete().in("phone_number", PHONES);
+  const send = (scenario: string, now: string, crash?: number) => callFn("send-reminders", { scenario, period: "morning", now, scope: "test", only_phones: PHONES, stub_send: true, ...(crash !== undefined ? { crash_after: crash } : {}) });
+  const claimed = async (date: string) => ((await admin.from("reminder_log").select("phone_number").eq("reminder_type", "slot")
+    .like("reference_id", `%_${date}_morning`).in("phone_number", PHONES)).data ?? []).map((r: any) => r.phone_number).sort();
+  const phonesOf = (d: any, k: "delivered" | "blocked") => ((d?.[k] ?? []) as any[]).map((x) => x.phone).sort();
+  const acts = (a: any[]) => a.map((x) => x.action === "call" ? `${x.job}:call${x.attempt}` : `${x.job}:${x.action}`).join("+") || "-";
+  try {
+    await clearRuns(); await clearLog();
+    await seedFamily("A", { reminders: [{ child: "Harry", title: "PE kit", day: "Tuesday" }] });
+    await seedFamily("B", { reminders: [{ child: "Rosa", title: "PE kit", day: "Tuesday" }] });
+    await seedFamily("D", { reminders: [{ child: "Caspian", title: "PE kit", day: "Tuesday" }] });
+
+    // 1) Attempt 1 fails outright, the +5 min retry succeeds → every family exactly once.
+    const a1 = await tick("2026-10-13T06:00:00Z");
+    const f1 = await send("retry: attempt 1 fails", "2026-10-13T06:00:00Z", 0);
+    await record("morning", "2026-10-13", f1.status < 300, `HTTP ${f1.status}`);
+    const early = await tick("2026-10-13T06:02:00Z");
+    const a2 = await tick("2026-10-13T06:05:00Z");
+    const s2 = await send("retry: attempt 2", "2026-10-13T06:05:00Z");
+    await record("morning", "2026-10-13", s2.status === 200, `HTTP ${s2.status}`);
+    const later = [...(await tick("2026-10-13T06:15:00Z")), ...(await tick("2026-10-13T06:25:00Z"))];
+    const s3 = await send("retry: an extra run", "2026-10-13T06:16:00Z");
+    const c1 = await claimed("2026-10-13");
+    push("Scheduled retry: morning run fails, the +5 min retry sends each family exactly once (nothing more after)", firstFail(
+      acts(a1) !== "morning:call1" && `07:00 tick: ${acts(a1)}`,
+      f1.status < 400 && `attempt 1 should fail, got HTTP ${f1.status}`,
+      early.length > 0 && `+2 min tick acted: ${acts(early)}`,
+      acts(a2) !== "morning:call2" && `+5 min tick: ${acts(a2)}`,
+      s2.status !== 200 && `retry HTTP ${s2.status}: ${JSON.stringify(s2.data).slice(0, 200)}`,
+      JSON.stringify(phonesOf(s2.data, "delivered")) !== JSON.stringify(sorted) && `retry delivered ${JSON.stringify(phonesOf(s2.data, "delivered"))}`,
+      later.length > 0 && `ticks after success acted: ${acts(later)}`,
+      phonesOf(s3.data, "delivered").length !== 0 && `an extra run re-sent to ${JSON.stringify(phonesOf(s3.data, "delivered"))}`,
+      JSON.stringify(c1) !== JSON.stringify(sorted) && `slot claims ${JSON.stringify(c1)}`), `retry sent to ${phonesOf(s2.data, "delivered").length} families`, { a1, a2, f1: f1.status });
+
+    // 2) A run dies after 1 family; the retry sends only to the 2 it missed.
+    const p1 = await send("retry: partial run", "2026-10-20T06:00:00Z", 1);
+    const afterCrash = await claimed("2026-10-20");
+    const p2 = await send("retry: after partial", "2026-10-20T06:05:00Z");
+    const pd = phonesOf(p2.data, "delivered");
+    const all = [...afterCrash, ...pd].sort();
+    push("Partial morning run (died after 1 family) → retry sends only to the 2 missed families", firstFail(
+      p1.status < 400 && `partial run should fail, got HTTP ${p1.status}`,
+      afterCrash.length !== 1 && `${afterCrash.length} families sent before the crash (want 1)`,
+      pd.some((x) => afterCrash.includes(x)) && "retry re-sent to the family already sent",
+      JSON.stringify(all) !== JSON.stringify(sorted) && `sent overall ${JSON.stringify(all)}`), `first run ${afterCrash.length}, retry ${pd.length}`);
+
+    // 2b) Same for the Sunday check-in (week claimed per family before sending).
+    const famIds = [await ensureTestUser(FAMILIES.B.phone), await ensureTestUser(FAMILIES.D.phone)];
+    const sunPhones = [FAMILIES.B.phone, FAMILIES.D.phone];
+    await admin.from("lunch_checkin_log").delete().in("parent_id", famIds);
+    const sun = (scenario: string, crash?: number) => callFn("sunday-lunch-checkin", { scenario, now: "2026-11-08T18:00:00Z", scope: "test", only_phones: sunPhones, stub_send: true, ...(crash !== undefined ? { crash_after: crash } : {}) });
+    const q1 = await sun("sunday retry: partial", 1);
+    const logged = ((await admin.from("lunch_checkin_log").select("parent_id").in("parent_id", famIds).eq("week_start", "2026-11-09")).data ?? []).map((r: any) => r.parent_id);
+    const q2 = await sun("sunday retry: retry");
+    const q3 = await sun("sunday retry: extra run");
+    const q2p = phonesOf(q2.data, "delivered");
+    const sentFirst = logged.map((id) => sunPhones[famIds.indexOf(id)]);
+    push("Partial Sunday check-in (died after 1 family) → retry sends only to the missed family, an extra run sends nothing", firstFail(
+      q1.status < 400 && `partial run should fail, got HTTP ${q1.status}`,
+      logged.length !== 1 && `${logged.length} families sent before the crash (want 1)`,
+      q2.status !== 200 && `retry HTTP ${q2.status}: ${JSON.stringify(q2.data).slice(0, 200)}`,
+      (q2p.length !== 1 || sentFirst.includes(q2p[0])) && `retry delivered ${JSON.stringify(q2p)} (first run sent ${JSON.stringify(sentFirst)})`,
+      phonesOf(q3.data, "delivered").length !== 0 && `extra run re-sent to ${JSON.stringify(phonesOf(q3.data, "delivered"))}`), `first run ${logged.length}, retry ${q2p.length}`);
+
+    // 3) Every attempt fails → exactly one alert, worded as agreed.
+    await clearRuns();
+    const seq: string[] = [];
+    for (const [at, fail] of [["18:00", "HTTP 503 BOOT_ERROR"], ["18:05", "HTTP 503 BOOT_ERROR"], ["18:15", "timed out"], ["18:20", null], ["18:25", null], ["18:35", null]] as [string, string | null][]) {
+      const a = await tick(`2026-11-02T${at}:00Z`);
+      seq.push(acts(a));
+      if (fail) await record("evening", "2026-11-02", false, fail);
+    }
+    const { data: al } = await admin.from("ops_alerts").select("message").eq("is_test", true).eq("alert_type", "scheduled_send_failed");
+    const want = "Monty: evening reminders failed to send (timed out). Retried twice.";
+    push("Evening run fails at 18:00, +5 and +15 → exactly one alert at +25 (none before or after)", firstFail(
+      seq.join(" ") !== "evening:call1 evening:call2 evening:call3 - evening:alert -" && `ticks: ${seq.join(" ")}`,
+      (al ?? []).length !== 1 && `${(al ?? []).length} alerts`,
+      (al ?? [])[0]?.message !== want && `alert wording: ${(al ?? [])[0]?.message}`), (al ?? [])[0]?.message ?? null, { seq });
+
+    // 4) UK times in GMT and BST (and both clock-change Sundays).
+    const cases: [string, string][] = [
+      ["2026-11-02T07:00:00Z", "morning"], ["2026-11-02T06:00:00Z", "-"],
+      ["2026-10-19T06:00:00Z", "morning"], ["2026-10-19T07:00:00Z", "-"],
+      ["2026-11-01T18:00:00Z", "evening+sunday_checkin"], ["2026-11-01T17:00:00Z", "-"],
+      ["2026-10-18T17:00:00Z", "evening+sunday_checkin"], ["2026-10-18T18:00:00Z", "-"],
+      ["2026-10-25T06:00:00Z", "-"], ["2026-10-25T07:00:00Z", "morning"], ["2026-10-25T18:00:00Z", "evening+sunday_checkin"],
+      ["2026-03-29T06:00:00Z", "morning"], ["2026-03-29T17:00:00Z", "evening+sunday_checkin"],
+      ["2026-11-03T18:00:00Z", "evening"],
+    ];
+    const bad: string[] = [];
+    for (const [at, exp] of cases) {
+      await clearRuns();
+      const a = await tick(at);
+      const got = a.map((x) => x.job).join("+") || "-";
+      const ukDate = new Date(at).toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+      if (got !== exp || a.some((x) => x.slot_date !== ukDate)) bad.push(`${at}: ${got} (want ${exp})`);
+    }
+    push("Scheduled sends start at 07:00 / 18:00 UK in both GMT and BST (Sunday check-in only on Sundays)", bad.length ? bad.join(" | ") : null, `${cases.length} times checked`);
+  } finally {
+    await clearRuns(); await clearLog();
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   const adminId = await requireAdmin(req);
@@ -2137,14 +2263,19 @@ Deno.serve(async (req) => {
     catch (e) {
       const msg = (e as Error).message;
       console.error("[shadow] failed:", msg);
-      if (body.scheduled === true) {
-        const { sendAlertWhatsApp } = await import("../_shared/alerts.ts");
-        const text = `Monty alert: the nightly what's-on comparison job failed (${msg.slice(0, 200)}). Nothing parents see is affected.`;
-        const res = await sendAlertWhatsApp(text).catch(() => ({ ok: false, channel: "error" }));
-        await admin.from("ops_alerts").insert({ alert_type: "whats_on_shadow_failed", affected_parents: 0, failure_count: 1, first_error: msg.slice(0, 300), message: text, likely_fix: "Open /admin/whats-on-diffs and re-run", is_test: false, delivered: res.ok, channel: res.channel });
-      }
+      // No failure alert: the nightly schedule is off (run by hand from /admin/whats-on-diffs).
       return json({ error: msg }, 500);
     }
+  }
+
+  // Delivers a scheduled-send failure alert raised by scheduled_send_tick() (database), the same way as other ops alerts.
+  if (action === "deliver_alert") {
+    const { data: a } = await admin.from("ops_alerts").select("id, message, is_test, delivered, alert_type").eq("id", String(body.alert_id ?? "")).maybeSingle();
+    if (!a || a.is_test || a.delivered || a.alert_type !== "scheduled_send_failed") return json({ skipped: true });
+    const { sendAlertWhatsApp } = await import("../_shared/alerts.ts");
+    const res = await sendAlertWhatsApp(a.message).catch(() => ({ ok: false, channel: "error" }));
+    await admin.from("ops_alerts").update({ delivered: res.ok, channel: res.channel }).eq("id", a.id);
+    return json(res);
   }
 
   // Chunked run: part "sender" (no AI), then "conversation" slices — keeps each call well under the time limit.
@@ -2171,7 +2302,7 @@ Deno.serve(async (req) => {
     await resetTestData();
     if (part === "sender") { await seedSenderFixtures(); results = await runSenderSuite(suite === "quick", suite === "sender"); }
     else if (part === "outbound") results = await runOutboundTests();
-    else if (part === "taps") results = await runFreeTapTests();
+    else if (part === "taps") { results = await runFreeTapTests(); await resetTestData(); results.push(...(await runRetryTests())); }
     else results = await runHandlerSlice(offset, limit, casesFor(suite));
   } catch (e) {
     fatal = (e as Error).message;

@@ -1,2 +1,3 @@
 # sunday-lunch-checkin rules
 - sunday-lunch-checkin skips a family (no send, no `lunch_checkin_log` row) when every Mon–Fri of the target week is a `school_holidays` day for every school its children attend; partial weeks send with holiday days left out — why: no packed-lunch question for a week with no school, and nothing blocks a later week.
+- Each family's week is claimed by inserting its `lunch_checkin_log` row (unique parent_id + week_start) before sending, removed again if nothing went out; an error before sending fails the run (500) for the scheduled retry. `crash_after` (stub test entry only) simulates a partial run — why: a retry or overlapping run can never send the check-in twice.

@@ -57,6 +57,13 @@
       "when": 1793040658855,
       "tag": "0007_school_email_log_and_outbound_sources",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793396660543,
+      "tag": "0008_scheduled_send_retries",
+      "breakpoints": true
     }
   ]
 }

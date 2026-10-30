@@ -107,7 +107,7 @@ export async function evaluateDeliveryAlerts(o: AlertOpts = {}) {
  *  sender for hello@heymonty.co.uk (or a new utility template) exists. */
 export async function sendAlertWhatsApp(text: string): Promise<{ ok: boolean; channel: string }> {
   const to = ALERT_PHONE();
-  const body = "Monty system alert (not from a school): " + text.replace(/^Monty alert:\s*/, "");
+  const body = "Monty system alert (not from a school): " + text.replace(/^Monty( alert)?:\s*/, "");
   // Matt's own alerts are the only send allowed past an opt-out.
   if (await blockIfTestPhone(to, "ops-alert", { allowOptedOut: true })) return { ok: false, channel: "blocked_test_number" };
   const sid = Deno.env.get("TWILIO_ACCOUNT_SID")!, tok = Deno.env.get("TWILIO_AUTH_TOKEN")!, from = Deno.env.get("TWILIO_WHATSAPP_NUMBER")!;

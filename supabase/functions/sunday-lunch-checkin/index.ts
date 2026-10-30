@@ -448,34 +448,51 @@ async function buildSundayMessages(opts: {
 // "real" sends via Twilio. "stub" never calls Twilio: only allowlisted test
 // phones count as delivered, and the log row is written for test families only.
 
-async function deliverSundayMessages(planned: PlannedFamily[], weekStart: string, weekDates: string, mode: "real" | "stub") {
+async function deliverSundayMessages(planned: PlannedFamily[], weekStart: string, weekDates: string, mode: "real" | "stub", opts: { crashAfter?: number } = {}) {
   let sentCount = 0;
   const delivered: { phone: string; names: string; summary: string }[] = [];
   const failures: { phone_number: string; status_code: number; body: string }[] = [];
+  const errored: string[] = [];
+  let familiesDone = 0;
   for (const fam of planned) {
+    // Test-only: simulate the run dying part-way (only reachable from the stub test entry).
+    if (mode === "stub" && opts.crashAfter !== undefined && familiesDone >= opts.crashAfter) throw new Error("simulated crash (test)");
+    // Claim the family's week before sending (unique parent_id + week_start), so a retry or an overlapping run
+    // can never send it twice. Released again if nothing went out.
+    const { error: claimErr } = await supabase.from("lunch_checkin_log").insert({ parent_id: fam.anchorUserId, week_start: weekStart });
+    if (claimErr) {
+      if ((claimErr as any).code === "23505") { console.log(`Skipping family ${fam.familyId} — week ${weekStart} already claimed`); continue; }
+      throw new Error(`lunch_checkin_log claim failed: ${claimErr.message}`);
+    }
     let anySent = false;
-    for (const phone_number of fam.phones) {
-      if (mode === "stub") {
-        if (!(await isTestPhone(phone_number))) continue;
-        await recordOutbound({ phone: phone_number, source: "sunday_checkin", contentSid: TWILIO_SUNDAY_TEMPLATE_SID, variables: checkinVariables(fam.names, weekDates, fam.summary), meta: { week_start: weekStart, stub: true } });
-        anySent = true;
-        sentCount++;
-        delivered.push({ phone: phone_number, names: fam.names, summary: fam.summary });
-        continue;
+    try {
+      for (const phone_number of fam.phones) {
+        if (mode === "stub") {
+          if (!(await isTestPhone(phone_number))) continue;
+          await recordOutbound({ phone: phone_number, source: "sunday_checkin", contentSid: TWILIO_SUNDAY_TEMPLATE_SID, variables: checkinVariables(fam.names, weekDates, fam.summary), meta: { week_start: weekStart, stub: true } });
+          anySent = true;
+          sentCount++;
+          delivered.push({ phone: phone_number, names: fam.names, summary: fam.summary });
+          continue;
+        }
+        const result = await sendWhatsApp(phone_number, fam.names, weekDates, fam.summary, weekStart);
+        if (result.ok) {
+          anySent = true;
+          sentCount++;
+          console.log(`Sent Sunday summary to ${phone_number} for week ${weekStart}`);
+        } else {
+          failures.push({ phone_number, status_code: result.status_code, body: result.body });
+        }
       }
-      const result = await sendWhatsApp(phone_number, fam.names, weekDates, fam.summary, weekStart);
-      if (result.ok) {
-        anySent = true;
-        sentCount++;
-        console.log(`Sent Sunday summary to ${phone_number} for week ${weekStart}`);
-      } else {
-        failures.push({ phone_number, status_code: result.status_code, body: result.body });
-      }
+    } catch (e) {
+      console.error(`Sunday check-in error for family ${fam.familyId}:`, e);
+      if (!anySent) errored.push(fam.familyId);
     }
-    if (anySent) {
-      await supabase.from("lunch_checkin_log").insert({ parent_id: fam.anchorUserId, week_start: weekStart });
-    }
+    if (!anySent) await supabase.from("lunch_checkin_log").delete().eq("parent_id", fam.anchorUserId).eq("week_start", weekStart);
+    familiesDone++;
   }
+  // Fail the run (non-2xx) so the scheduled retry picks up the families that errored; everyone else stays claimed.
+  if (errored.length) throw new Error(`${errored.length} famil${errored.length === 1 ? "y" : "ies"} errored before sending`);
   return { sentCount, delivered, failures };
 }
 
@@ -527,7 +544,8 @@ async function handleTestEntry(req: Request, secret: string | null): Promise<Res
   if (!stubSend) return jsonRes({ ...base, messages: built.planned.map((p) => ({ phones: p.phones, names: p.names, summary: p.summary })) });
   // Belt and braces: only families whose every phone is an allowlisted test number.
   const safe = built.planned.filter((p) => p.phones.every((x) => phones.includes(x)));
-  const { delivered } = await deliverSundayMessages(safe, built.weekStart, built.weekDates, "stub");
+  const crashAfter = Number.isInteger(body.crash_after) ? Number(body.crash_after) : undefined; // test-only partial-run hook
+  const { delivered } = await deliverSundayMessages(safe, built.weekStart, built.weekDates, "stub", { crashAfter });
   return jsonRes({ ...base, stub_send: true, delivered });
 }
 
