@@ -100,7 +100,7 @@
 - [x] school_email_log + /admin/school-emails; opt-in emails worded "If <child>'s in …" (no gender filtering); school emails only to that school's families
 - [x] Free 122/122, full suite 205 pass + 1 flaky
 
-- [ ] Send the two approved account-check messages (Hallie school check with pending reply; Oscar Mossley term dates) — blocked: monty_general_account_v1 still pending WhatsApp approval. Run via account-check `send` (child_id, detail, school_check for Hallie), then `delivery`.
+- [ ] Send the two approved account-check messages (Hallie school check with pending reply; Oscar Mossley term dates) — waiting on Matt's go-ahead: account checks now use monty_general_account_v2 (approved, Utility). Run via account-check `send` (child_id, detail, school_check for Hallie), then `delivery`.
 
 ## Button fixes from Matt's phone test (29 Oct)
 - [x] 1 Stale taps: question IDs in payloads + 7-day question archive, re-ask / "already done" instead of "lost track"
@@ -115,3 +115,4 @@
 - [x] Nightly what's-on shadow cron (job 22) off, no failure alerts; table, /admin/whats-on-diffs and queue_whats_on_shadow() kept for manual runs
 - [x] Morning/evening/Sunday runs via one UK-time scheduler with retries at +5 / +15 and one alert if all fail
 - [x] Free tests: failure+retry, partial runs (reminders + Sunday), one alert, GMT/BST times
+- [x] Newer templates only when approved AND Utility (v4 school event + Sunday v2 are Marketing → kept on v3 / monty_sunday_evening)
