@@ -2,7 +2,7 @@
 // Actions: status (template approval), send (one child's parent phones, optional school check), delivery (Twilio status).
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
-import { GENERAL_ACCOUNT_SID, GENERAL_ACCOUNT_V2_SID, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, SUNDAY_CHECKIN_SID, SUNDAY_CHECKIN_V2_SID, schoolCheckPending, sendAccountCheck, templateApproval } from "../_shared/twilioTemplates.ts";
+import { GENERAL_ACCOUNT_SID, GENERAL_ACCOUNT_V2_SID, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, SUNDAY_CHECKIN_SID, SUNDAY_CHECKIN_V2_SID, SUNDAY_CHECKIN_V3_SID, schoolCheckPending, sendAccountCheck, templateApproval } from "../_shared/twilioTemplates.ts";
 import { SESSION_DEFS, TEMPLATE_BODIES, TEMPLATE_BUTTONS } from "../_shared/interactive.ts";
 
 const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
@@ -37,7 +37,7 @@ Deno.serve(async (req) => {
     if (body.action === "status") {
       const st = async (sid: string) => (sid ? (await templateApproval(sid)).status : "not created");
       return json({ general_account_v1: await st(GENERAL_ACCOUNT_SID), school_notification_v3: await st(SCHOOL_NOTIFICATION_V3_SID),
-        school_event_v4: { sid: SCHOOL_EVENT_V4_SID, status: await st(SCHOOL_EVENT_V4_SID) }, sunday_checkin_v2: { sid: SUNDAY_CHECKIN_V2_SID, status: await st(SUNDAY_CHECKIN_V2_SID) },
+        school_event_v4: { sid: SCHOOL_EVENT_V4_SID, status: await st(SCHOOL_EVENT_V4_SID) }, sunday_checkin_v2: { sid: SUNDAY_CHECKIN_V2_SID, status: await st(SUNDAY_CHECKIN_V2_SID) },  sunday_checkin_v3: { sid: SUNDAY_CHECKIN_V3_SID, status: await st(SUNDAY_CHECKIN_V3_SID) },
         general_account_v2: { sid: GENERAL_ACCOUNT_V2_SID, status: await st(GENERAL_ACCOUNT_V2_SID) } });
     }
 
