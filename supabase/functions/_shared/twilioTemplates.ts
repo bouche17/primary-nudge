@@ -14,6 +14,7 @@ export const GENERAL_ACCOUNT_SID = Deno.env.get("TWILIO_GENERAL_ACCOUNT_SID") ||
 export const SCHOOL_EVENT_V4_SID = Deno.env.get("TWILIO_SCHOOL_EVENT_V4_SID") || "HX90eec9feb0392f39d5be5aaa8cfdc7d9";
 export const SUNDAY_CHECKIN_SID = Deno.env.get("TWILIO_SUNDAY_TEMPLATE_SID") || "HXf63d73d24635780bb42d76ba726d83b4";
 export const SUNDAY_CHECKIN_V2_SID = Deno.env.get("TWILIO_SUNDAY_CHECKIN_V2_SID") || "HX7c54030c714a4dbeb02ce3a5a71758c8";
+export const SUNDAY_CHECKIN_V3_SID = Deno.env.get("TWILIO_SUNDAY_CHECKIN_V3_SID") || "HX60dd751b1cb6c7cf468fe721a8c77d53";
 export const GENERAL_ACCOUNT_V2_SID = Deno.env.get("TWILIO_GENERAL_ACCOUNT_V2_SID") || "HX695b3543f9e70eb8c52631605639ed8e";
 
 /** Template variables can't hold newlines/control characters; Twilio caps them at 1024. */

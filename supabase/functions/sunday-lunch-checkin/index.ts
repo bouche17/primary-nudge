@@ -18,7 +18,7 @@
 
 import { auditTestEntry, blockIfTestPhone, isTestPhone, validTestSecret } from "../_shared/testGuard.ts";
 import { recordOutbound } from "../_shared/outbound.ts";
-import { approvedSid, SUNDAY_CHECKIN_V2_SID } from "../_shared/twilioTemplates.ts";
+import { approvedSid, SUNDAY_CHECKIN_V3_SID } from "../_shared/twilioTemplates.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -89,7 +89,7 @@ async function sendWhatsApp(to: string, names: string, weekDates: string, summar
 
   const contentVariables = JSON.stringify(checkinVariables(names, weekDates, summary));
   // "All looks right / Change lunches" buttons (v2) once WhatsApp has approved it; otherwise the current template.
-  const sid = await approvedSid(SUNDAY_CHECKIN_V2_SID, TWILIO_SUNDAY_TEMPLATE_SID);
+  const sid = await approvedSid(SUNDAY_CHECKIN_V3_SID, TWILIO_SUNDAY_TEMPLATE_SID);
 
   const params = new URLSearchParams();
   params.append("To", `whatsapp:${to}`);

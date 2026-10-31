@@ -7,7 +7,7 @@ import { getTestPhones, sendBlockReason } from "../_shared/testGuard.ts";
 import { estimateCostUsd } from "../_shared/aiCost.ts";
 import { dropMisplacedWellWishes, dropPlainPromises, hasPlainPromise, isRoboticReply, shortReplyKind } from "../_shared/replyGuard.ts";
 import { contentText, recordOutbound } from "../_shared/outbound.ts";
-import { accountCheckVar, approvedSid, GENERAL_ACCOUNT_SID, GENERAL_ACCOUNT_V2_SID, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, SUNDAY_CHECKIN_SID, SUNDAY_CHECKIN_V2_SID, templateApproval, usableTemplate } from "../_shared/twilioTemplates.ts";
+import { accountCheckVar, approvedSid, GENERAL_ACCOUNT_SID, GENERAL_ACCOUNT_V2_SID, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID, schoolCheckPending, schoolEmailV3Vars, SUNDAY_CHECKIN_SID, SUNDAY_CHECKIN_V3_SID, templateApproval, usableTemplate } from "../_shared/twilioTemplates.ts";
 import { buttonAction, chooseTemplate, contentVars, interactiveFor, parseTapPayload, schoolPickLabels, tapPayload, TEMPLATE_BODIES, TEMPLATE_BUTTONS, withLabels } from "../_shared/interactive.ts";
 import { hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday } from "../_shared/chatRules.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
@@ -982,7 +982,7 @@ async function runOutboundTests(): Promise<Result[]> {
     return JSON.stringify(got) !== "[false,true,true,false,false]" ? `got ${JSON.stringify(got)}` : null;
   });
   { // Live (read-only Twilio status reads, no sends): each sender's choice follows approved+Utility.
-    const live: [string, string, string][] = [["school event email", SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID], ["Sunday check-in", SUNDAY_CHECKIN_V2_SID, SUNDAY_CHECKIN_SID], ["account check", GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID]];
+    const live: [string, string, string][] = [["school event email", SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID], ["Sunday check-in", SUNDAY_CHECKIN_V3_SID, SUNDAY_CHECKIN_SID], ["account check", GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID]];
     const notes: string[] = []; const bad: string[] = [];
     for (const [label, pref, cur] of live) {
       const a = await templateApproval(pref);
