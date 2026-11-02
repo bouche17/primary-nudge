@@ -4,7 +4,7 @@ import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "
 import { buildSchoolMessage, buildOldSchoolMessage, type SchoolEmailInfo } from "../_shared/schoolEmailMessage.ts";
 import { isOptInEmail } from "../_shared/schoolEventRules.ts";
 import { recordOutbound } from "../_shared/outbound.ts";
-import { approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V2_SID, SCHOOL_NOTIFICATION_V3_SID, schoolEmailV3Vars, sendTemplate, templateVar, type TemplateSend } from "../_shared/twilioTemplates.ts";
+import { approvedSid, SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V2_SID, SCHOOL_NOTIFICATION_V3_SID, SCHOOL_NOTIFICATION_V5_SID, schoolEmailV3Vars, sendTemplate, templateVar, type TemplateSend } from "../_shared/twilioTemplates.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -129,12 +129,12 @@ async function logSendFailure(to: string, sid: string, r: TemplateSend) {
   }
 }
 
-/** Sends with monty_school_notification_v3 ({{1}} school name, {{2}} message); v2 only if v3 errors (logged). */
+/** Sends with the chosen template ({{1}} school name, {{2}} message: v5 once approved as Utility, else v3); v2 only if that errors (logged). */
 async function sendWhatsApp(to: string, text: string, schoolName: string, logId: string | null, mainSid: string): Promise<boolean> {
   if (await blockIfTestPhone(to, "handle-school-email")) return false;
   const v3 = schoolEmailV3Vars(schoolName, text);
   const r3 = await sendTemplate(to, mainSid, v3, "handle-school-email");
-  console.log(`Twilio status (${mainSid === SCHOOL_EVENT_V4_SID ? "v4" : "v3"}):`, r3.status, r3.body.slice(0, 300));
+  console.log(`Twilio status (${mainSid === SCHOOL_EVENT_V4_SID ? "v4" : mainSid === SCHOOL_NOTIFICATION_V5_SID ? "v5" : "v3"}):`, r3.status, r3.body.slice(0, 300));
   if (r3.ok) {
     await recordOutbound({ phone: to, source: "school_email", contentSid: mainSid, variables: v3, schoolEmailId: logId, meta: { twilio_sid: r3.sid } });
     return true;
@@ -160,8 +160,9 @@ async function processEmail(o: { subject: string; extracted: Extracted; schoolId
   const { data: children } = await supabase.from("children").select("parent_id, year_group, first_name").eq("school_id", o.schoolId);
   const { data: school } = await supabase.from("schools").select("name").eq("id", o.schoolId).maybeSingle();
   const schoolName = String(school?.name || "school");
-  // Single dated event → the "Save it / Not for us" template (v4) once WhatsApp has approved it; otherwise v3.
-  const mainSid = extracted.eventDate ? await approvedSid(SCHOOL_EVENT_V4_SID, SCHOOL_NOTIFICATION_V3_SID) : SCHOOL_NOTIFICATION_V3_SID;
+  // v5 once WhatsApp approves it as Utility, otherwise v3. Single dated event → v4 only if approved as Utility, otherwise that.
+  const baseSid = await approvedSid(SCHOOL_NOTIFICATION_V5_SID, SCHOOL_NOTIFICATION_V3_SID);
+  const mainSid = extracted.eventDate ? await approvedSid(SCHOOL_EVENT_V4_SID, baseSid) : baseSid;
 
   const isWholeSchool = yearGroups.some((y) => /^all$/i.test(y));
   const relevantChildren = (children ?? []).filter((c: any) => isWholeSchool || yearGroups.some((yg) => yg.toLowerCase() === (c.year_group || "").toLowerCase()));
