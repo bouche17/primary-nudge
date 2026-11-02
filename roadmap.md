@@ -100,7 +100,7 @@
 - [x] school_email_log + /admin/school-emails; opt-in emails worded "If <child>'s in …" (no gender filtering); school emails only to that school's families
 - [x] Free 122/122, full suite 205 pass + 1 flaky
 
-- [ ] Send the two approved account-check messages (Hallie school check with pending reply; Oscar Mossley term dates) — waiting on Matt's go-ahead: account checks now use monty_general_account_v2 (approved, Utility). Run via account-check `send` (child_id, detail, school_check for Hallie), then `delivery`.
+- [x] Send the two approved account-check messages (Hallie school check via v2 with pending reply; Oscar Mossley term dates via v1) — sent and delivered 2 Nov.
 
 ## Button fixes from Matt's phone test (29 Oct)
 - [x] 1 Stale taps: question IDs in payloads + 7-day question archive, re-ask / "already done" instead of "lost track"
