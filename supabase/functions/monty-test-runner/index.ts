@@ -1963,6 +1963,19 @@ const FREE_TAP_CASES: HandlerCase[] = [
     seed: { notes: [FOOTBALL_NOTE], context: archived(dupQuestion("abc123def2", "2026-10-29T21:33:00Z")) },
     steps: [tap("dup_different", "Different, save it")],
     check: ([r], [a]) => firstFail(noteFor(r, "Jude", "2026-11-05", /PE kit/).length !== 1 && `not saved: ${JSON.stringify(r.notes)}`, LOST.test(a) && "said 'lost track'") },
+  { name: "Free tap: account check 'That's right' (account_ok) → school check answered yes, school kept, thanks", family: "C", now: MON,
+    seed: { schoolCheck: { child: "Mila", at: "2026-10-05T09:00:00Z" } }, steps: [tap("account_ok", "That's right")],
+    check: ([r], [a]) => firstFail(!schoolUnchanged(r) && "school changed", !/thank/i.test(a) || !/Mila/.test(a) ? `reply: "${a}"` : false, r.pending !== null && "pending not cleared", total(r) > 0 && "something was saved") },
+  { name: "Free tap: account check 'Not quite' (account_not_quite) → which school → matches with postcode → pick → Yes changes it", family: "C", now: MON,
+    seed: { schoolCheck: { child: "Mila", at: "2026-10-05T09:00:00Z" } },
+    steps: [tap("account_not_quite", "Not quite"), { message: "St Joseph's in Stockport" }, tap("school_1", "St Joseph's Catholic"), tap("confirm_yes", "Yes")],
+    check: ([r1, r2, r3, r4], [ask, offer, confirm, done]) => {
+      const opts = (r2.pending as any)?.school?.options ?? [];
+      return firstFail(!/which school/i.test(ask) && `didn't ask which school: "${ask}"`, !schoolUnchanged(r1) && "changed on 'Not quite'",
+        !opts.length && `no options offered: "${offer}"`, !schoolUnchanged(r2) && "changed before picking", !schoolUnchanged(r3) && "changed before confirming",
+        !/just to check/i.test(confirm) && `no confirm question: "${confirm}"`, r4.schools["Mila"] !== opts[0]?.id && `school not changed to option 1: ${r4.schools["Mila"]}`,
+        !/done/i.test(done) && `no confirmation: "${done}"`, r4.pending !== null && "pending not cleared");
+    } },
 ];
 
 // ── Matt's replay (AI): child → just this one → saved; then delete only that one-off. Weekly PE kits untouched. ──

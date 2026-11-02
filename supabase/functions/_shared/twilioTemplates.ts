@@ -86,10 +86,11 @@ let db: SupabaseClient | null = null;
 const svc = () => (db ??= createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!));
 
 /** "We need to check something on your account: …" — sent with monty_general_account_v1 and recorded in chat (source account_check). */
-export async function sendAccountCheck(phone: string, detail: string, meta: Record<string, unknown> = {}): Promise<TemplateSend & { blocked?: boolean; recorded: string | null }> {
+export async function sendAccountCheck(phone: string, detail: string, meta: Record<string, unknown> = {}, forceV1 = false): Promise<TemplateSend & { blocked?: boolean; recorded: string | null }> {
   if (await blockIfTestPhone(phone, "account-check")) return { ok: false, status: 0, sid: null, body: "blocked", blocked: true, recorded: null };
   const vars = { "1": accountCheckVar(detail) };
-  const sid = await approvedSid(GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID);
+  // forceV1: messages where the "That's right / Not quite" buttons wouldn't fit.
+  const sid = forceV1 ? GENERAL_ACCOUNT_SID : await approvedSid(GENERAL_ACCOUNT_V2_SID, GENERAL_ACCOUNT_SID);
   const r = await sendTemplate(phone, sid, vars, "account-check");
   if (!r.ok) {
     await svc().from("message_send_failures").insert({ function_name: "account-check", phone_number: phone, status_code: r.status, error_body: r.body.slice(0, 2000), context: `Template SID: ${sid}` });
