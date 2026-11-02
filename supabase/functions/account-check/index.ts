@@ -97,7 +97,7 @@ Deno.serve(async (req) => {
       const { data: prof } = await admin.from("profiles").select("phone_number").eq("user_id", child.parent_id).maybeSingle();
       const phone = prof?.phone_number as string | undefined;
       if (!phone) return json({ error: "parent has no phone" }, 404);
-      const r = await sendAccountCheck(phone, detail, { child_id: childId, purpose: body.school_check ? "school_check" : "general" });
+      const r = await sendAccountCheck(phone, detail, { child_id: childId, purpose: body.school_check ? "school_check" : "general" }, body.template === "v1");
       let pending = false;
       if (r.ok && body.school_check === true && child.school_id) {
         const { data: school } = await admin.from("schools").select("id, name, address, town, postcode, urn").eq("id", child.school_id).maybeSingle();
