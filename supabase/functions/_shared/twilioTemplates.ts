@@ -5,7 +5,9 @@ import { recordOutbound } from "./outbound.ts";
 
 /** monty_school_notification_v3: "Hi! 👋 News from {{1}}:\n\n{{2}}\n\nReply "save it" …" */
 export const SCHOOL_NOTIFICATION_V3_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_V3_SID") || "HXeb0f72555240d41d29ffb46285f5402b";
-/** v2 (one variable), used only if a v3 send errors. */
+/** monty_school_notification_v5: "Update from {{1}}: {{2}} Reply "save it" …" (same variables as v3). Used only once approved as Utility. */
+export const SCHOOL_NOTIFICATION_V5_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_V5_SID") || "HX30103eaaa5f21b99438b0e80fde8af94";
+/** v2 (one variable), used only if a v3/v5 send errors. */
 export const SCHOOL_NOTIFICATION_V2_SID = Deno.env.get("TWILIO_SCHOOL_NOTIFICATION_SID") || "HX63040a55daeb8ef0673b8a1a156ad9a9";
 /** monty_general_account_v1: "Hi, it's Monty 👋 We need to check something on your account: {{1}}. Just reply …" */
 export const GENERAL_ACCOUNT_SID = Deno.env.get("TWILIO_GENERAL_ACCOUNT_SID") || "HX6209e9b74c432d4597f6a07e004318f4";
