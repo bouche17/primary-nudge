@@ -172,7 +172,7 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
     const e = eventsRaw[i];
     const cls = e.className || "";
     const mapped = decodeClassName(cls);
-    if (mapped === "unknown") unknownClasses.add(cls === "" ? "(blank)" : cls);
+    if (mapped === "unknown" && cls !== "" && e.start && new Date(e.start.replace(" ", "T") + "Z") >= new Date()) unknownClasses.add(cls); // blank = expected unknown, no alert
 
     const title = e.title || "Untitled";
 
