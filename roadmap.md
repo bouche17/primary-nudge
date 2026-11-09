@@ -120,3 +120,9 @@
 ## Private school calendar events
 - [x] Shared private-event filter before targeting, inclusion and matching
 - [x] Deployed; free suite 155/155 plus 22 local privacy checks, $0 AI; real_readonly at 15 Nov 18:00 previews Odd Socks Day for Alex/Darwin/Vinny, Vinny's own Anti-Bullying Week note retained; no SEND Review or messages sent
+
+## Calendar year-group accuracy (live before Tue 10 Nov 06:00 UTC)
+- [ ] Audit live classNames and derive targeting from the school's Whole School / Reception / Year 1–6 views
+- [ ] Unknown targeting stays out of automatic sends and email matching; list it with provenance and alert once per sync
+- [ ] Expose item provenance in chat; run sync and read-only Year 4 / Reception–Y2 morning previews
+- [ ] Free tests; one quick suite only for the provenance prompt change
