@@ -5,6 +5,7 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { computeWhatsOn, loadFamilyData, ukDate, type WhatsOnItem } from "./whatsOn.ts";
 import { whatsOnDays, type DayList } from "./reminderFormat.ts";
+import { isPrivateEvent } from "./schoolEventRules.ts";
 
 export interface Child { id: string; first_name: string; year_group: string; school_name: string; school_id: string }
 
@@ -53,7 +54,7 @@ export async function loadLegacyChatContext(db: SupabaseClient, phone: string, n
     ? await db.from("school_events").select("title, start_at, school_id, schools(name)").in("school_id", schoolIds)
       .gte("start_at", now.toISOString()).lte("start_at", twoWeeksAhead.toISOString()).order("start_at", { ascending: true }).limit(20)
     : { data: [] };
-  const upcomingEvents = (events || []).map((e: any) => ({ title: e.title, start_at: e.start_at, school_name: e.schools?.name || "" }));
+  const upcomingEvents = (events || []).filter((e: any) => !isPrivateEvent(e.title)).map((e: any) => ({ title: e.title, start_at: e.start_at, school_name: e.schools?.name || "" }));
 
   const { data: notesRaw } = await db.from("parent_notes").select("summary, child_name, extracted_dates, created_at")
     .eq("phone_number", phone).order("created_at", { ascending: false }).limit(20);

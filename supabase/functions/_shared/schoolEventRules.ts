@@ -3,6 +3,19 @@
 
 export const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
+// Private calendar entries never reach family views, reminders or school-event matching.
+// SEND is deliberately case-sensitive; ordinary prose such as "send money" is not private.
+export const PRIVATE_EVENT_WORDS = [
+  "invite only", "invitation only", "by invitation", "invited", "by appointment",
+  "SENCO", "EHCP", "annual review", "SEND review", "staff only", "staff meeting",
+  "governors", "safeguarding", "1:1", "one-to-one", "parent meeting",
+];
+export function isPrivateEvent(title: string): boolean {
+  if (/\bSEND\b/.test(title)) return true;
+  const t = ` ${norm(title)} `;
+  return PRIVATE_EVENT_WORDS.some((phrase) => t.includes(` ${norm(phrase)} `));
+}
+
 /** "Y1", "Year 1", "1" → "1"; "Reception"/"R"/"YR" → "R"; "all"/blank → null (everyone). Lists split on , / & "and". */
 export function normaliseYearGroups(v: string | null | undefined): Set<string> | null {
   if (!v || !v.trim() || /^\s*(all|whole school|everyone)\s*$/i.test(v)) return null;
@@ -34,6 +47,7 @@ export function eventYearGroups(stored: string | null | undefined, title?: strin
 
 /** Does the event reach a child in `childYear`? Pass the title so a key-stage title narrows an "all" event. */
 export function yearGroupMatches(eventYears: string | null, childYear: string | null, title?: string | null): boolean {
+  if (title && isPrivateEvent(title)) return false;
   const ev = eventYearGroups(eventYears, title);
   if (!ev) return true;
   const kid = normaliseYearGroups(childYear);
@@ -60,7 +74,7 @@ export const ACTIVITY_WORDS = [
 ].map(norm);
 /** A year-group event starting at/after OPT_IN_AFTER (UK) is opt-in unless its title has one of these. */
 export const ALWAYS_INCLUDE_WORDS = [
-  "trip", "trips", "parents evening", "parent evening", "performance", "performances", "play", "plays", "assembly", "assemblies",
+  "trip", "trips", "parents evening", "parent evening", "parent consultations", "parents consultations", "performance", "performances", "play", "plays", "assembly", "assemblies",
   "concert", "concerts", "disco", "discos", "fair", "fairs", "photos", "photo", "photographs", "swimming", "workshop", "workshops",
   "meeting", "meetings",
 ].map(norm);
@@ -75,6 +89,7 @@ function ukMinutes(ts: string | Date): number {
 /** Opt-in = an OPT_IN_WORDS or ACTIVITY_WORDS phrase (whole words), or a year-group event from 15:15 UK — and in every
  *  case NO always-include word ("Choir concert", "Dance performance", "Football match vs parents (assembly)" are in). */
 export function isOptInEvent(title: string, yearGroup: string | null, startAt?: string | Date | null): boolean {
+  if (isPrivateEvent(title)) return true; // defence in depth: always-include words never override privacy
   const t = ` ${norm(title)} `;
   const has = (list: string[]) => list.some((w) => t.includes(` ${w} `));
   if (has(ALWAYS_INCLUDE_WORDS)) return false;
@@ -101,6 +116,7 @@ export function topicWords(title: string): Set<string> {
   return new Set(TOPIC_WORDS.filter((w) => t.includes(` ${w} `)));
 }
 export function sharesTopic(a: string, b: string): boolean {
+  if (isPrivateEvent(a) || isPrivateEvent(b)) return false;
   const ta = topicWords(a);
   for (const w of topicWords(b)) if (ta.has(w)) return true;
   return false;
