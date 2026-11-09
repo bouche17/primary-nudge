@@ -11,7 +11,7 @@ export interface FmtItem {
   shareKey?: string; // same key + same text for several children → one line for them
   meta?: ItemMeta;   // carried through to the line (dashboard/chat lists); never changes the wording
 }
-export interface ItemMeta { optIn?: boolean; kind?: string; sources: { table: string; id: string }[] }
+export interface ItemMeta { optIn?: boolean; yearUnknown?: boolean; kind?: string; sources: { table: string; id: string }[] }
 
 const GENERIC = new Set(["", "✅", "📝"]);
 const KEYWORD_EMOJI: [RegExp, string][] = [

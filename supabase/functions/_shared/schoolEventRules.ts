@@ -48,6 +48,7 @@ export function eventYearGroups(stored: string | null | undefined, title?: strin
 /** Does the event reach a child in `childYear`? Pass the title so a key-stage title narrows an "all" event. */
 export function yearGroupMatches(eventYears: string | null, childYear: string | null, title?: string | null): boolean {
   if (title && isPrivateEvent(title)) return false;
+  if (/^\s*unknown\s*$/i.test(eventYears || "")) return false;
   const ev = eventYearGroups(eventYears, title);
   if (!ev) return true;
   const kid = normaliseYearGroups(childYear);

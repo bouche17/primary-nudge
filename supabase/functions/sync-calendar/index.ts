@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { CLASS_NAME_MAP, discoverYearViewLinks, extractFullCalendarEvents, parseFullCalendarHtml as parseTargetedCalendar, unmappedClassNames, YEAR_VIEW_NAMES, type YearViews } from "../_shared/calendarYearGroups.ts";
+import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

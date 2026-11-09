@@ -273,7 +273,7 @@ async function buildItemsFromWhatsOn(
   // One-child family: family-wide items (school reminders, unnamed notes) read as that child's.
   const onlyChild = familyChildren.length === 1 ? familyChildren[0].first_name : null;
   for (const w of computeWhatsOn(data, targetDateStr, targetDateStr)) {
-    if (w.optIn) continue;
+    if (w.optIn || w.yearUnknown) continue;
     if (w.slot !== "both" && w.slot !== period) continue;
     const t = w.source.table, id = w.source.id;
     const [refId, logType] =

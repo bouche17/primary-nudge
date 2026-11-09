@@ -55,7 +55,7 @@ export function lookupReply(v: LookupView, edit = false): string {
     if (edit) return `I can't find ${v.item ? `"${v.item}"` : "that"}${who} ${when}, so I haven't changed anything.`;
     return v.item ? `There's nothing saved for ${v.item}${who} ${when}.` : `There's nothing saved${who} ${when} 👍`;
   }
-  const fmt = (l: DayList["lines"][number]) => `${l.line}${l.optIn ? " (optional)" : ""}`;
+  const fmt = (l: DayList["lines"][number]) => `${l.line}${l.yearUnknown ? " (not year-specific — not in automatic reminders)" : l.optIn ? " (optional)" : ""}`;
   // A look-up for one thing ("when's the next Forest School?") names the thing, not the whole search window.
   const head = edit ? `I found ${total === 1 ? "this" : "these"}${who} ${when} — which one do you mean?`
     : v.item && v.from !== v.to ? `Here's what I've got for ${v.item}${who}:` : `Here's what's on${who} ${when}:`;
