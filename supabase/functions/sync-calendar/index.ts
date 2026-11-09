@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { CLASS_NAME_MAP, discoverYearViewLinks, extractFullCalendarEvents, parseFullCalendarHtml as parseTargetedCalendar, unmappedClassNames, YEAR_VIEW_NAMES, type YearViews } from "../_shared/calendarYearGroups.ts";
+import { decodeClassName } from "../_shared/calendarYearGroups.ts";
 import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 
 const corsHeaders = {
@@ -62,38 +62,6 @@ function parseIcal(ical: string) {
 // ── FullCalendar JS array extractor ──────────────────────────
 
 // Explicit className → year_group mapping from the Dean Valley site
-const CLASS_NAME_MAP: Record<string, string | null> = {
-  "": "all",
-  "custom0": "Reception",
-  "custom": "Year 1",
-  "custom2": "Year 2",
-  "custom3": "Year 3",
-  "custom4": "Year 4",
-  "custom5": "Year 5",
-  "custom6": "Year 6",
-  "customstaff": "all", // whole-school events (Inset Day, closures, term dates)
-  "multi_3_4": "Year 3,Year 4",
-  "multi_5_6": "Year 5,Year 6",
-  "multi_3_4_5": "Year 3,Year 4,Year 5",
-  "multi_4_5_6": "Year 4,Year 5,Year 6",
-  "multi_3_4_5_6": "Year 3,Year 4,Year 5,Year 6",
-  "multi_0__2": "Reception,Year 1,Year 2",
-  "multi__2": "Year 1,Year 2",
-  "multi__2_3_4_5_6": "Year 1,Year 2,Year 3,Year 4,Year 5,Year 6",
-  "multi_4_5_3": "Year 3,Year 4,Year 5",
-  "multi_4_5": "Year 4,Year 5",
-  "multi_6_5": "Year 5,Year 6",
-  "multi_2_3": "Year 2,Year 3",
-  "multi_2_3_4": "Year 2,Year 3,Year 4",
-  "multi_3_4_5_6_2": "Year 2,Year 3,Year 4,Year 5,Year 6",
-  "multi_5_6_2": "Year 2,Year 5,Year 6",
-  "multi_0_6": "Reception,Year 6",
-  "multi_0_2_": "Reception,Year 1,Year 2",
-  "multi_0__2_4_5_6": "Reception,Year 1,Year 2,Year 4,Year 5,Year 6",
-  "multi_0__2_3": "Reception,Year 1,Year 2,Year 3",
-  "multi_0_3_2": "Reception,Year 2,Year 3",
-  "multi_0_staff": null, // skip staff events
-};
 
 // Detect explicit year group mentions in an event title (e.g. "Y1 Forest School",
 // "Year 3 Trip", "Yr2 Assembly", "Reception Open Morning").
@@ -169,6 +137,8 @@ interface DebugEvent {
   mapped: string | "SKIPPED";
 }
 
+const unknownClasses = new Set<string>();
+
 function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: DebugEvent[] } {
   // Find the NON-empty events array — the page has an empty one first, then the real data
   const matches = [...html.matchAll(/events\s*:\s*(\[[\s\S]*?\])\s*[,}]/g)];
@@ -201,7 +171,8 @@ function parseFullCalendarHtml(html: string): { events: FullCalEvent[]; debug: D
   for (let i = 0; i < eventsRaw.length; i++) {
     const e = eventsRaw[i];
     const cls = e.className || "";
-    const mapped = CLASS_NAME_MAP.hasOwnProperty(cls) ? CLASS_NAME_MAP[cls] : "all";
+    const mapped = decodeClassName(cls);
+    if (mapped === "unknown") unknownClasses.add(cls === "" ? "(blank)" : cls);
 
     const title = e.title || "Untitled";
 
@@ -456,6 +427,12 @@ Deno.serve(async (req: Request) => {
       } catch (err) {
         console.error(`Error processing feed ${feed.id}:`, err);
       }
+    }
+
+    if (unknownClasses.size) {
+      const list = [...unknownClasses].sort();
+      unknownClasses.clear();
+      try { await sendAlertWhatsApp(`Monty system alert (not from a school): calendar sync found year groups it couldn't read (${list.join(", ")}). Those events are kept out of automatic reminders until fixed.`); } catch (e) { console.error("unknown-class alert failed", e); }
     }
 
     return new Response(
