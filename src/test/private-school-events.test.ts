@@ -14,7 +14,10 @@ describe("private school events", () => {
     expect(events("Parents' Evening")).toHaveLength(1);
     expect(isOptInEvent("Parents' Evening", "Year 1", "2026-11-16T18:00:00Z")).toBe(false);
   });
-  it("keeps Parent Consultations", () => expect(events("Parent Consultations")).toHaveLength(1));
+  it("keeps Parent Consultations", () => {
+    expect(events("Parent Consultations")).toHaveLength(1);
+    expect(isOptInEvent("Parent Consultations", "Year 1", "2026-11-16T18:00:00Z")).toBe(false);
+  });
   it("keeps all-years manual Odd Socks Day", () => expect(events("Odd Socks Day", "all")).toHaveLength(1));
   it("never lets always-include words override privacy", () => {
     expect(events("Invite Only swimming workshop meeting")).toEqual([]);

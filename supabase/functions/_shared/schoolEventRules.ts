@@ -74,7 +74,7 @@ export const ACTIVITY_WORDS = [
 ].map(norm);
 /** A year-group event starting at/after OPT_IN_AFTER (UK) is opt-in unless its title has one of these. */
 export const ALWAYS_INCLUDE_WORDS = [
-  "trip", "trips", "parents evening", "parent evening", "performance", "performances", "play", "plays", "assembly", "assemblies",
+  "trip", "trips", "parents evening", "parent evening", "parent consultations", "parents consultations", "performance", "performances", "play", "plays", "assembly", "assemblies",
   "concert", "concerts", "disco", "discos", "fair", "fairs", "photos", "photo", "photographs", "swimming", "workshop", "workshops",
   "meeting", "meetings",
 ].map(norm);
