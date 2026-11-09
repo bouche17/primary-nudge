@@ -126,3 +126,6 @@
 - [ ] Unknown targeting stays out of automatic sends and email matching; list it with provenance and alert once per sync
 - [ ] Expose item provenance in chat; run sync and read-only Year 4 / Reception–Y2 morning previews
 - [ ] Free tests; one quick suite only for the provenance prompt change
+
+- [x] Calendar year groups: generic SchoolSpider className decoder; blank/undecodable → unknown (never auto-sent), alert for undecodable upcoming classes (9 Nov)
+- [ ] Provenance replies ("where did that come from?") written but not wired into chat yet
