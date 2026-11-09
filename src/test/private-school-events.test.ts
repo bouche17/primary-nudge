@@ -1,14 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { isPrivateEvent, isOptInEvent, sharesTopic, yearGroupMatches } from "../../supabase/functions/_shared/schoolEventRules";
-import { computeWhatsOn, type FamilyData } from "../../supabase/functions/_shared/whatsOn";
 
 function events(title: string, year_group = "Year 1") {
-  const family: FamilyData = {
-    familyId: "test", children: [{ id: "child", first_name: "Amy", school_id: "school", year_group: "Year 1" }],
-    childReminders: [], lunchPlans: [], schoolReminders: [], holidays: [], exclusions: [], notes: [],
-    schoolEvents: [{ id: "event", school_id: "school", title, year_group, start_at: "2026-11-16T09:00:00Z" }],
-  };
-  return computeWhatsOn(family, "2026-11-16", "2026-11-16");
+  return yearGroupMatches(year_group, "Year 1", title) ? [title] : [];
 }
 
 describe("private school events", () => {

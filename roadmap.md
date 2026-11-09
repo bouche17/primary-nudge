@@ -116,3 +116,7 @@
 - [x] Morning/evening/Sunday runs via one UK-time scheduler with retries at +5 / +15 and one alert if all fail
 - [x] Free tests: failure+retry, partial runs (reminders + Sunday), one alert, GMT/BST times
 - [x] Newer templates only when approved AND Utility (v4 school event + Sunday v2 are Marketing → kept on v3 / monty_sunday_evening)
+
+## Private school calendar events
+- [ ] Shared private-event filter before targeting, inclusion and matching
+- [ ] Free tests and live read-only Year 1 preview for 16 Nov; deploy without sending

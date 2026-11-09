@@ -16,6 +16,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SIDS, tapPayload, withLabels, type Interactive } from "../_shared/interactive.ts";
 import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
+import { isPrivateEvent } from "../_shared/schoolEventRules.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
@@ -1012,6 +1013,7 @@ async function executeTool(
       const score = (text: string) => [...itemTokens(text, allChildNames)].filter((w) => parentWords.has(w)).length;
       let bestScore = -1;
       for (const c of candidates) {
+        if (c.table === "school_events" && isPrivateEvent(c.text)) continue;
         const m = matchItem(c.text, newSummary, allChildNames);
         if (m === "exact") { exact = c; break; }
         if (m === "ambiguous") { const sc = score(c.text); if (sc > bestScore) { partial = c; bestScore = sc; } }
