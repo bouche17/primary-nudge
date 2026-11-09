@@ -118,5 +118,5 @@
 - [x] Newer templates only when approved AND Utility (v4 school event + Sunday v2 are Marketing → kept on v3 / monty_sunday_evening)
 
 ## Private school calendar events
-- [ ] Shared private-event filter before targeting, inclusion and matching
-- [ ] Free tests and live read-only Year 1 preview for 16 Nov; deploy without sending
+- [x] Shared private-event filter before targeting, inclusion and matching
+- [x] Deployed; free suite 155/155 plus 22 local privacy checks, $0 AI; real_readonly at 15 Nov 18:00 previews Odd Socks Day for Alex/Darwin/Vinny, Vinny's own Anti-Bullying Week note retained; no SEND Review or messages sent
