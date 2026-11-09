@@ -461,6 +461,17 @@ async function runWhatsOnTests(): Promise<Result[]> {
   const out: Result[] = [];
   const t = (scenario: string, fn: () => string | null | Promise<string | null>, reply?: string) => out.push({ scenario, category: "whats-on", status: "pass", reply: reply ?? null, reason: null, details: { fn } as any });
   const cases: [string, () => Promise<{ reason: string | null; reply?: string }>][] = [
+    ...["SEND Review - Invite Only", "Parents' Evening", "Odd Socks Day", "Invite Only swimming workshop"].map((title, index): [string, () => Promise<{ reason: string | null }>] => [
+      `Private school events: ${title}`,
+      async () => {
+        const r = computeWhatsOn(famFixture({
+          children: [{ id: "k1", first_name: "Amy", school_id: "s1", year_group: "Year 1" }],
+          schoolEvents: [{ id: "privacy", school_id: "s1", title, start_at: "2026-11-16T09:00:00Z", year_group: index === 2 ? "all" : "Year 1" }],
+        }), "2026-11-16", "2026-11-16");
+        const included = index === 1 || index === 2;
+        return { reason: r.length === (included ? 1 : 0) && (!included || !r[0].optIn) ? null : `got ${JSON.stringify(r)}` };
+      },
+    ]),
     ["What's on: weekly reminder appears every matching weekday", async () => {
       const r = computeWhatsOn(famFixture({ childReminders: [{ id: "r1", child_id: "k1", title: "PE kit", emoji: "👟", day_of_week: "Tuesday", reminder_time: "both", active: true, recurrence_interval: 1, anchor_date: null }] }), "2026-10-05", "2026-10-18");
       const d = r.map((i) => i.date).join(",");

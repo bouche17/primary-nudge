@@ -3,7 +3,7 @@
 // Morning/evening reminders read this when app_settings.whats_on_source = 'new' (send-reminders);
 // they skip items flagged optIn. Year-group/opt-in rules live in schoolEventRules.ts (also used by the dashboard and chat).
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { isOptInEvent, markerContained, norm, sharesTopic, topicWords, yearGroupMatches } from "./schoolEventRules.ts";
+import { isPrivateEvent, isOptInEvent, markerContained, norm, sharesTopic, topicWords, yearGroupMatches } from "./schoolEventRules.ts";
 export { ACTIVITY_WORDS, ALWAYS_INCLUDE_WORDS, eventYearGroups, isOptInEvent, markerContained, normaliseYearGroups, OPT_IN_WORDS, sharesTopic, yearGroupMatches } from "./schoolEventRules.ts";
 
 export type WhatsOnKind = "weekly" | "fortnightly" | "one-off" | "school event" | "school reminder" | "lunch";
@@ -140,6 +140,7 @@ export function computeWhatsOn(f: FamilyData, fromDate: string, toDate: string):
     const parentKeys = (childId: string) => new Set(items.filter((i) => i.date === date && i.childId === childId &&
       (i.source.table === "parent_notes" || i.source.table === "child_reminders")).map((i) => matchKey(i.title)));
     for (const e of f.schoolEvents) {
+      if (isPrivateEvent(e.title)) continue;
       if (ukDate(e.start_at) !== date) continue;
       for (const kid of kids) {
         if (e.school_id !== null && e.school_id !== kid.school_id) continue;
