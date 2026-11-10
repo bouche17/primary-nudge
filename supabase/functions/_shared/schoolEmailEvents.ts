@@ -89,7 +89,7 @@ export function groupedConfirmation(saved: SavedItem[], family: string[]): strin
     if (!groups.has(key)) groups.set(key, { title: s.title, kids: new Set(), dates: new Map() });
     const g = groups.get(key)!;
     g.kids.add(s.child);
-    const extra = [s.time, s.bring ? bringShort(s.bring) : null].filter(Boolean).join(", ");
+    const extra = s.bring ? bringShort(s.bring) : "";
     g.dates.set(`${s.date}|${extra}`, `${shortDate(s.date)}${extra ? ` (${extra})` : ""}`);
   }
   const and = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
