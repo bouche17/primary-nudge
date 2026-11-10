@@ -1351,7 +1351,7 @@ interface Seed {
   history?: Msg[];
   realHistory?: { from: string; to: string };
   // Messages Monty sent on its own (school email / reminder / Sunday check-in), stored like the real senders do.
-  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
+  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean; extracted?: Record<string, unknown> } }[];
   // Monty sent the account-check "is <child>'s school right?" (template text + the pending school check, as account-check does).
   schoolCheck?: { child: string; at: string };
   // Stored conversation context (e.g. a 7-day question archive) — fake test families only.
