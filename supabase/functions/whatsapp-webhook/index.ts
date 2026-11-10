@@ -23,6 +23,7 @@ import { chooseQuestion, eligibleFor, groupedConfirmation, matchEventsByTopic, m
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
 interface TestCtx { now: Date; toolCalls: Array<{ name: string; input: unknown; ok: boolean; action: string; text: string }> }
 const testStore = new AsyncLocalStorage<TestCtx>();
+const familyStore = new AsyncLocalStorage<string[]>(); // the family's children, for "for both" / "for everyone" in confirmations
 const nowD = (): Date => new Date((testStore.getStore()?.now ?? new Date()).getTime());
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { encode as encodeBase64 } from "https://deno.land/std@0.208.0/encoding/base64.ts";
@@ -743,7 +744,7 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
 function confirmationLine(saved: ToolResult[]): string {
   if (saved.length === 1 && saved[0].confirm) return saved[0].confirm;
   const labels = [...new Set(saved.map((r) => r.label || "that"))];
-  if (labels.length > 1) { const g = groupLabels(labels, (testStore.getStore() as any)?.familyNames ?? currentFamilyNames); if (g) return g; }
+  if (labels.length > 1) { const g = groupLabels(labels, familyStore.getStore() ?? []); if (g) return g; }
   const list = labels.length <= 1 ? labels.join("") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
   return `Got it, ${list} ${labels.length > 1 ? "are" : "is"} saved ✅`;
 }
@@ -3091,7 +3092,7 @@ const questionMeta = (qid: string | null, inter: Interactive | null, sid: string
 // ── Text message flow (shared by the real webhook and the test entry point) ──
 async function handleTextMessage(from: string, incomingMessage: string, context: MontyContext, conversationId: string): Promise<string> {
   const names = context.children.map((c) => c.first_name);
-  let reply = await handleTextMessageInner(from, incomingMessage, context, conversationId);
+  let reply = await familyStore.run(names, () => handleTextMessageInner(from, incomingMessage, context, conversationId));
   if (isRoboticReply(reply)) {
     await logDedupDecision({ phone: from, childName: null, tool: "reply_guard_text", newItem: incomingMessage.slice(0, 300), decision: "robotic_reply_replaced", match: { table: "model_reply", id: "no match", text: reply.slice(0, 2000) } });
     reply = await specificQuestion(from, conversationId, context);
