@@ -100,3 +100,25 @@ export function groupedConfirmation(saved: SavedItem[], family: string[]): strin
   if (sameKids) return `Saved ${forWhom([...gs[0].kids], family)} ✅ ${gs.map(part).join("; ")}.`;
   return `Saved ✅ ${gs.map((g) => `${part(g)} ${forWhom([...g.kids], family)}`).join("; ")}.`;
 }
+
+/** Several save labels ("Jude's own clothes day for Friday 27th", "Harry's …") grouped by item, children named once.
+ *  null when a label doesn't follow "<Child>'s <item> for|every|on <when>". */
+export function groupLabels(labels: string[], family: string[]): string | null {
+  const groups = new Map<string, { item: string; kids: Set<string>; whens: string[] }>();
+  for (const l of labels) {
+    const m = l.match(/^([A-Z][\w-]*)'s (.+?) ((?:for|every other|every|on) .+)$/);
+    if (!m) return null;
+    const key = m[2].toLowerCase();
+    if (!groups.has(key)) groups.set(key, { item: m[2], kids: new Set(), whens: [] });
+    const g = groups.get(key)!;
+    g.kids.add(m[1]);
+    const w = m[3].replace(/^(for|on) /, "");
+    if (!g.whens.includes(w)) g.whens.push(w);
+  }
+  const gs = [...groups.values()];
+  const and = (xs: string[]) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
+  const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const same = gs.every((g) => [...g.kids].sort().join() === [...gs[0].kids].sort().join());
+  if (same) return `Saved ${forWhom([...gs[0].kids], family)} ✅ ${gs.map((g) => `${cap(g.item)}: ${and(g.whens)}`).join("; ")}.`;
+  return `Saved ✅ ${gs.map((g) => `${cap(g.item)}: ${and(g.whens)} ${forWhom([...g.kids], family)}`).join("; ")}.`;
+}

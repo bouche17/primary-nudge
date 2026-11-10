@@ -17,7 +17,7 @@ import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SID
 import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 import { isPrivateEvent } from "../_shared/schoolEventRules.ts";
-import { chooseQuestion, eligibleFor, groupedConfirmation, matchEventsByTopic, multiSaveQuestion, normaliseEvents, shortDate, tidyTitle, eventLine, type EmailEvent, type SavedItem } from "../_shared/schoolEmailEvents.ts";
+import { chooseQuestion, eligibleFor, groupedConfirmation, matchEventsByTopic, multiSaveQuestion, normaliseEvents, groupLabels, shortDate, tidyTitle, eventLine, type EmailEvent, type SavedItem } from "../_shared/schoolEmailEvents.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
@@ -743,6 +743,7 @@ function buildHonestReply(results: ToolResult[], pendingQuestion?: string | null
 function confirmationLine(saved: ToolResult[]): string {
   if (saved.length === 1 && saved[0].confirm) return saved[0].confirm;
   const labels = [...new Set(saved.map((r) => r.label || "that"))];
+  if (labels.length > 1) { const g = groupLabels(labels, (testStore.getStore() as any)?.familyNames ?? currentFamilyNames); if (g) return g; }
   const list = labels.length <= 1 ? labels.join("") : `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
   return `Got it, ${list} ${labels.length > 1 ? "are" : "is"} saved ✅`;
 }
