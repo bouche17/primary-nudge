@@ -17,6 +17,7 @@ import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SID
 import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 import { isPrivateEvent } from "../_shared/schoolEventRules.ts";
+import { chooseQuestion, eligibleFor, groupedConfirmation, matchEventsByTopic, multiSaveQuestion, normaliseEvents, shortDate, tidyTitle, eventLine, type EmailEvent, type SavedItem } from "../_shared/schoolEmailEvents.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
@@ -2699,7 +2700,13 @@ async function resolveSchoolPending(phone: string, p: PendingAction, message: st
 }
 
 // ── Replies to messages Monty sent on its own (school emails, reminders, Sunday check-in) ──
-interface SchoolEmailItem { title: string; date: string; eligible: string[]; log_id: string | null }
+interface SchoolEmailItem {
+  title: string; date: string; eligible: string[]; log_id: string | null;
+  clear?: boolean;                                   // the children are known from the year groups (no question needed)
+  events?: Array<EmailEvent & { label?: string }>;   // every upcoming dated item in the email
+  stage?: "all" | "choose" | "child";                // several items: "Save all / Choose", the pick, or the one which-child question
+  chosen?: number[];                                 // indexes picked (stage "child")
+}
 interface SentMsg { content: string; created_at: string; source: string | null; school_email_id: string | null; metadata: any }
 
 /** Monty's outbound messages from the last 48 hours, newest first (chat replies have source null). */
