@@ -68,7 +68,7 @@ const oneLine = (s: string) => String(s ?? "").replace(/[\u0000-\u001F\u007F\u20
 export interface Interactive { key: string; labels: string[]; answers: string[]; descs?: string[] }
 interface SchoolPickOpt { name: string; address?: string | null; town: string | null; postcode: string }
 interface PendingLike {
-  kind: string; proposed?: string[] | null; email?: { eligible?: string[] }; school?: { stage: string; options?: SchoolPickOpt[] };
+  kind: string; proposed?: string[] | null; email?: { eligible?: string[]; stage?: string; events?: Array<{ title: string; label?: string }> }; school?: { stage: string; options?: SchoolPickOpt[] };
   items?: Array<{ tool: string; args: any }>; move?: { options: Array<{ child: string; title: string; day: string }> };
   pick?: { options: Array<{ label: string }> };
 }
@@ -139,7 +139,12 @@ export function interactiveFor(p: PendingLike | null, childNames: string[]): Int
       return build([...o.map((x) => x.label), "Neither"], [...o.map((_x, i) => String(i + 1)), "neither"]);
     }
     case "scope": return build(["Just this week", "For good"], ["just this week", "for good"]);
-    case "school_email": return p.proposed?.length ? yesNo : childButtons(p.email?.eligible?.length ? p.email.eligible : childNames);
+    case "school_email": {
+      const ev = p.email?.events ?? [];
+      if (p.email?.stage === "all" && ev.length > 1) return build(["Save all", "Choose"], ["save all", "choose"]);
+      if (p.email?.stage === "choose" && ev.length > 1 && ev.length <= 5) return build(ev.map((e) => e.label ?? e.title), ev.map((_e, i) => String(i + 1)));
+      return p.proposed?.length ? yesNo : childButtons(p.email?.eligible?.length ? p.email.eligible : childNames);
+    }
     case "school": {
       const s = p.school;
       if (s?.stage === "confirm") return yesNo;

@@ -1351,7 +1351,7 @@ interface Seed {
   history?: Msg[];
   realHistory?: { from: string; to: string };
   // Messages Monty sent on its own (school email / reminder / Sunday check-in), stored like the real senders do.
-  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean } }[];
+  sent?: { source: string; text: string; at: string; meta?: Record<string, unknown>; email?: { subject: string; title: string | null; date: string | null; years: string[]; optIn?: boolean; extracted?: Record<string, unknown> } }[];
   // Monty sent the account-check "is <child>'s school right?" (template text + the pending school check, as account-check does).
   schoolCheck?: { child: string; at: string };
   // Stored conversation context (e.g. a 7-day question archive) — fake test families only.
@@ -1437,7 +1437,7 @@ async function seedFamily(fam: keyof typeof FAMILIES, seed: Seed = {}) {
     for (const m of seed.sent ?? []) {
       let logId: string | null = null;
       if (m.email) {
-        const { data: log, error: le } = await admin.from("school_email_log").insert({ school_id: TEST_SCHOOL_ID, subject: m.email.subject, extracted: { what: m.email.title }, message: m.text,
+        const { data: log, error: le } = await admin.from("school_email_log").insert({ school_id: TEST_SCHOOL_ID, subject: m.email.subject, extracted: m.email.extracted ?? { what: m.email.title }, message: m.text,
           year_groups: m.email.years, opt_in: m.email.optIn ?? false, event_title: m.email.title, event_date: m.email.date, is_test: true, received_at: m.at }).select("id").single();
         if (le) throw new Error(`seed school email: ${le.message}`);
         logId = log.id;
@@ -1864,7 +1864,27 @@ const GIRLS_EMAIL = { source: "school_email", at: "2026-10-18T13:42:00Z",
   text: "📢 School update: If Harry's in the Y3/4 girls' football team: ⚽ The Y3/4 girls' football tournament is at Macc FC on Wednesday 21st October after school.",
   email: { subject: "Y3/4 Girls Football Tournament", title: "Y3/4 girls' football tournament", date: "2026-10-21", years: ["Year 3", "Year 4"], optIn: true } };
 const MON19 = "2026-10-19T08:00:00Z"; // Mon 19 Oct 09:00 BST
+const NOV10 = "2026-11-10T15:24:00Z";
+const PTA_EMAIL = { source: "school_email", at: "2026-11-10T15:23:00Z",
+  text: "🎄 The PTA Christmas Fair is now on Friday 4th December from 5.00pm to 7.00pm. There are two own clothes days too: Friday 27th November for a chocolate item (Chocbola) and Friday 4th December for a bottle (Bottlebola).",
+  email: { subject: "Fwd: UPDATED DATES - PTA Christmas Fair Info", title: "PTA Christmas Fair", date: "2026-12-04", years: ["all"],
+    extracted: { what: "PTA Christmas Fair and own clothes days", yearGroups: ["all"], eventTitle: "PTA Christmas Fair", eventDate: "2026-12-04", events: [
+      { title: "PTA Christmas Fair", date: "2026-12-04", time: "5–7pm", bring: null, yearGroups: ["all"] },
+      { title: "Own clothes day", date: "2026-11-27", time: null, bring: "a chocolate item", yearGroups: ["all"] },
+      { title: "Own clothes day", date: "2026-12-04", time: null, bring: "a bottle", yearGroups: ["all"] }] } } };
 const SENT_CASES: HandlerCase[] = [
+  { name: "PTA email with 3 dates (all years) → 'Save it' → 'Save all / Choose' list → 'Save all' → 6 notes, one grouped confirmation, no child question", family: "A", now: NOV10,
+    seed: { sent: [PTA_EMAIL] }, steps: [{ message: "Save it" }, { message: "Save all" }],
+    check: ([r1, r2], [q, a]) => firstFail(total(r1) > 0 && `saved before confirming: ${JSON.stringify(r1.notes)}`,
+      !/Shall I save all 3\?/.test(q) && `no 'save all 3' question: "${q}"`, /which child|Jude or Harry/i.test(q) && `asked which child: "${q}"`,
+      r2.notes.length !== 6 && `expected 6 notes (3 items × Jude and Harry): ${JSON.stringify(r2.notes)}`,
+      noteFor(r2, "Jude", "2026-11-27", /clothes/i).length !== 1 && "Jude's 27 Nov own clothes day missing", noteFor(r2, "Harry", "2026-12-04", /fair/i).length !== 1 && "Harry's fair missing",
+      !/^Saved for both Jude and Harry ✅/.test(a) && `not grouped: "${a}"`, (a.match(/own clothes/gi) ?? []).length > 1 && `item repeated: "${a}"`, a.includes("?") && `asked: "${a}"`) },
+  { name: "PTA email in history → 'And also the own clothes days' → both own clothes days saved for both, no question for details", family: "A", now: NOV10,
+    seed: { sent: [PTA_EMAIL] }, steps: [{ message: "And also the own clothes days" }],
+    check: ([r], [a]) => firstFail(r.notes.length !== 4 && `expected 4 own clothes day notes: ${JSON.stringify(r.notes)}`,
+      r.notes.some((n: any) => /fair/i.test(n.summary ?? "")) && "saved the fair too", a.includes("?") && `asked: "${a}"`,
+      !/Jude and Harry/.test(a) && `children not named once: "${a}"`, (a.match(/own clothes/gi) ?? []).length > 1 && `item repeated: "${a}"`) },
   { name: "School email (Y3/4 girls' football, Wed 21 Oct) → 'Yes' → saved for Harry, short confirmation, no robotic wording", family: "A", now: MON19,
     seed: { sent: [GIRLS_EMAIL] }, steps: [{ message: "Yes" }],
     check: ([r], [a]) => firstFail(noteFor(r, "Harry", "2026-10-21", /football/i).length !== 1 && `expected one football note for Harry on 21 Oct: ${JSON.stringify(r.notes)}`,
@@ -2079,7 +2099,7 @@ async function runHandlerCase(c: HandlerCase): Promise<CaseOut> {
   const kidNames = FAMILIES[c.family].kids.map((k) => k.name);
   const confirmations = replies.map((r, i) => ({ r, asked: c.steps[i].message.includes("?") }))
     .filter((x) => /saved ✅|has moved to/i.test(x.r) && !/sorry|couldn'?t/i.test(x.r));
-  const badConf = confirmations.find((x) => !x.asked && (x.r.includes("\n") || x.r.length > 120 || !kidNames.some((n) => x.r.includes(n)) || /remind you/i.test(x.r)));
+  const badConf = confirmations.find((x) => !x.asked && (x.r.includes("\n") || x.r.length > (/^Saved .*;/.test(x.r) ? 160 : 120) || !kidNames.some((n) => x.r.includes(n)) || /remind you/i.test(x.r)));
   const sys = replies.find((r) => SYSTEM_WORDS.test(r));
   const pron = replies.find((r) => /\b(he|she|his|her|him)\b/i.test(r));
   const empty = replies.findIndex((r) => !r.trim());
