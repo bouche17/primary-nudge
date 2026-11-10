@@ -1,3 +1,4 @@
+import { normaliseEvents } from "../_shared/schoolEmailEvents.ts";
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
@@ -38,6 +39,7 @@ Return this exact JSON structure:
   "yearGroups": ["Reception", "Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "Year 6", or "all" for whole school],
   "eventTitle": "short name of the event a parent might want a reminder for, e.g. 'Y3/4 girls' football tournament' — null if there is no single dated event",
   "eventDate": "that event's date as YYYY-MM-DD — null if there is no single date",
+  "events": [{ "title": "short name of one dated thing, e.g. 'Own clothes day'", "date": "YYYY-MM-DD", "time": "e.g. '5–7pm' or null", "bring": "what children bring or wear, e.g. 'a chocolate item' or null", "yearGroups": ["same values as yearGroups"], "optIn": false }],
   "optInGroup": "only for optional/selected activities (teams, squads, clubs, tournaments, trials): who takes part, written to follow 'If Ava's in …', e.g. 'the Y3/4 girls' football team' — null otherwise"
 }
 
@@ -67,7 +69,9 @@ action: Distinguish two email types:
 
 links: Extract ONLY the URLs a parent actually needs to click to take an action or view specific content — e.g. a form to complete, a booking or payment portal, a specific document, or a specific event page. EXCLUDE: mailto: links, tel: links, the school's general homepage or website root (e.g. a bare https://www.deanvalley.cheshire.sch.uk with no specific path), social media links, and anything from email signatures or footers. If no qualifying links exist, return an empty array. Preserve each qualifying link exactly as written, never summarised, shortened, or omitted.
 
-eventTitle / eventDate: the one dated event in the email (the day it happens, not a booking deadline). Use null for both when the email has no single event date. Never guess a date.
+eventTitle / eventDate: the first dated event in the email (the day it happens, not a booking deadline). Use null for both when the email has no single event date. Never guess a date.
+
+events: one entry for EVERY distinct dated thing in the email a parent might want a reminder for (e.g. an own clothes day on Fri 27 Nov, another on Fri 4 Dec, and the fair on Fri 4 Dec are 3 entries). The day it happens, never a booking or payment deadline. title short and plain; time only if stated; bring only if the email says what to bring or wear for that day; yearGroups for that item (["all"] if whole school); optIn true only for optional/selected activities. Empty array if nothing is dated. Never guess a date. eventTitle/eventDate must be the first entry in date order.
 
 optInGroup: a short phrase naming the group of children taking part, never a gender assumption about a particular child. Null for anything every child in the year group does.
 
@@ -94,7 +98,7 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
     },
     body: JSON.stringify({
       model: montyClaudeModel(),
-      max_tokens: 1000,
+      max_tokens: 1500,
       system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
       messages: [{ role: "user", content: userText }],
     }),
@@ -107,6 +111,8 @@ Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
   const parsed = JSON.parse(clean);
   // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
+  parsed.events = normaliseEvents(parsed);
+  if (parsed.events.length && !parsed.eventDate) { parsed.eventDate = parsed.events[0].date; parsed.eventTitle ??= parsed.events[0].title; }
   if (typeof parsed.eventDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(parsed.eventDate)) parsed.eventDate = null;
   if (!Array.isArray(parsed.yearGroups)) parsed.yearGroups = ["all"];
   for (const key of ["cost", "action", "when", "message", "eventTitle", "optInGroup"] as const) {
