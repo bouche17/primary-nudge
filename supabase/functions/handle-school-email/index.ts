@@ -1,4 +1,6 @@
 import { normaliseEvents } from "../_shared/schoolEmailEvents.ts";
+import { extractJsonWithRetry, processWithInbox, responseText, secretDecision } from "../_shared/schoolEmailParse.ts";
+import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
@@ -18,7 +20,7 @@ const DEAN_VALLEY_SCHOOL_ID = Deno.env.get("SCHOOL_EMAIL_SCHOOL_ID") || "f656def
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-monty-email-secret, x-monty-test-secret",
 };
 
 // Fixed extraction instructions: identical for every email, sent as a cached system block.
@@ -89,27 +91,24 @@ ${body}
 
 Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: montyClaudeModel(),
-      max_tokens: 1500,
-      system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: userText }],
-    }),
-  });
-
-  const data = await response.json();
-  await recordAiCost({ functionName: "handle-school-email", purpose: "school-email extraction", model: montyClaudeModel(), usage: data.usage });
-  const text = data.content[0].text.trim();
-  const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-
-  const parsed = JSON.parse(clean);
+  const call = async (nudge: string | null) => {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: montyClaudeModel(),
+        max_tokens: 3000,
+        system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: nudge ? `${userText}\n\n${nudge}` : userText }],
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (data?.usage) await recordAiCost({ functionName: "handle-school-email", purpose: nudge ? "school-email extraction retry" : "school-email extraction", model: montyClaudeModel(), usage: data.usage });
+    if (!response.ok) throw new Error(`Claude ${response.status}: ${JSON.stringify(data?.error ?? data).slice(0, 300)}`);
+    return { text: responseText(data), stop: data?.stop_reason ?? null };
+  };
+  const { parsed: p0 } = await extractJsonWithRetry(call);
+  const parsed: any = p0;
   // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
   parsed.events = normaliseEvents(parsed);
   if (parsed.events.length && !parsed.eventDate) { parsed.eventDate = parsed.events[0].date; parsed.eventTitle ??= parsed.events[0].title; }
@@ -245,13 +244,41 @@ async function processEmail(o: { subject: string; extracted: Extracted; schoolId
   return { success: true, sent: sentCount, families: sentFamilies.size, log_id: logId, opt_in: optIn, school_name: schoolName, template_sid: mainSid, messages: o.stubPhones ? sends.map((x) => ({ phone: x.phone, message: x.message, variables: schoolEmailV3Vars(schoolName, x.message) })) : undefined };
 }
 
+/** Extract + send a saved inbox email; marks it processed, or keeps it with the error and alerts Matt once. */
+async function runSaved(id: string | null, subject: string, rawEmail: string, o: { testMode: boolean; catchUpPhone: string | null }) {
+  if (id) {
+    const { data: r } = await supabase.from("school_email_inbox").select("attempts").eq("id", id).maybeSingle();
+    await supabase.from("school_email_inbox").update({ attempts: (r?.attempts ?? 0) + 1 }).eq("id", id);
+  }
+  let extracted: Extracted | null = null;
+  const res = await processWithInbox({
+    subject,
+    save: async () => id,
+    process: async () => {
+      extracted = await extractEmailInfo(subject, rawEmail);
+      console.log("Extracted:", JSON.stringify(extracted));
+      return await processEmail({ subject, extracted, schoolId: DEAN_VALLEY_SCHOOL_ID, testMode: o.testMode, catchUpPhone: o.catchUpPhone });
+    },
+    done: async (rid, out) => { if (rid) await supabase.from("school_email_inbox").update({ status: "processed", error: null, processed_at: new Date().toISOString(), log_id: out.log_id }).eq("id", rid); },
+    failed: async (rid, error) => { console.error("handle-school-email failed:", error); if (rid) await supabase.from("school_email_inbox").update({ status: "failed", error }).eq("id", rid); },
+    alert: async (text) => {
+      const { data: a } = await supabase.from("ops_alerts").insert({ alert_type: "school_email_failed", affected_parents: 0, failure_count: 1, message: text, first_error: subject.slice(0, 160), is_test: o.testMode }).select("id").single();
+      const r = await sendAlertWhatsApp(text).catch(() => ({ ok: false, channel: "error" }));
+      if (a) await supabase.from("ops_alerts").update({ delivered: r.ok, channel: r.channel }).eq("id", a.id);
+    },
+  });
+  if (!res.ok) return jsonRes({ error: res.error.split("\n")[0], saved_id: id, saved: !!id }, 500);
+  return jsonRes({ ...res.out, extracted, test_mode: o.testMode, inbox_id: id });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const reqBody = await req.json();
+    const reqBody = await req.json().catch(() => null);
+    if (!reqBody || typeof reqBody !== "object") return jsonRes({ error: "invalid JSON body" }, 400);
     const { from, subject, rawEmail, test, only_phone } = reqBody;
     if (reqBody.dry_run === true) {
       // Dry run: secret-gated, uses only the sample children passed in, never reads families or sends.
@@ -272,16 +299,49 @@ Deno.serve(async (req: Request) => {
       if (!ok || !allTest || typeof reqBody.school_id !== "string" || !reqBody.extracted) return jsonRes({ error: "forbidden" }, 403);
       return jsonRes(await processEmail({ subject: String(subject ?? ""), extracted: reqBody.extracted, schoolId: reqBody.school_id, stubPhones: new Set(phones) }));
     }
+    // Admin re-run of a saved email (signed-in admin only).
+    if (reqBody.reprocess_id) {
+      const auth = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+      const { data: u } = await supabase.auth.getUser(auth);
+      const { data: isAdmin } = u?.user ? await supabase.rpc("has_role", { _user_id: u.user.id, _role: "admin" }) : { data: false };
+      if (!isAdmin) return jsonRes({ error: "forbidden" }, 403);
+      const { data: row } = await supabase.from("school_email_inbox").select("*").eq("id", String(reqBody.reprocess_id)).maybeSingle();
+      if (!row) return jsonRes({ error: "not found" }, 404);
+      if (row.status === "processed") return jsonRes({ error: "already processed" }, 409);
+      return await runSaved(row.id, row.subject ?? "", row.raw_email ?? "", { testMode: false, catchUpPhone: null });
+    }
+
+    // Worker secret: warn mode until app_settings.school_email_secret_enforced = 'true'.
+    const { data: enf } = await supabase.from("app_settings").select("value").eq("key", "school_email_secret_enforced").maybeSingle();
+    const decision = secretDecision({ enforced: enf?.value === "true", provided: req.headers.get("x-monty-email-secret"), expected: Deno.env.get("SCHOOL_EMAIL_WEBHOOK_SECRET") });
+    if (decision === "reject") {
+      console.warn("[handle-school-email] rejected: missing/invalid x-monty-email-secret");
+      return jsonRes({ error: "unauthorized" }, 401);
+    }
+    if (decision === "warn") {
+      console.warn("[handle-school-email] WARN: no valid x-monty-email-secret (warn mode, processing anyway)");
+      const { data: recent } = await supabase.from("ops_alerts").select("id").eq("alert_type", "school_email_no_secret").gt("created_at", new Date(Date.now() - 86400_000).toISOString()).limit(1);
+      if (!recent?.length) {
+        const message = "Monty system alert (not from a school): a school email arrived without the Worker secret header. Processed anyway (warn mode).";
+        const { data: a } = await supabase.from("ops_alerts").insert({ alert_type: "school_email_no_secret", affected_parents: 0, failure_count: 1, message, is_test: false }).select("id").single();
+        const r = await sendAlertWhatsApp(message).catch(() => ({ ok: false, channel: "error" }));
+        if (a) await supabase.from("ops_alerts").update({ delivered: r.ok, channel: r.channel }).eq("id", a.id);
+      }
+    }
+    if (typeof rawEmail !== "string" || !rawEmail.trim()) return jsonRes({ error: "rawEmail required" }, 400);
+
     const testMode = test === true;
     const catchUpPhone = typeof only_phone === "string" ? only_phone.trim() : null;
     if (testMode) console.log(`[handle-school-email] TEST MODE active — only ${TEST_PHONE_NUMBER} will receive messages`);
     if (catchUpPhone) console.log(`[handle-school-email] CATCH-UP MODE active — only ${catchUpPhone} will receive messages`);
     console.log(`Received email from ${from}, subject: ${subject}`);
 
-    const extracted = await extractEmailInfo(subject, rawEmail);
-    console.log("Extracted:", JSON.stringify(extracted));
-    const out = await processEmail({ subject: String(subject ?? ""), extracted, schoolId: DEAN_VALLEY_SCHOOL_ID, testMode, catchUpPhone });
-    return jsonRes({ ...out, extracted, test_mode: testMode });
+    // Save the raw email BEFORE extraction so it can never be lost.
+    const { data: saved, error: saveErr } = await supabase.from("school_email_inbox").insert({
+      from_address: from ? String(from).slice(0, 300) : null, subject: subject ? String(subject).slice(0, 500) : null, raw_email: rawEmail, secret_ok: decision === "ok",
+    }).select("id").single();
+    if (saveErr) console.error("school_email_inbox insert failed:", saveErr.message);
+    return await runSaved(saved?.id ?? null, String(subject ?? ""), rawEmail, { testMode, catchUpPhone });
 
   } catch (error) {
     console.error("handle-school-email error:", error);

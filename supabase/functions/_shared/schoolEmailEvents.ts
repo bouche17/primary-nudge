@@ -10,16 +10,19 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() && !/^(null|n\/a|
 /** Every dated item from an extraction: `events` if present, else the legacy single eventTitle/eventDate.
  *  Private events dropped, duplicates removed, sorted by date then time. */
 export function normaliseEvents(ex: any, fallback?: { title?: string | null; date?: string | null; yearGroups?: string[] | null }): EmailEvent[] {
-  const baseYears: string[] = Array.isArray(ex?.yearGroups) && ex.yearGroups.length ? ex.yearGroups : fallback?.yearGroups?.length ? fallback.yearGroups : ["all"];
-  const raw: any[] = Array.isArray(ex?.events) && ex.events.length ? ex.events
+  const baseYears: string[] = Array.isArray(ex?.yearGroups) && ex.yearGroups.length ? ex.yearGroups.filter((y: unknown) => typeof y === "string") : fallback?.yearGroups?.length ? fallback.yearGroups : ["all"];
+  const raw: any[] = Array.isArray(ex?.events) && ex.events.length ? ex.events.filter((e: unknown) => e && typeof e === "object")
     : [{ title: ex?.eventTitle ?? fallback?.title, date: ex?.eventDate ?? fallback?.date }];
   const out: EmailEvent[] = [];
   for (const e of raw) {
+   try {
     const title = str(e?.title), date = str(e?.date);
     if (!title || !date || !ISO.test(date) || isPrivateEvent(title)) continue;
-    const years = Array.isArray(e?.yearGroups) && e.yearGroups.length ? e.yearGroups.map(String) : baseYears;
+    const years = Array.isArray(e?.yearGroups) && e.yearGroups.length ? e.yearGroups.filter((y: unknown) => typeof y === "string" && y.trim()).map(String) : baseYears.map(String);
+    if (!years.length) years.push("all");
     const ev: EmailEvent = { title, date, time: str(e?.time), bring: str(e?.bring), yearGroups: years, optIn: e?.optIn === true };
     if (!out.some((o) => o.date === ev.date && o.title.toLowerCase() === ev.title.toLowerCase())) out.push(ev);
+   } catch { /* bad event: drop it, keep the rest */ }
   }
   return out.sort((a, b) => a.date.localeCompare(b.date) || String(a.time ?? "").localeCompare(String(b.time ?? "")));
 }
