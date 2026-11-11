@@ -1,4 +1,6 @@
 import { normaliseEvents } from "../_shared/schoolEmailEvents.ts";
+import { extractJsonWithRetry, processWithInbox, responseText, secretDecision } from "../_shared/schoolEmailParse.ts";
+import { sendAlertWhatsApp } from "../_shared/alerts.ts";
 import { montyClaudeModel } from "../_shared/claudeModel.ts";
 import { recordAiCost } from "../_shared/aiCost.ts";
 import { blockIfTestPhone, isTestPhone, validTestSecret, auditTestEntry } from "../_shared/testGuard.ts";
@@ -18,7 +20,7 @@ const DEAN_VALLEY_SCHOOL_ID = Deno.env.get("SCHOOL_EMAIL_SCHOOL_ID") || "f656def
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-monty-email-secret, x-monty-test-secret",
 };
 
 // Fixed extraction instructions: identical for every email, sent as a cached system block.
@@ -89,27 +91,24 @@ ${body}
 
 Today's date is ${new Date().toISOString().split("T")[0]}.`;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: montyClaudeModel(),
-      max_tokens: 1500,
-      system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: userText }],
-    }),
-  });
-
-  const data = await response.json();
-  await recordAiCost({ functionName: "handle-school-email", purpose: "school-email extraction", model: montyClaudeModel(), usage: data.usage });
-  const text = data.content[0].text.trim();
-  const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-
-  const parsed = JSON.parse(clean);
+  const call = async (nudge: string | null) => {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: montyClaudeModel(),
+        max_tokens: 3000,
+        system: [{ type: "text", text: EXTRACTION_INSTRUCTIONS, cache_control: { type: "ephemeral" } }],
+        messages: nudge ? [{ role: "user", content: userText }, { role: "assistant", content: "{" }, { role: "user", content: nudge }].slice(0, 1).concat([{ role: "user", content: nudge }]).length && [{ role: "user", content: `${userText}\n\n${nudge}` }] : [{ role: "user", content: userText }],
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (data?.usage) await recordAiCost({ functionName: "handle-school-email", purpose: nudge ? "school-email extraction retry" : "school-email extraction", model: montyClaudeModel(), usage: data.usage });
+    if (!response.ok) throw new Error(`Claude ${response.status}: ${JSON.stringify(data?.error ?? data).slice(0, 300)}`);
+    return { text: responseText(data), stop: data?.stop_reason ?? null };
+  };
+  const { parsed: p0 } = await extractJsonWithRetry(call);
+  const parsed: any = p0;
   // Normalise: never return empty-string fields — convert to null so callers can omit them cleanly
   parsed.events = normaliseEvents(parsed);
   if (parsed.events.length && !parsed.eventDate) { parsed.eventDate = parsed.events[0].date; parsed.eventTitle ??= parsed.events[0].title; }
