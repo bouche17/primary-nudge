@@ -40,3 +40,5 @@ verify_jwt = false
 verify_jwt = false
 [functions.account-check]
 verify_jwt = false
+[functions.handle-school-email]
+verify_jwt = false
