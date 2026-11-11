@@ -1056,6 +1056,48 @@ export type Database = {
           },
         ]
       }
+      school_email_inbox: {
+        Row: {
+          attempts: number
+          error: string | null
+          from_address: string | null
+          id: string
+          log_id: string | null
+          processed_at: string | null
+          raw_email: string
+          received_at: string
+          secret_ok: boolean | null
+          status: string
+          subject: string | null
+        }
+        Insert: {
+          attempts?: number
+          error?: string | null
+          from_address?: string | null
+          id?: string
+          log_id?: string | null
+          processed_at?: string | null
+          raw_email?: string
+          received_at?: string
+          secret_ok?: boolean | null
+          status?: string
+          subject?: string | null
+        }
+        Update: {
+          attempts?: number
+          error?: string | null
+          from_address?: string | null
+          id?: string
+          log_id?: string | null
+          processed_at?: string | null
+          raw_email?: string
+          received_at?: string
+          secret_ok?: boolean | null
+          status?: string
+          subject?: string | null
+        }
+        Relationships: []
+      }
       school_email_log: {
         Row: {
           event_date: string | null
