@@ -15,12 +15,24 @@ const AdminSchoolEmails = () => {
   const { isAdmin, loading } = useAdmin();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [showTests, setShowTests] = useState(false);
+  const [inbox, setInbox] = useState<{ id: string; received_at: string; subject: string | null; status: string; error: string | null; attempts: number }[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const loadInbox = () => supabase.from("school_email_inbox").select("id, received_at, subject, status, error, attempts").neq("status", "processed")
+    .order("received_at", { ascending: false }).limit(50).then(({ data }) => setInbox(data ?? []));
+  const rerun = async (id: string) => {
+    setBusy(id);
+    const { error } = await supabase.functions.invoke("handle-school-email", { body: { reprocess_id: id } });
+    setBusy(null);
+    if (error) alert("Re-run failed: " + error.message);
+    loadInbox();
+  };
   useEffect(() => {
     if (!isAdmin) return;
     const since = new Date(Date.now() - 30 * 86400_000).toISOString();
     supabase.from("school_email_log").select("id, received_at, subject, message, year_groups, opt_in, event_title, event_date, families_count, phones_count, is_test")
       .gte("received_at", since).order("received_at", { ascending: false }).limit(500)
       .then(({ data }) => setRows((data as Row[]) ?? []));
+    loadInbox();
   }, [isAdmin]);
 
   if (loading) return null;
@@ -39,6 +51,19 @@ const AdminSchoolEmails = () => {
             <input type="checkbox" checked={showTests} onChange={(e) => setShowTests(e.target.checked)} /> Show test runs
           </label>
         </div>
+        {inbox.length > 0 && (
+          <div className="bg-card border border-destructive rounded-2xl p-4 space-y-2">
+            <h2 className="font-semibold text-destructive">Saved emails not yet processed</h2>
+            {inbox.map((m) => (
+              <div key={m.id} className="flex flex-wrap items-center gap-2 text-sm border-t border-border pt-2">
+                <span className="font-medium text-foreground">{m.subject || "(no subject)"}</span>
+                <span className="text-muted-foreground">{when(m.received_at)} · {m.status} · {m.attempts} attempt{m.attempts === 1 ? "" : "s"}</span>
+                <button onClick={() => rerun(m.id)} disabled={busy === m.id} className="ml-auto px-3 py-1 rounded-lg bg-primary text-primary-foreground text-xs disabled:opacity-50">{busy === m.id ? "Running…" : "Re-run"}</button>
+                {m.error && <p className="w-full text-xs text-muted-foreground truncate">{m.error.split("\n")[0]}</p>}
+              </div>
+            ))}
+          </div>
+        )}
         {rows === null && <p className="text-muted-foreground">Loading…</p>}
         {rows !== null && list.length === 0 && <p className="text-muted-foreground">No school emails in the last 30 days.</p>}
         <div className="space-y-3">
