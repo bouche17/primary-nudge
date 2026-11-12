@@ -97,6 +97,15 @@ function ownDateDetail(message: string, events: EmailEvent[]): boolean {
   }
   return false;
 }
+/** The parent's message carries its own date/day/time or a word that isn't part of any email item ("play"). */
+export function hasOwnDetail(message: string, events: EmailEvent[], childNames: string[] = []): boolean {
+  if (ownDateDetail(message, events)) return true;
+  const evToks = new Set(events.flatMap((e) => [...toks(e.title)]));
+  const kids = new Set(childNames.map((n) => n.toLowerCase().replace(/s$/, "")));
+  return [...toks(message)].some((w) => !evToks.has(w) && !FILLER.has(w) && !kids.has(w) && !CUE.test(w) && !/\d/.test(w)
+    && !new RegExp(`^(${MONTHS})`).test(w) && !DAYS.some((d) => d.startsWith(w) || w.startsWith(d.slice(0, 3)))
+    && !/^(choose|pick|some|which|one|first|second|third|last|only|just|neither|none)$/.test(w));
+}
 export type FollowUpKind = "save" | "question" | "none";
 /** Is the parent's message a genuine reference to the email (save request or question about its items)?
  *  A shared topic word alone is never enough; the parent's own new date/day/time or other detail wins. */
@@ -111,11 +120,8 @@ export function classifyEmailFollowUp(message: string, events: EmailEvent[], chi
   if (!CUE.test(message) || (!matched.length && !pronounOnly)) return { kind: "none", matched };
   if (/\b(not|don'?t|cancel|delete|remove|moved?|changed?)\b/i.test(message)) return { kind: "none", matched };
   if (ownDateDetail(message, events)) return { kind: "none", matched };
-  const evToks = new Set(events.flatMap((e) => [...toks(e.title)]));
-  const kids = new Set(childNames.map((n) => n.toLowerCase().replace(/s$/, "")));
-  const extra = [...toks(message)].filter((w) => !evToks.has(w) && !FILLER.has(w) && !kids.has(w) && !CUE.test(w) && !/\d/.test(w)
-    && !new RegExp(`^(${MONTHS})`).test(w) && !DAYS.some((d) => d.startsWith(w) || w.startsWith(d.slice(0, 3))));
-  return extra.length ? { kind: "none", matched } : { kind: "save", matched: matched.length ? matched : events };
+  const extra = hasOwnDetail(message, events, childNames);
+  return extra ? { kind: "none", matched } : { kind: "save", matched: matched.length ? matched : events };
 }
 /** Free text may resolve against an email only when it's one of Monty's last 2 messages or under 24h old;
  *  a button tap or an open pending question keeps the 7-day window. */

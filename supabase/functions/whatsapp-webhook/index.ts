@@ -17,7 +17,7 @@ import { buttonAction, contentVars, interactiveFor, parseTapPayload, SESSION_SID
 import { COMMON_ITEM_WORDS, hasMeaningfulShared, lowerFirstSafe, resolveDayInText, resolveWeekday, shortDayDate, ukNowParts, WEEKDAY_NAMES } from "../_shared/chatRules.ts";
 import { sendTemplate } from "../_shared/twilioTemplates.ts";
 import { isPrivateEvent } from "../_shared/schoolEventRules.ts";
-import { chooseQuestion, eligibleFor, groupedConfirmation, matchEventsByTopic, multiSaveQuestion, normaliseEvents, groupLabels, shortDate, tidyTitle, eventLine, type EmailEvent, type SavedItem } from "../_shared/schoolEmailEvents.ts";
+import { chooseQuestion, classifyEmailFollowUp, followUpInWindow, hasOwnDetail, eligibleFor, groupedConfirmation, matchEventsByTopic, multiSaveQuestion, normaliseEvents, groupLabels, shortDate, tidyTitle, eventLine, type EmailEvent, type SavedItem } from "../_shared/schoolEmailEvents.ts";
 
 // Per-request test context. Only ever set by the secret-gated test entry point,
 // scoped to that request (AsyncLocalStorage), so real requests always use the real clock.
@@ -2852,7 +2852,7 @@ async function resolveSchoolEmailPending(phone: string, p: PendingAction, messag
     let idxs: number[] | null = null;
     if (/\b(all|both|everything|every one)\b/i.test(message) || (item.stage === "all" && kind === "yes")) idxs = all;
     else if (item.stage === "choose" && nums.length) idxs = [...new Set(nums)];
-    else if (topical.length && short) idxs = topical;
+    else if (topical.length && short && !hasOwnDetail(message, evs, names)) idxs = topical; // own new details → normal chat
     if (!idxs) { await setPendingAction(phone, null, { dropped: true }); return null; }
     await setPendingAction(phone, null);
     return await saveSchoolEmailEvents(phone, item, idxs, named.length ? named : null, context, message);
@@ -2873,18 +2873,23 @@ async function tryEmailFollowUp(phone: string, message: string, context: MontyCo
   if (message.trim().split(/\s+/).length > 15) return null;
   const m = await linkedOutbound(conversationId, "school_email", null, 7);
   if (!m) return null;
+  // Free text (no tap, no open question): only when the email is one of Monty's last 2 messages or under 24h old.
+  const lastTwo = (await recentOutbound(conversationId, 24 * 7)).slice(0, 2);
+  const inLastTwo = lastTwo.some((x) => x.source === "school_email" && x.created_at === m.created_at);
+  if (!followUpInWindow({ sentAt: m.created_at, now: nowD(), inLastTwo, tapOrPending: false })) return null;
   const item = await schoolEmailItem(m, context);
   const evs = item?.events ?? [];
   if (!item || !evs.length) return null;
-  const topical = matchEventsByTopic(message, evs);
-  const isQ = /\?\s*$|^\s*(what|when|which|do|does|is|are)\b/i.test(message);
-  if (isQ && /\b(bring|wear|need|take)\b/i.test(message)) {
-    const withBring = (topical.length ? topical : evs).filter((e) => e.bring);
+  const names = context.children.map((c) => c.first_name);
+  const { kind, matched } = classifyEmailFollowUp(message, evs, names);
+  // Not a clear reference → the AI decides (it sees the email in history); never save a school event instead.
+  if (kind === "none") return null;
+  if (kind === "question") {
+    const withBring = (matched.length ? matched : evs).filter((e) => e.bring);
     if (!withBring.length) return null;
     return `From the school's email: ${withBring.map(eventLine).join("; ")} 😊`;
   }
-  if (isQ || !topical.length || /\b(not|don'?t|cancel|delete|remove|moved?|changed?)\b/i.test(message)) return null;
-  return await saveSchoolEmailEvents(phone, item, topical.map((e) => evs.indexOf(e)), null, context, message);
+  return await saveSchoolEmailEvents(phone, item, matched.map((e) => evs.indexOf(e)), null, context, message);
 }
 
 /** "yes" after the Sunday check-in: confirm the saved lunch plan, or ask only for what's missing. */
