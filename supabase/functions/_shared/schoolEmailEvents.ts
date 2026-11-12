@@ -74,6 +74,64 @@ export function matchEventsByTopic(message: string, events: EmailEvent[]): Email
   return events.filter((e) => [...toks(e.title)].some((t) => m.has(t)));
 }
 
+const CUE = /\b(save|add|also|too|those|these|them|that|yes|yeah|yep|both|all|everything)\b|^\s*(and|plus|oh and)\b/i;
+const QUESTION = /\?\s*$|^\s*(what|when|which|where|do|does|is|are|what's|whats|how)\b/i;
+const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec";
+const DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const FILLER = new Set(["yes", "yeah", "yep", "please", "thank", "thanks", "too", "it", "its", "as", "well", "ok", "okay", "oh", "plus", "everything",
+  "could", "would", "will", "ple", "are", "is", "on", "in", "an", "a", "of", "to", "our", "my", "kid", "kids", "child", "children", "everyone",
+  "wear", "take", "when", "where", "which", "how", "doe", "does", "whats", "time", "date", "list", "calendar", "reminder", "reminders", "want", "lovely", "great"]);
+/** Dates/days/times in the parent's own words that don't belong to any of the email's events (own details win). */
+function ownDateDetail(message: string, events: EmailEvent[]): boolean {
+  const m = message.toLowerCase();
+  if (/\b\d{1,2}([:.]\d{2})?\s*(am|pm)\b|\b\d{1,2}[:.]\d{2}\b/.test(m)) return true;
+  if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
+  const evDays = new Set(events.map((e) => DAYS[new Date(`${e.date}T12:00:00Z`).getUTCDay()]));
+  for (const d of DAYS) if (new RegExp(`\\b${d.slice(0, 3)}(${d.slice(3)})?\\b`).test(m) && !evDays.has(d)) return true;
+  const MON12 = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const evDates = new Set(events.map((e) => { const d = new Date(`${e.date}T12:00:00Z`); return `${d.getUTCDate()} ${MON12[d.getUTCMonth()]}`; }));
+  const re = new RegExp(`\\b(\\d{1,2})(st|nd|rd|th)?\\s*(?:of\\s+)?(${MONTHS})[a-z]*\\b|\\b(${MONTHS})[a-z]*\\s+(\\d{1,2})(st|nd|rd|th)?\\b|\\b\\d{1,2}/\\d{1,2}\\b`, "g");
+  for (const x of m.matchAll(re)) {
+    if (!x[1] && !x[5]) return true; // 12/12
+    if (!evDates.has(`${Number(x[1] ?? x[5])} ${(x[3] ?? x[4]).slice(0, 3)}`)) return true;
+  }
+  return false;
+}
+/** The parent's message carries its own date/day/time or a word that isn't part of any email item ("play"). */
+export function hasOwnDetail(message: string, events: EmailEvent[], childNames: string[] = []): boolean {
+  if (ownDateDetail(message, events)) return true;
+  const evToks = new Set(events.flatMap((e) => [...toks(e.title)]));
+  const kids = new Set(childNames.map((n) => n.toLowerCase().replace(/s$/, "")));
+  return [...toks(message)].some((w) => !evToks.has(w) && !FILLER.has(w) && !kids.has(w) && !CUE.test(w) && !/\d/.test(w)
+    && !new RegExp(`^(${MONTHS})`).test(w) && !DAYS.some((d) => d.startsWith(w) || w.startsWith(d.slice(0, 3)))
+    && !/^(choose|pick|some|which|one|first|second|third|last|only|just|neither|none)$/.test(w));
+}
+export type FollowUpKind = "save" | "question" | "none";
+/** Is the parent's message a genuine reference to the email (save request or question about its items)?
+ *  A shared topic word alone is never enough; the parent's own new date/day/time or other detail wins. */
+export function classifyEmailFollowUp(message: string, events: EmailEvent[], childNames: string[] = []): { kind: FollowUpKind; matched: EmailEvent[] } {
+  const matched = matchEventsByTopic(message, events);
+  const isQ = QUESTION.test(message);
+  if (isQ) {
+    if (ownDateDetail(message, events)) return { kind: "none", matched };
+    return /\b(bring|wear|need|take|time|when|what time|where)\b/i.test(message) ? { kind: "question", matched } : { kind: "none", matched };
+  }
+  const pronounOnly = !matched.length && /\b(those|these|them|all of them|everything|it)\b/i.test(message);
+  if (!CUE.test(message) || (!matched.length && !pronounOnly)) return { kind: "none", matched };
+  if (/\b(not|don'?t|cancel|delete|remove|moved?|changed?)\b/i.test(message)) return { kind: "none", matched };
+  if (ownDateDetail(message, events)) return { kind: "none", matched };
+  const extra = hasOwnDetail(message, events, childNames);
+  return extra ? { kind: "none", matched } : { kind: "save", matched: matched.length ? matched : events };
+}
+/** Free text may resolve against an email only when it's one of Monty's last 2 messages or under 24h old;
+ *  a button tap or an open pending question keeps the 7-day window. */
+export function followUpInWindow(o: { sentAt: string; now: Date; inLastTwo: boolean; tapOrPending: boolean }): boolean {
+  const age = o.now.getTime() - new Date(o.sentAt).getTime();
+  if (age < 0) return false;
+  if (o.tapOrPending) return age <= 7 * 86_400_000;
+  return o.inLastTwo || age <= 86_400_000;
+}
+
 export interface SavedItem { child: string; title: string; date: string; bring?: string | null; time?: string | null }
 /** "for Jude", "for both Jude and Harry", "for everyone" */
 export function forWhom(children: string[], family: string[]): string {

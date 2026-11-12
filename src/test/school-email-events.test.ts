@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eligibleFor, eventLine, groupedConfirmation, groupLabels, matchEventsByTopic, multiSaveQuestion, normaliseEvents } from "../../supabase/functions/_shared/schoolEmailEvents";
+import { classifyEmailFollowUp, followUpInWindow, eligibleFor, eventLine, groupedConfirmation, groupLabels, matchEventsByTopic, multiSaveQuestion, normaliseEvents } from "../../supabase/functions/_shared/schoolEmailEvents";
 
 // The extraction shape for "Fwd: UPDATED DATES - PTA Christmas Fair Info" (10 Nov).
 const PTA = {
@@ -54,5 +54,24 @@ describe("school emails with several dates", () => {
   });
   it("line wording", () => {
     expect(eventLine(normaliseEvents(PTA)[2])).toBe("Fri 4 Dec, 5–7pm: PTA Christmas Fair");
+  });
+});
+
+describe("follow-ups only on a genuine reference to the email", () => {
+  const ev = normaliseEvents(PTA);
+  const kind = (m: string) => classifyEmailFollowUp(m, ev, ["Jude", "Harry"]).kind;
+  it("Harry's Christmas play is on 12 Dec → not a reference", () => expect(kind("Harry's Christmas play is on 12 Dec")).toBe("none"));
+  it("save the fair → reference", () => {
+    expect(kind("save the fair")).toBe("save");
+    expect(classifyEmailFollowUp("save the fair", ev).matched.map((e) => e.title)).toEqual(["PTA Christmas Fair"]);
+  });
+  it("and also the own clothes days → reference", () => expect(classifyEmailFollowUp("and also the own clothes days", ev).matched.map((e) => e.date)).toEqual(["2026-11-27", "2026-12-04"]));
+  it("Christmas jumper day Friday → not a reference", () => expect(kind("Christmas jumper day Friday")).toBe("none"));
+  it("what do they need to bring? → reference", () => expect(kind("what do they need to bring?")).toBe("question"));
+  it("a tap on day 5 resolves; free text on day 5 doesn't", () => {
+    const now = new Date("2026-11-15T15:23:00Z");
+    expect(followUpInWindow({ sentAt: "2026-11-10T15:23:00Z", now, inLastTwo: false, tapOrPending: true })).toBe(true);
+    expect(followUpInWindow({ sentAt: "2026-11-10T15:23:00Z", now, inLastTwo: false, tapOrPending: false })).toBe(false);
+    expect(followUpInWindow({ sentAt: "2026-11-10T15:23:00Z", now, inLastTwo: true, tapOrPending: false })).toBe(true);
   });
 });
