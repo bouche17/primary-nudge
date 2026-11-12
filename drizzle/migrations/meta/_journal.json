@@ -71,6 +71,20 @@
       "when": 1794395541055,
       "tag": "0009_school_email_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794481204545,
+      "tag": "0010_scope_school_events_and_reminders_reads",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794481236371,
+      "tag": "0011_scope_school_reminders_to_family_schools",
+      "breakpoints": true
     }
   ]
 }
