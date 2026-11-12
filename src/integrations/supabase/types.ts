@@ -1653,6 +1653,10 @@ export type Database = {
         }[]
       }
       backfill_school_towns: { Args: never; Returns: number }
+      can_read_school: {
+        Args: { _school_id: string; _user_id: string }
+        Returns: boolean
+      }
       change_child_school: {
         Args: { _child_id: string; _school_id: string; _source?: string }
         Returns: boolean
@@ -1705,6 +1709,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      is_private_event: { Args: { _title: string }; Returns: boolean }
       is_test_phone: { Args: { _phone: string }; Returns: boolean }
       queue_suite_chunk: { Args: { _body: Json }; Returns: number }
       queue_whats_on_shadow: { Args: never; Returns: number }
