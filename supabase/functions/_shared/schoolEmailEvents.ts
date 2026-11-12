@@ -88,12 +88,12 @@ function ownDateDetail(message: string, events: EmailEvent[]): boolean {
   if (/\b(today|tomorrow|tonight|next week|this week|weekend)\b/.test(m)) return true;
   const evDays = new Set(events.map((e) => DAYS[new Date(`${e.date}T12:00:00Z`).getUTCDay()]));
   for (const d of DAYS) if (new RegExp(`\\b${d.slice(0, 3)}(${d.slice(3)})?\\b`).test(m) && !evDays.has(d)) return true;
-  const evDates = new Set(events.map((e) => { const d = new Date(`${e.date}T12:00:00Z`); return `${d.getUTCDate()} ${MONTHS.split("|")[d.getUTCMonth() > 7 ? d.getUTCMonth() + 1 : d.getUTCMonth()]}`; }));
+  const MON12 = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const evDates = new Set(events.map((e) => { const d = new Date(`${e.date}T12:00:00Z`); return `${d.getUTCDate()} ${MON12[d.getUTCMonth()]}`; }));
   const re = new RegExp(`\\b(\\d{1,2})(st|nd|rd|th)?\\s*(?:of\\s+)?(${MONTHS})[a-z]*\\b|\\b(${MONTHS})[a-z]*\\s+(\\d{1,2})(st|nd|rd|th)?\\b|\\b\\d{1,2}/\\d{1,2}\\b`, "g");
   for (const x of m.matchAll(re)) {
     if (!x[1] && !x[5]) return true; // 12/12
-    const day = Number(x[1] ?? x[5]); const mon = (x[3] ?? x[4]).slice(0, 3);
-    if (![...evDates].some((k) => k === `${day} ${mon === "sep" ? "sep" : mon}` || k === `${day} sept` && mon === "sep")) return true;
+    if (!evDates.has(`${Number(x[1] ?? x[5])} ${(x[3] ?? x[4]).slice(0, 3)}`)) return true;
   }
   return false;
 }
